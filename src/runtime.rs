@@ -153,6 +153,7 @@ impl Runtime {
             package: manifest.package,
             activity,
             class_name,
+            resources: read_resources(&mut archive)?,
             dex,
             entry_method,
         })
@@ -170,9 +171,18 @@ impl Runtime {
             },
         );
         let result = if plan.entry_method {
+            let mut framework = std::mem::take(&mut self.framework);
+            framework.activities = activities;
+            if let Some(resources) = &plan.resources {
+                for value in &resources.values {
+                    framework
+                        .resources
+                        .insert(value.id, Value::String(value.value.clone()));
+                }
+            }
             let mut vm = Vm::new(
                 &plan.dex,
-                std::mem::take(&mut self.framework),
+                framework,
                 VmConfig {
                     max_steps: self.config.max_steps,
                     max_call_depth: 256,
@@ -186,10 +196,15 @@ impl Runtime {
                     method.class_name == plan.class_name && method.name == "onCreate"
                 })
                 .ok_or_else(|| anyhow::anyhow!("launcher onCreate method is missing"))?;
+            let activity_object = vm.alloc_instance(plan.class_name.clone());
             let value = vm
-                .run_method(method_index, Vec::new())
+                .run_method(
+                    method_index,
+                    vec![VmValue::Object(activity_object), VmValue::Null],
+                )
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             self.framework = vm.framework;
+            activities = std::mem::take(&mut self.framework.activities);
             match value {
                 VmValue::Void => ExecutionResult::ReturnVoid,
                 VmValue::Int(value) => ExecutionResult::Return(value),
@@ -245,6 +260,7 @@ pub struct LaunchPlan {
     pub class_name: String,
     pub dex: DexFile,
     pub entry_method: bool,
+    pub resources: Option<ResourceTable>,
 }
 
 #[derive(Debug)]
@@ -258,6 +274,17 @@ fn read_manifest(archive: &mut zip::ZipArchive<File>) -> Result<AppManifest> {
     let mut bytes = Vec::new();
     entry.read_to_end(&mut bytes)?;
     AppManifest::parse_axml(&bytes)
+}
+
+fn read_resources(archive: &mut zip::ZipArchive<File>) -> Result<Option<ResourceTable>> {
+    let mut entry = match archive.by_name("resources.arsc") {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes)?;
+    Ok(Some(ResourceTable::parse(&bytes)?))
 }
 
 fn read_dex(archive: &mut zip::ZipArchive<File>) -> Result<DexFile> {

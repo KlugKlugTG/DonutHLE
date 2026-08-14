@@ -299,6 +299,22 @@ impl Framework {
         handle
     }
 
+    pub fn ensure_view(&mut self, handle: u32, class_name: impl Into<String>) {
+        self.views.entry(handle).or_insert_with(|| ViewNode {
+            id: -1,
+            class_name: class_name.into(),
+            text: None,
+            bounds: Rect {
+                left: 0,
+                top: 0,
+                right: 320,
+                bottom: 480,
+            },
+            visible: true,
+            children: Vec::new(),
+        });
+    }
+
     pub fn dispatch(&mut self, call: FrameworkCall) -> Result<FrameworkResult, String> {
         match call {
             FrameworkCall::NewView { class_name } => {

@@ -350,7 +350,12 @@ impl<'a> Vm<'a> {
                     let class_name = self.dex.types.get(type_index).cloned().ok_or_else(|| {
                         self.error(pc, opcode, "new-instance type index is invalid")
                     })?;
-                    let object = self.alloc_instance(class_name);
+                    let object = self.alloc_instance(class_name.clone());
+                    if class_name.starts_with("Landroid/view/")
+                        || class_name.starts_with("Landroid/widget/")
+                    {
+                        self.framework.ensure_view(object, class_name);
+                    }
                     set_register(
                         &mut registers,
                         register,
