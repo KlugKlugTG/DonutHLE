@@ -24,7 +24,7 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let runtime = Runtime::default();
+    let mut runtime = Runtime::default();
     match cli.command {
         Command::Inspect { apk: path } => {
             let info = apk::inspect(&path)?;
@@ -43,7 +43,9 @@ fn main() -> Result<()> {
             println!("dex: {}", report.dex);
             println!("status: {}", report.message);
         }
-        Command::Run { apk: path } => runtime.launch(&path)?,
+        Command::Run { apk: path } => {
+            runtime.launch(&path)?;
+        }
     }
     Ok(())
 }

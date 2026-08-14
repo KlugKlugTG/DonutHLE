@@ -228,6 +228,19 @@ impl DexFile {
             .iter()
             .find(|method| method.class_name == class_name && method.name == name)
     }
+    pub fn method_code(&self, class_name: &str, method_name: &str) -> Option<&CodeItem> {
+        let class = self.find_class(class_name)?;
+        class
+            .direct_methods
+            .iter()
+            .chain(class.virtual_methods.iter())
+            .find(|method| {
+                self.methods
+                    .get(method.method_index as usize)
+                    .is_some_and(|id| id.name == method_name)
+            })
+            .and_then(|method| method.code.as_ref())
+    }
 }
 
 fn parse_strings(reader: &Reader<'_>, count: usize, offset: usize) -> Result<Vec<String>> {
