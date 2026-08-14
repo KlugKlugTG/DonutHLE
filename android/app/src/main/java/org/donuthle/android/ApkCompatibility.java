@@ -6,10 +6,9 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -34,7 +33,6 @@ final class ApkCompatibility {
         if (!report.hasDex) report.gaps.add("Dalvik classes.dex loader and verifier");
         if (!report.hasResources) report.gaps.add("resources.arsc resource table");
         if (report.dexBytes != null) detectRequests(report);
-        Collections.sort(report.present);
         return report;
     }
 
@@ -83,7 +81,7 @@ final class ApkCompatibility {
     static final class Report {
         final String fileName;
         final long fileSize;
-        final Set<String> present = new LinkedHashSet<>();
+        final Set<String> present = new TreeSet<>();
         final List<String> gaps = new ArrayList<>();
         final List<String> requestedGaps = new ArrayList<>();
         byte[] dexBytes;
