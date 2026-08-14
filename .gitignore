@@ -1,0 +1,8 @@
+/target/
+*.apk
+*.apks
+*.aab
+.donuthle/
+.idea/
+.vscode/
+.DS_Store

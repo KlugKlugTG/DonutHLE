@@ -1,0 +1,16 @@
+[package]
+name = "donuthle"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental high-level Android 1.6 (Donut) emulator"
+license = "MIT"
+repository = "https://github.com/KlugKlugTG/DonutHLE"
+
+[dependencies]
+anyhow = "1"
+byteorder = "1"
+clap = { version = "4", features = ["derive"] }
+zip = "2"
+
+[dev-dependencies]
+tempfile = "3"
