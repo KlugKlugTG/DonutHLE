@@ -329,13 +329,8 @@ impl<'a> Vm<'a> {
                 }
                 0x21 => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
-                    let array = get_object(
-                        &registers,
-                        ((instruction >> 8) & 0xff) as usize,
-                        self,
-                        pc,
-                        opcode,
-                    )?;
+                    let array_register = ((instruction >> 12) & 0x0f) as usize;
+                    let array = get_object(&registers, array_register, self, pc, opcode)?;
                     let length = match self.heap_object(array) {
                         Some(HeapObject::Array { values, .. }) => values.len() as i32,
                         _ => {
