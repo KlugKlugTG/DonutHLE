@@ -1,20 +1,16 @@
-<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
-    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="35" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
     <application
         android:allowBackup="true"
         android:label="DonutHLE"
         android:theme="@style/AppTheme"
-        android:hardwareAccelerated="true">
+        android:resizeableActivity="true">
         <activity
             android:name=".MainActivity"
-            android:screenOrientation="sensorLandscape"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode"
+            android:screenOrientation="portrait"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -23,10 +19,11 @@
         </activity>
         <provider
             android:name=".DocumentsProvider"
-            android:authorities="${applicationId}.documents"
+            android:authorities="org.donuthle.android.documents"
             android:exported="true"
             android:grantUriPermissions="true"
-            android:permission="android.permission.MANAGE_DOCUMENTS">
+            android:permission="android.permission.MANAGE_DOCUMENTS"
+            android:enabled="true">
             <intent-filter>
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>

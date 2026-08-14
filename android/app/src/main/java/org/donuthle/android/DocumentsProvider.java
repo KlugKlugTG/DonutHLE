@@ -7,38 +7,31 @@ import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.webkit.MimeTypeMap;
 
+import android.content.res.AssetFileDescriptor;
+
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.Locale;
 
 public final class DocumentsProvider extends android.provider.DocumentsProvider {
     private static final String ROOT_ID = "donuthle";
-    private static final String[] ROOT_PROJECTION = {
+    private static final String[] DEFAULT_ROOT_PROJECTION = {
             DocumentsContract.Root.COLUMN_ROOT_ID,
             DocumentsContract.Root.COLUMN_MIME_TYPES,
             DocumentsContract.Root.COLUMN_FLAGS,
             DocumentsContract.Root.COLUMN_ICON,
             DocumentsContract.Root.COLUMN_TITLE,
-            DocumentsContract.Root.COLUMN_SUMMARY,
             DocumentsContract.Root.COLUMN_DOCUMENT_ID,
             DocumentsContract.Root.COLUMN_AVAILABLE_BYTES
     };
-    private static final String[] DOCUMENT_PROJECTION = {
+    private static final String[] DEFAULT_DOCUMENT_PROJECTION = {
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_MIME_TYPE,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
             DocumentsContract.Document.COLUMN_FLAGS,
-            DocumentsContract.Document.COLUMN_SIZE
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED
     };
-
-    private File base() {
-        StorageLayout.ensure(getContext());
-        return StorageLayout.root(getContext());
-    }
 
     @Override
     public boolean onCreate() {
@@ -48,175 +41,105 @@ public final class DocumentsProvider extends android.provider.DocumentsProvider 
 
     @Override
     public Cursor queryRoots(String[] projection) {
-        MatrixCursor cursor = new MatrixCursor(projection == null ? ROOT_PROJECTION : projection);
-        MatrixCursor.RowBuilder row = cursor.newRow();
+        MatrixCursor result = new MatrixCursor(projection == null ? DEFAULT_ROOT_PROJECTION : projection);
+        MatrixCursor.RowBuilder row = result.newRow();
         row.add(DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_ID);
+        row.add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*\napplication/vnd.android.package-archive");
+        row.add(DocumentsContract.Root.COLUMN_FLAGS, DocumentsContract.Root.FLAG_SUPPORTS_CREATE);
+        row.add(DocumentsContract.Root.COLUMN_ICON, android.R.drawable.ic_menu_upload);
         row.add(DocumentsContract.Root.COLUMN_TITLE, "DonutHLE");
-        row.add(DocumentsContract.Root.COLUMN_SUMMARY, "APK files, game data and logs");
         row.add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, ROOT_ID);
-        row.add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*");
-        row.add(DocumentsContract.Root.COLUMN_FLAGS,
-                DocumentsContract.Root.FLAG_SUPPORTS_CREATE |
-                        DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD);
-        row.add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, base().getFreeSpace());
-        return cursor;
+        row.add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, StorageLayout.root(getContext()).getFreeSpace());
+        return result;
     }
 
     @Override
     public Cursor queryDocument(String documentId, String[] projection) throws FileNotFoundException {
-        MatrixCursor cursor = new MatrixCursor(projection == null ? DOCUMENT_PROJECTION : projection);
-        include(cursor, documentId, null);
-        return cursor;
+        MatrixCursor result = new MatrixCursor(projection == null ? DEFAULT_DOCUMENT_PROJECTION : projection);
+        include(result, documentId, fileFor(documentId));
+        return result;
     }
 
     @Override
-    public Cursor queryChildDocuments(String parentDocumentId, String[] projection, String sortOrder)
-            throws FileNotFoundException {
-        MatrixCursor cursor = new MatrixCursor(projection == null ? DOCUMENT_PROJECTION : projection);
+    public Cursor queryChildDocuments(String parentDocumentId, String[] projection, String sortOrder) throws FileNotFoundException {
+        MatrixCursor result = new MatrixCursor(projection == null ? DEFAULT_DOCUMENT_PROJECTION : projection);
         File parent = fileFor(parentDocumentId);
-        File[] children = parent.listFiles();
-        if (children == null) return cursor;
-        Arrays.sort(children, Comparator.comparing(File::isFile).thenComparing(File::getName, String.CASE_INSENSITIVE_ORDER));
-        for (File child : children) include(cursor, idFor(child), child);
-        return cursor;
-    }
-
-    @Override
-    public ParcelFileDescriptor openDocument(String documentId, String mode, CancellationSignal signal)
-            throws FileNotFoundException {
-        File file = fileFor(documentId);
-        int access = mode.contains("w") ? ParcelFileDescriptor.MODE_READ_WRITE : ParcelFileDescriptor.MODE_READ_ONLY;
-        if (mode.contains("w")) access |= ParcelFileDescriptor.MODE_CREATE;
-        return ParcelFileDescriptor.open(file, access);
-    }
-
-    @Override
-    public String createDocument(String parentDocumentId, String mimeType, String displayName)
-            throws FileNotFoundException {
-        File parent = fileFor(parentDocumentId);
-        if (!parent.isDirectory()) throw new FileNotFoundException("Not a directory");
-        String safeName = displayName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
-        if (safeName.isEmpty()) safeName = "untitled";
-        File result = unique(new File(parent, safeName));
-        try {
-            if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                if (!result.mkdirs()) throw new IOException("mkdir failed");
-            } else if (!result.createNewFile()) {
-                throw new IOException("create failed");
-            }
-        } catch (IOException error) {
-            throw new FileNotFoundException(error.getMessage());
+        File[] files = parent.listFiles();
+        if (files != null) {
+            for (File file : files) include(result, idFor(file), file);
         }
-        return idFor(result);
+        return result;
+    }
+
+    @Override
+    public ParcelFileDescriptor openDocument(String documentId, String mode, CancellationSignal signal) throws FileNotFoundException {
+        return ParcelFileDescriptor.open(fileFor(documentId), ParcelFileDescriptor.parseMode(mode));
     }
 
     @Override
     public void deleteDocument(String documentId) throws FileNotFoundException {
         File file = fileFor(documentId);
-        if (!deleteRecursively(file)) throw new FileNotFoundException("Could not delete " + documentId);
+        if (file.isDirectory()) deleteTree(file);
+        else if (!file.delete()) throw new FileNotFoundException("Unable to delete " + file);
     }
 
     @Override
-    public String renameDocument(String documentId, String displayName) throws FileNotFoundException {
-        File source = fileFor(documentId);
-        File parent = source.getParentFile();
-        if (parent == null) throw new FileNotFoundException("No parent directory");
-        File target = unique(new File(parent, displayName.replaceAll("[\\\\/:*?\"<>|]", "_")));
-        if (!source.renameTo(target)) throw new FileNotFoundException("Could not rename document");
-        return idFor(target);
-    }
-
-    @Override
-    public boolean isChildDocument(String parentDocumentId, String documentId) {
+    public String createDocument(String parentDocumentId, String mimeType, String displayName) throws FileNotFoundException {
+        File parent = fileFor(parentDocumentId);
+        File file = new File(parent, displayName);
         try {
-            File parent = fileFor(parentDocumentId).getCanonicalFile();
-            File child = fileFor(documentId).getCanonicalFile();
-            return child.toPath().startsWith(parent.toPath());
-        } catch (IOException error) {
-            return false;
-        }
-    }
-
-    private void include(MatrixCursor cursor, String documentId, File knownFile) throws FileNotFoundException {
-        File file = knownFile == null ? fileFor(documentId) : knownFile;
-        if (!file.exists()) throw new FileNotFoundException(documentId);
-        int flags = 0;
-        String mime = mime(file);
-        if (file.isDirectory()) {
-            mime = DocumentsContract.Document.MIME_TYPE_DIR;
-            flags |= DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE |
-                    DocumentsContract.Document.FLAG_SUPPORTS_DELETE |
-                    DocumentsContract.Document.FLAG_SUPPORTS_RENAME;
-        } else {
-            flags |= DocumentsContract.Document.FLAG_SUPPORTS_DELETE |
-                    DocumentsContract.Document.FLAG_SUPPORTS_WRITE;
-        }
-        MatrixCursor.RowBuilder row = cursor.newRow();
-        row.add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, idFor(file));
-        row.add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, file.getName().isEmpty() ? "DonutHLE" : file.getName());
-        row.add(DocumentsContract.Document.COLUMN_MIME_TYPE, mime);
-        row.add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, file.lastModified());
-        row.add(DocumentsContract.Document.COLUMN_FLAGS, flags);
-        row.add(DocumentsContract.Document.COLUMN_SIZE, file.isFile() ? file.length() : null);
-    }
-
-    private File fileFor(String documentId) throws FileNotFoundException {
-        File root = base();
-        if (ROOT_ID.equals(documentId)) return root;
-        if (!documentId.startsWith(ROOT_ID + "/")) throw new FileNotFoundException("Unknown document");
-        String relative = documentId.substring(ROOT_ID.length() + 1);
-        File candidate = new File(root, relative);
-        try {
-            File canonicalRoot = root.getCanonicalFile();
-            File canonicalCandidate = candidate.getCanonicalFile();
-            if (!canonicalCandidate.toPath().startsWith(canonicalRoot.toPath())) {
-                throw new FileNotFoundException("Path escapes root");
+            if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
+                if (!file.mkdirs() && !file.isDirectory()) throw new IOException("Unable to create folder");
+            } else if (!file.createNewFile()) {
+                throw new IOException("File already exists");
             }
-            if (!canonicalCandidate.exists()) throw new FileNotFoundException(documentId);
-            return canonicalCandidate;
         } catch (IOException error) {
             throw new FileNotFoundException(error.getMessage());
         }
+        return idFor(file);
+    }
+
+    private void include(MatrixCursor result, String documentId, File file) {
+        int flags = 0;
+        if (file.isDirectory()) flags |= DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE;
+        if (!ROOT_ID.equals(documentId)) flags |= DocumentsContract.Document.FLAG_SUPPORTS_DELETE;
+        MatrixCursor.RowBuilder row = result.newRow();
+        row.add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, documentId);
+        row.add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, file.getName().isEmpty() ? "DonutHLE" : file.getName());
+        row.add(DocumentsContract.Document.COLUMN_MIME_TYPE, file.isDirectory() ? DocumentsContract.Document.MIME_TYPE_DIR : mimeType(file));
+        row.add(DocumentsContract.Document.COLUMN_FLAGS, flags);
+        row.add(DocumentsContract.Document.COLUMN_SIZE, file.isFile() ? file.length() : null);
+        row.add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, file.lastModified());
+    }
+
+    private File fileFor(String documentId) throws FileNotFoundException {
+        File root = StorageLayout.root(getContext());
+        File file = ROOT_ID.equals(documentId) ? root : new File(root, documentId.replace('/', File.separatorChar));
+        try {
+            String rootPath = root.getCanonicalPath();
+            String filePath = file.getCanonicalPath();
+            if (!filePath.equals(rootPath) && !filePath.startsWith(rootPath + File.separator)) throw new IOException("Outside root");
+        } catch (IOException error) {
+            throw new FileNotFoundException(error.getMessage());
+        }
+        if (!file.exists()) throw new FileNotFoundException(file.toString());
+        return file;
     }
 
     private String idFor(File file) {
-        try {
-            String relative = base().getCanonicalFile().toPath().relativize(file.getCanonicalFile().toPath()).toString();
-            return ROOT_ID + (relative.isEmpty() ? "" : "/" + relative.replace(File.separatorChar, '/'));
-        } catch (IOException error) {
-            return ROOT_ID;
-        }
+        return file.getAbsolutePath().substring(StorageLayout.root(getContext()).getAbsolutePath().length() + 1).replace(File.separatorChar, '/');
     }
 
-    private static File unique(File file) {
-        if (!file.exists()) return file;
-        String name = file.getName();
-        String extension = "";
-        int dot = name.lastIndexOf('.');
-        if (dot > 0) {
-            extension = name.substring(dot);
-            name = name.substring(0, dot);
-        }
-        int index = 2;
-        File result;
-        do {
-            result = new File(file.getParentFile(), name + " (" + index++ + ")" + extension);
-        } while (result.exists());
-        return result;
-    }
-
-    private static boolean deleteRecursively(File file) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) for (File child : children) if (!deleteRecursively(child)) return false;
-        }
-        return file.delete();
-    }
-
-    private static String mime(File file) {
-        String extension = MimeTypeMap.getFileExtensionFromUrl(file.getName()).toLowerCase(Locale.US);
+    private String mimeType(File file) {
+        String extension = MimeTypeMap.getFileExtensionFromUrl(file.getName()).toLowerCase();
         if ("apk".equals(extension)) return "application/vnd.android.package-archive";
         String type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
         return type == null ? "application/octet-stream" : type;
+    }
+
+    private void deleteTree(File file) {
+        File[] children = file.listFiles();
+        if (children != null) for (File child : children) deleteTree(child);
+        file.delete();
     }
 }

@@ -2,10 +2,10 @@ package org.donuthle.android;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.provider.DocumentsContract;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
@@ -14,11 +14,13 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
-import java.util.Locale;
 
 public final class MainActivity extends Activity {
+    private static final int REQUEST_IMPORT_APK = 42;
+
     static {
         System.loadLibrary("donuthle");
     }
@@ -41,7 +43,34 @@ public final class MainActivity extends Activity {
         showHome();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!isFinishing()) showHome();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_IMPORT_APK || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri source = data.getData();
+        try {
+            getContentResolver().takePersistableUriPermission(source, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (SecurityException ignored) {
+        }
+        File imported = StorageLayout.copyApk(this, source);
+        if (imported == null) {
+            Toast.makeText(this, "APK import failed. Check DonutHLE_log.txt", Toast.LENGTH_LONG).show();
+            StorageLayout.appendLog(this, "APK import failed: " + source);
+        } else {
+            StorageLayout.appendLog(this, "APK imported: " + imported.getName());
+            Toast.makeText(this, "Imported " + imported.getName(), Toast.LENGTH_SHORT).show();
+        }
+        showHome();
+    }
+
     private void showHome() {
+        StorageLayout.ensure(this);
         LinearLayout content = column();
         content.setPadding(dp(22), dp(20), dp(22), dp(28));
 
@@ -57,24 +86,34 @@ public final class MainActivity extends Activity {
         TextView title = label("Your games,\nyour sandbox.", 31, text);
         title.setTypeface(null, 1);
         content.addView(title, margins(0, 5, 0, 8));
-        content.addView(label("Place legal APK files in DonutHLE_apps. Each game gets its own writable data folder and log.", 15, muted), margins(0, 0, 0, 22));
+        content.addView(label("Import legal APK files and keep each game's files isolated in its own sandbox.", 15, muted), margins(0, 0, 0, 22));
 
-        content.addView(card("▣", "APK LIBRARY", "Install and manage Android 1.6 games", "Open file storage", v -> openFiles()), margins(0, 0, 0, 10));
-        content.addView(card("⌁", "GAME SANDBOX", "Browse save data and per-game files", "Open sandbox", v -> openFolder(StorageLayout.sandbox(this))), margins(0, 0, 0, 10));
-        content.addView(card("≡", "EMULATOR LOG", "Inspect startup and compatibility reports", "View log", v -> showLog()), margins(0, 0, 0, 10));
+        content.addView(card("▣", "APK LIBRARY", "Import APK files into DonutHLE_apps", "IMPORT APK", v -> importApk()), margins(0, 0, 0, 10));
+        content.addView(card("⌁", "GAME SANDBOX", "Browse save data and per-game files", "OPEN FOLDER", v -> openFolder(StorageLayout.sandbox(this))), margins(0, 0, 0, 10));
+        content.addView(card("≡", "EMULATOR LOG", "Read a valid UTF-8 startup and error trace", "VIEW LOG", v -> showLog()), margins(0, 0, 0, 10));
 
-        TextView paths = label("FILES LIVE IN\n" + StorageLayout.root(this).getAbsolutePath(), 12, muted);
-        paths.setPadding(dp(14), dp(13), dp(14), dp(13));
-        paths.setBackgroundColor(panel);
-        content.addView(paths, margins(0, 12, 0, 18));
+        File[] apks = StorageLayout.apks(this);
+        TextView library = label(apks.length == 0 ? "APK LIBRARY IS EMPTY\nUse IMPORT APK to add a game." : apks.length + " APK" + (apks.length == 1 ? "" : "S") + " READY\n" + apkNames(apks), 13, apks.length == 0 ? muted : text);
+        library.setPadding(dp(14), dp(13), dp(14), dp(13));
+        library.setBackgroundColor(panel);
+        content.addView(library, margins(0, 12, 0, 18));
 
         Button options = button("OPTIONS  ›", false);
-        options.setOnClickListener(v -> openOptions());
+        options.setOnClickListener(v -> showOptions());
         content.addView(options, margins(0, 0, 0, 8));
         Button about = button("ABOUT DONUTHLE  ›", false);
         about.setOnClickListener(v -> showAbout());
         content.addView(about);
         setContentView(scroll(content));
+    }
+
+    private String apkNames(File[] apks) {
+        StringBuilder names = new StringBuilder();
+        for (File apk : apks) {
+            if (names.length() > 0) names.append("\n");
+            names.append("• ").append(apk.getName());
+        }
+        return names.toString();
     }
 
     private View card(String icon, String heading, String description, String action, View.OnClickListener listener) {
@@ -94,36 +133,47 @@ public final class MainActivity extends Activity {
         h.setTypeface(null, 1);
         copy.addView(h);
         copy.addView(label(description, 15, text), margins(0, 3, 0, 0));
+        copy.addView(label(action, 11, muted), margins(0, 7, 0, 0));
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         TextView arrow = label("›", 28, muted);
         row.addView(arrow);
         return row;
     }
 
-    private void openFiles() {
-        StorageLayout.appendLog(this, "Opened APK library");
-        openFolder(StorageLayout.apps(this));
+    private void importApk() {
+        StorageLayout.appendLog(this, "Opening APK picker");
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/vnd.android.package-archive");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+        startActivityForResult(intent, REQUEST_IMPORT_APK);
     }
 
     private void openFolder(File folder) {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        try {
-            startActivity(intent);
-        } catch (Exception error) {
-            startActivity(new Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS));
-        }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.putExtra("android.provider.extra.INITIAL_URI", DocumentsContract.buildRootUri("org.donuthle.android.documents", "donuthle"));
+        startActivity(intent);
     }
 
     private void showLog() {
         StorageLayout.appendLog(this, "Opened emulator log");
-        LinearLayout content = page("EMULATOR LOG", "A readable trace of the current Android shell.");
-        TextView log = label(nativeRuntimeInfo() + "\n\nLog path:\n" + new File(StorageLayout.logs(this), "donuthle.log").getAbsolutePath(), 15, text);
+        LinearLayout content = page("EMULATOR LOG", "UTF-8 trace • " + StorageLayout.logFile(this).getAbsolutePath());
+        TextView log = label(StorageLayout.readLog(this) + "\n" + nativeRuntimeInfo().replace("\\n", "\n"), 14, text);
         log.setTextIsSelectable(true);
+        log.setTypeface(android.graphics.Typeface.MONOSPACE);
         log.setPadding(dp(14), dp(14), dp(14), dp(14));
         log.setBackgroundColor(panel);
         content.addView(log, margins(0, 16, 0, 16));
+        content.addView(button("‹  BACK", true, v -> showHome()));
+        setContentView(scroll(content));
+    }
+
+    private void showOptions() {
+        LinearLayout content = page("OPTIONS", "Settings and file locations");
+        content.addView(label("APK library\n" + StorageLayout.apps(this).getAbsolutePath() + "\n\nGame sandbox\n" + StorageLayout.sandbox(this).getAbsolutePath() + "\n\nLog file\n" + StorageLayout.logFile(this).getAbsolutePath(), 14, text), margins(0, 18, 0, 20));
+        content.addView(button("OPEN APK FOLDER", false, v -> openFolder(StorageLayout.apps(this))), margins(0, 0, 0, 8));
+        content.addView(button("OPEN SANDBOX FOLDER", false, v -> openFolder(StorageLayout.sandbox(this))), margins(0, 0, 0, 8));
+        content.addView(button("OPEN LOG FILE", false, v -> showLog()), margins(0, 0, 0, 8));
         content.addView(button("‹  BACK", true, v -> showHome()));
         setContentView(scroll(content));
     }
@@ -133,16 +183,6 @@ public final class MainActivity extends Activity {
         content.addView(label("The goal is to reproduce the small platform surface used by historical games without distributing Android system images or copyrighted game files.\n\nThis build is an Android shell. Dalvik execution, graphics, audio, input, and APK launch are being developed in stages.", 16, text), margins(0, 18, 0, 20));
         content.addView(button("‹  BACK", true, v -> showHome()));
         setContentView(scroll(content));
-    }
-
-    private void openOptions() {
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.setData(Uri.fromFile(StorageLayout.options(this)));
-        try {
-            startActivity(intent);
-        } catch (Exception error) {
-            showAbout();
-        }
     }
 
     private LinearLayout page(String heading, String description) {
