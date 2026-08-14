@@ -111,9 +111,7 @@ public final class MainActivity extends Activity {
         message.append("Manifest: ").append(report.hasManifest ? "found" : "missing").append("\n");
         message.append("Dalvik classes.dex: ").append(report.hasDex ? "found" : "missing").append("\n");
         message.append("Resources: ").append(report.hasResources ? "found" : "missing").append("\n\n");
-        message.append("
-Rust runtime result:
-").append(nativeLaunchApk(apk.getAbsolutePath()));
+        message.append("\nRust runtime result:\n").append(nativeLaunchApk(apk.getAbsolutePath()));
         showMessage("LAUNCH REPORT", message.toString());
     }
 
