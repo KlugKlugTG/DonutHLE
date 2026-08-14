@@ -1,10 +1,13 @@
 [package]
 name = "donuthle"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Experimental high-level Android 1.6 (Donut) emulator"
 license = "MIT"
 repository = "https://github.com/KlugKlugTG/DonutHLE"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 anyhow = "1"
