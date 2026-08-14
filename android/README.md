@@ -22,4 +22,4 @@ adb shell am start -n org.donuthle.android/.MainActivity
 
 Android Studio can open the `android/` directory directly.
 
-The Gradle wrapper is intentionally not committed yet because this prototype was created in an environment without Java/Gradle. Android Studio will generate/use the wrapper for the installed Gradle version. On CI or a machine with Gradle installed, run `gradle wrapper --gradle-version 8.13` once, then commit the generated wrapper files.
+The repository's GitHub Actions workflow builds this project automatically on pushes, pull requests, and manual runs. It uploads debug/release APK artifacts. To create a release, push a tag such as `v0.1.1` or start the `Build DonutHLE` workflow with `publish_release` enabled.

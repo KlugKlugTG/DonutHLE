@@ -67,3 +67,12 @@ DonutHLE is an independent prototype. It is not affiliated with Google, Android,
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+## GitHub Actions builds
+
+The repository includes a `Build DonutHLE` workflow. It runs Rust tests and linting, builds Android debug and release APKs, builds the Linux binary, uploads artifacts, and can publish a GitHub release.
+
+- Every push and pull request to `main` runs the checks and builds.
+- Use **Actions → Build DonutHLE → Run workflow** to start a build manually.
+- Push a tag such as `v0.1.1` to build and publish a release automatically.
+- Download `DonutHLE-debug.apk` or `DonutHLE-release.apk` from the workflow run's **Artifacts** section.
