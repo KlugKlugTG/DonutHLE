@@ -4,6 +4,7 @@ import android.content.Context;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 final class CompatibilityLog {
@@ -26,8 +27,8 @@ final class CompatibilityLog {
         try {
             ApkCompatibility.Report report = ApkCompatibility.inspect(apk);
             lastReport.add(report.displayText());
-            for (String item : report.unimplemented) StorageLayout.appendLog(context, "UNIMPLEMENTED: " + item);
-            for (String item : report.present) StorageLayout.appendLog(context, "PRESENT: " + item);
+            report.unimplemented.stream().sorted().forEach(item -> StorageLayout.appendLog(context, "UNIMPLEMENTED: " + item));
+            report.present.stream().sorted().forEach(item -> StorageLayout.appendLog(context, "PRESENT: " + item));
             StorageLayout.appendLog(context, "COMPATIBILITY REPORT COMPLETE: " + apk.getName());
         } catch (Exception error) {
             String message = "APK inspection failed: " + error.getMessage();
