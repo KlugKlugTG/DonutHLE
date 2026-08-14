@@ -9,6 +9,7 @@ pub mod input;
 pub mod manifest;
 pub mod resources;
 pub mod runtime;
+pub mod vm;
 
 pub const API_LEVEL: u32 = 4;
 pub const RELEASE: &str = "Donut";
@@ -75,5 +76,54 @@ impl Framebuffer {
     }
     pub fn pixels(&self) -> &[Rgba8] {
         &self.pixels
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framebuffer_clear_and_bounds() {
+        let mut fb = Framebuffer::new(
+            VirtualScreen {
+                width: 2,
+                height: 2,
+            },
+            Rgba8 {
+                r: 1,
+                g: 2,
+                b: 3,
+                a: 255,
+            },
+        );
+        assert!(fb.set_pixel(
+            1,
+            1,
+            Rgba8 {
+                r: 9,
+                g: 8,
+                b: 7,
+                a: 255
+            }
+        ));
+        assert!(!fb.set_pixel(
+            2,
+            1,
+            Rgba8 {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0
+            }
+        ));
+        assert_eq!(fb.pixel(1, 1).unwrap().r, 9);
+        fb.clear(Rgba8 {
+            r: 4,
+            g: 5,
+            b: 6,
+            a: 255,
+        });
+        assert_eq!(fb.pixels()[0].g, 5);
     }
 }

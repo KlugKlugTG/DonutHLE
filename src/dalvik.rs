@@ -16,6 +16,8 @@ pub struct DexFile {
     pub header: DexHeader,
     pub strings: Vec<String>,
     pub types: Vec<String>,
+    pub prototypes: Vec<Prototype>,
+    pub fields: Vec<FieldId>,
     pub methods: Vec<MethodId>,
     pub classes: Vec<ClassDef>,
 }
@@ -25,6 +27,19 @@ pub struct MethodId {
     pub class_name: String,
     pub name: String,
     pub prototype: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prototype {
+    pub shorty: String,
+    pub parameters: Vec<String>,
+    pub return_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldId {
+    pub class_name: String,
+    pub type_name: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +210,8 @@ impl DexFile {
         let strings = parse_strings(&reader, string_ids_size, string_ids_off)?;
         let types = parse_types(&reader, type_ids_size, type_ids_off, &strings)?;
         let protos = parse_protos(&reader, proto_ids_size, proto_ids_off, &strings, &types)?;
+        let fields_size = reader.u32(0x50)? as usize;
+        let fields_off = reader.u32(0x54)? as usize;
         let methods = parse_methods(
             &reader,
             method_ids_size,
@@ -203,6 +220,7 @@ impl DexFile {
             &types,
             &protos,
         )?;
+        let fields = parse_fields(&reader, fields_size, fields_off, &strings, &types)?;
         let classes = parse_classes(
             &reader,
             class_defs_size,
@@ -215,6 +233,8 @@ impl DexFile {
             header,
             strings,
             types,
+            prototypes: protos,
+            fields,
             methods,
             classes,
         })
@@ -228,6 +248,18 @@ impl DexFile {
             .iter()
             .find(|method| method.class_name == class_name && method.name == name)
     }
+    pub fn method_id(&self, index: usize) -> Option<&MethodId> {
+        self.methods.get(index)
+    }
+
+    pub fn field_id(&self, index: usize) -> Option<&FieldId> {
+        self.fields.get(index)
+    }
+
+    pub fn prototype(&self, index: usize) -> Option<&Prototype> {
+        self.prototypes.get(index)
+    }
+
     pub fn method_code(&self, class_name: &str, method_name: &str) -> Option<&CodeItem> {
         let class = self.find_class(class_name)?;
         class
@@ -272,7 +304,7 @@ fn parse_protos(
     offset: usize,
     strings: &[String],
     types: &[String],
-) -> Result<Vec<String>> {
+) -> Result<Vec<Prototype>> {
     let mut values = Vec::with_capacity(count);
     for index in 0..count {
         let shorty = strings
@@ -295,14 +327,43 @@ fn parse_protos(
                 })
                 .collect::<Result<Vec<_>>>()?
         };
-        values.push(format!(
-            "{}({})->{}",
-            shorty,
-            parameters.join(","),
-            return_type
-        ));
+        values.push(Prototype {
+            shorty: shorty.clone(),
+            parameters,
+            return_type: return_type.clone(),
+        });
     }
     Ok(values)
+}
+fn parse_fields(
+    reader: &Reader<'_>,
+    count: usize,
+    offset: usize,
+    strings: &[String],
+    types: &[String],
+) -> Result<Vec<FieldId>> {
+    (0..count)
+        .map(|index| {
+            let base = offset + index * 8;
+            let class_name = types
+                .get(reader.u16(base)? as usize)
+                .context("DEX field class outside type list")?
+                .clone();
+            let type_name = types
+                .get(reader.u16(base + 2)? as usize)
+                .context("DEX field type outside type list")?
+                .clone();
+            let name = strings
+                .get(reader.u32(base + 4)? as usize)
+                .context("DEX field name outside string pool")?
+                .clone();
+            Ok(FieldId {
+                class_name,
+                type_name,
+                name,
+            })
+        })
+        .collect()
 }
 fn parse_methods(
     reader: &Reader<'_>,
@@ -310,7 +371,7 @@ fn parse_methods(
     offset: usize,
     strings: &[String],
     types: &[String],
-    protos: &[String],
+    protos: &[Prototype],
 ) -> Result<Vec<MethodId>> {
     (0..count)
         .map(|index| {
@@ -321,8 +382,13 @@ fn parse_methods(
                 .clone();
             let proto = protos
                 .get(reader.u16(base + 2)? as usize)
-                .context("DEX method prototype outside list")?
-                .clone();
+                .context("DEX method prototype outside list")?;
+            let prototype = format!(
+                "{}({})->{}",
+                proto.shorty,
+                proto.parameters.join(","),
+                proto.return_type
+            );
             let name = strings
                 .get(reader.u32(base + 4)? as usize)
                 .context("DEX method name outside string pool")?
@@ -330,7 +396,7 @@ fn parse_methods(
             Ok(MethodId {
                 class_name,
                 name,
-                prototype: proto,
+                prototype,
             })
         })
         .collect()

@@ -6,11 +6,13 @@ use anyhow::{bail, Context, Result};
 
 use crate::{
     apk,
-    dalvik::{execute, DexFile, DexHeader, ExecutionResult, Registers},
-    framework::{ActivityManager, Intent},
+    dalvik::{DexFile, DexHeader, ExecutionResult},
+    framework::Framework,
+    framework::{ActivityManager, Intent, Value},
     gles::GlesContext,
     manifest::AppManifest,
     resources::ResourceTable,
+    vm::{Value as VmValue, Vm, VmConfig},
     VirtualScreen,
 };
 
@@ -45,6 +47,7 @@ pub struct Runtime {
     pub config: RuntimeConfig,
     pub activities: ActivityManager,
     pub graphics: GlesContext,
+    pub framework: Framework,
 }
 
 impl Default for Runtime {
@@ -54,6 +57,7 @@ impl Default for Runtime {
             graphics: GlesContext::new(config.screen),
             config,
             activities: ActivityManager::default(),
+            framework: Framework::new(),
         }
     }
 }
@@ -102,38 +106,26 @@ impl Runtime {
     }
 
     pub fn launch(&mut self, path: impl AsRef<Path>) -> Result<LaunchReport> {
-        let path = path.as_ref();
-        let report = self.validate_apk(path)?;
-        let file = File::open(path)?;
-        let mut archive = zip::ZipArchive::new(file)?;
-        let dex = DexFile::parse(&read_entry(&mut archive, "classes.dex")?)?;
-        let activity = report.launcher_activity.clone();
-        if activity == "none" {
-            bail!("APK has no launcher activity");
-        }
-        let class_name = format!("L{};", activity.replace('.', "/"));
-        self.activities.start_activity(
-            activity.clone(),
-            Intent {
-                action: Some("android.intent.action.MAIN".to_owned()),
-                categories: vec!["android.intent.category.LAUNCHER".to_owned()],
-                component: Some(activity.clone()),
-            },
-        );
-        if let Some(code) = dex.method_code(&class_name, "onCreate") {
-            let mut registers = Registers::new(code.registers_size as usize);
-            match execute(code, &mut registers, self.config.max_steps)? {
-                ExecutionResult::ReturnVoid
-                | ExecutionResult::Return(_)
-                | ExecutionResult::Continue => {}
-            }
-        }
-        Ok(report)
+        let plan = self.launch_plan(path)?;
+        let state = self.boot(&plan)?;
+        self.activities = state.activities;
+        Ok(LaunchReport {
+            package: plan.package,
+            dex: format!(
+                "{} bytes / {} classes / {} methods",
+                plan.dex.header.file_size,
+                plan.dex.classes.len(),
+                plan.dex.methods.len()
+            ),
+            launcher_activity: plan.activity,
+            message: format!("booted launcher; result: {:?}", state.result),
+        })
     }
 
     pub fn parse_dex(&self, bytes: &[u8]) -> Result<DexHeader> {
         DexHeader::parse(bytes)
     }
+
     pub fn parse_manifest(&self, bytes: &[u8]) -> Result<AppManifest> {
         AppManifest::parse_axml(bytes)
     }
@@ -166,14 +158,7 @@ impl Runtime {
         })
     }
 
-    pub fn boot(&self, plan: &LaunchPlan) -> Result<BootState> {
-        let code = plan
-            .dex
-            .method_code(&plan.class_name, "onCreate")
-            .ok_or_else(|| anyhow::anyhow!("launcher onCreate() has no executable code"))?;
-        let mut registers = Registers::new(code.registers_size as usize);
-        let result = execute(code, &mut registers, 100_000)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    pub fn boot(&mut self, plan: &LaunchPlan) -> Result<BootState> {
         let mut activities = ActivityManager::default();
         activities.start_activity(
             plan.activity.clone(),
@@ -181,10 +166,76 @@ impl Runtime {
                 action: Some("android.intent.action.MAIN".to_owned()),
                 categories: vec!["android.intent.category.LAUNCHER".to_owned()],
                 component: Some(plan.activity.clone()),
+                extras: Default::default(),
             },
         );
+        let result = if plan.entry_method {
+            let mut vm = Vm::new(
+                &plan.dex,
+                std::mem::take(&mut self.framework),
+                VmConfig {
+                    max_steps: self.config.max_steps,
+                    max_call_depth: 256,
+                },
+            );
+            let method_index = plan
+                .dex
+                .methods
+                .iter()
+                .position(|method| {
+                    method.class_name == plan.class_name && method.name == "onCreate"
+                })
+                .ok_or_else(|| anyhow::anyhow!("launcher onCreate method is missing"))?;
+            let value = vm
+                .run_method(method_index, Vec::new())
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            self.framework = vm.framework;
+            match value {
+                VmValue::Void => ExecutionResult::ReturnVoid,
+                VmValue::Int(value) => ExecutionResult::Return(value),
+                VmValue::Null
+                | VmValue::Object(_)
+                | VmValue::Long(_)
+                | VmValue::Float(_)
+                | VmValue::Double(_)
+                | VmValue::String(_) => ExecutionResult::Return(0),
+            }
+        } else {
+            ExecutionResult::ReturnVoid
+        };
         Ok(BootState { result, activities })
     }
+
+    pub fn demo_framework(&mut self) -> FrameworkSnapshot {
+        let mut activities = ActivityManager::default();
+        activities.start_activity(
+            "android.app.Activity".to_owned(),
+            Intent {
+                action: Some("android.intent.action.MAIN".to_owned()),
+                categories: vec!["android.intent.category.LAUNCHER".to_owned()],
+                component: Some("android.app.Activity".to_owned()),
+                extras: [(
+                    "api_level".to_owned(),
+                    Value::Int(self.config.api_level as i32),
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        let lifecycle_events = activities.drain_lifecycle().count();
+        FrameworkSnapshot {
+            activity_count: activities.len(),
+            lifecycle_events,
+            graphics_commands: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameworkSnapshot {
+    pub activity_count: usize,
+    pub lifecycle_events: usize,
+    pub graphics_commands: usize,
 }
 
 #[derive(Debug)]
