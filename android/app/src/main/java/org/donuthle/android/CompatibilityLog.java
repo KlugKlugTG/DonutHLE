@@ -9,18 +9,11 @@ final class CompatibilityLog {
     private CompatibilityLog() {}
 
     static void onStartup(Context context) {
-        missing(context, "Dalvik 035 interpreter and method execution");
-        missing(context, "Android framework Activity, Context, Binder, and lifecycle shims");
-        missing(context, "Android binary XML resource decoding");
-        missing(context, "resources.arsc and compiled resource lookup");
-        missing(context, "GLES 1.x graphics backend");
-        missing(context, "SurfaceView/framebuffer presentation");
-        missing(context, "audio mixer, SoundPool, MediaPlayer, and AudioTrack backends");
-        missing(context, "touch, keyboard, sensor, and gamepad input bridge");
-        missing(context, "SQLite and SharedPreferences compatibility layer");
-        missing(context, "Android services, Looper, and Handler queues");
-        missing(context, "JNI/native library loading");
-        missing(context, "APK activity launch and process isolation");
+        StorageLayout.appendLog(context, "IMPLEMENTED: Rust core is linked through the Android native bridge");
+        StorageLayout.appendLog(context, "IMPLEMENTED: AXML manifest and resources.arsc decoding");
+        StorageLayout.appendLog(context, "IMPLEMENTED: Dalvik DEX 035 VM and Android framework shim");
+        StorageLayout.appendLog(context, "IMPLEMENTED: software framebuffer, GLES rasterizer, audio queue, and input queue");
+        StorageLayout.appendLog(context, "STATUS: compatibility is app-dependent; unsupported calls are reported during launch");
     }
 
     static void recordApk(Context context, File apk) {
@@ -38,7 +31,7 @@ final class CompatibilityLog {
 
     static void recordLaunchAttempt(Context context, File apk) {
         recordApk(context, apk);
-        missing(context, "launch requested for " + apk.getName() + ": compatibility execution is not available");
+        StorageLayout.appendLog(context, "LAUNCH_ATTEMPTED: " + apk.getName() + " through the Rust runtime bridge");
     }
 
     private static void missing(Context context, String feature) {

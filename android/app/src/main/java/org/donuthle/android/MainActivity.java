@@ -21,6 +21,7 @@ import java.io.IOException;
 public final class MainActivity extends Activity {
     static { System.loadLibrary("donuthle"); }
     private native String nativeRuntimeInfo();
+    private native String nativeLaunchApk(String path);
     private static final int PICK_APK = 42;
     private final int teal = Color.rgb(128, 203, 196);
     private final int text = Color.rgb(232, 240, 242);
@@ -110,7 +111,9 @@ public final class MainActivity extends Activity {
         message.append("Manifest: ").append(report.hasManifest ? "found" : "missing").append("\n");
         message.append("Dalvik classes.dex: ").append(report.hasDex ? "found" : "missing").append("\n");
         message.append("Resources: ").append(report.hasResources ? "found" : "missing").append("\n\n");
-        message.append("Execution is not available yet. The inspection results and required compatibility features were written to DonutHLE_log.txt.");
+        message.append("
+Rust runtime result:
+").append(nativeLaunchApk(apk.getAbsolutePath()));
         showMessage("LAUNCH REPORT", message.toString());
     }
 

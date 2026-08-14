@@ -79,6 +79,51 @@ impl Framebuffer {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
+    c"Rust DonutHLE core: APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
+}
+
+/// # Safety
+///
+/// `path` must be a valid, NUL-terminated C string for the lifetime of this call.
+#[no_mangle]
+pub unsafe extern "C" fn donuthle_launch_report(
+    path: *const std::os::raw::c_char,
+) -> *mut std::os::raw::c_char {
+    let result = if path.is_null() {
+        Err(anyhow::anyhow!("APK path is null"))
+    } else {
+        let path = unsafe { std::ffi::CStr::from_ptr(path) };
+        match path.to_str() {
+            Ok(path) => runtime::Runtime::default().launch(path).map(|report| {
+                format!(
+                    "{}\nLauncher: {}\n{}",
+                    report.message, report.launcher_activity, report.dex
+                )
+            }),
+            Err(error) => Err(anyhow::anyhow!("APK path is not UTF-8: {error}")),
+        }
+    };
+    let message = match result {
+        Ok(message) => message,
+        Err(error) => format!("Runtime error: {error}"),
+    };
+    std::ffi::CString::new(message)
+        .unwrap_or_else(|_| std::ffi::CString::new("Runtime returned an invalid message").unwrap())
+        .into_raw()
+}
+
+/// # Safety
+///
+/// `value` must be a pointer returned by `donuthle_launch_report` and must not be freed twice.
+#[no_mangle]
+pub unsafe extern "C" fn donuthle_free_string(value: *mut std::os::raw::c_char) {
+    if !value.is_null() {
+        drop(std::ffi::CString::from_raw(value));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/KlugKlugTG/DonutHLE"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 anyhow = "1"
