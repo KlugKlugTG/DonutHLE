@@ -104,13 +104,13 @@ public final class MainActivity extends Activity {
         try { report = ApkCompatibility.inspect(apk); }
         catch (IOException error) { Toast.makeText(this, "Cannot read APK: " + error.getMessage(), Toast.LENGTH_LONG).show(); return; }
         StringBuilder message = new StringBuilder();
-        message.append("APK accepted for inspection\n\n");
+        message.append("APK inspection complete\n\n");
         message.append("File: ").append(report.fileName).append("\n");
         message.append("Size: ").append(formatBytes(report.fileSize)).append("\n");
         message.append("Manifest: ").append(report.hasManifest ? "found" : "missing").append("\n");
         message.append("Dalvik classes.dex: ").append(report.hasDex ? "found" : "missing").append("\n");
         message.append("Resources: ").append(report.hasResources ? "found" : "missing").append("\n\n");
-        message.append("The real game loop is not available yet. All known compatibility gaps were written to DonutHLE_log.txt.");
+        message.append("Execution is not available yet. The inspection results and required compatibility features were written to DonutHLE_log.txt.");
         showMessage("LAUNCH REPORT", message.toString());
     }
 

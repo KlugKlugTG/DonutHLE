@@ -38,7 +38,7 @@ final class CompatibilityLog {
 
     static void recordLaunchAttempt(Context context, File apk) {
         recordApk(context, apk);
-        missing(context, "launch requested for " + apk.getName() + ": Dalvik execution/render loop is not available");
+        missing(context, "launch requested for " + apk.getName() + ": compatibility execution is not available");
     }
 
     private static void missing(Context context, String feature) {

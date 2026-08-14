@@ -1,8 +1,16 @@
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
-use crate::{apk, dalvik::DexHeader, manifest::AppManifest, VirtualScreen, API_LEVEL, RELEASE};
+use crate::{
+    apk,
+    dalvik::{DexFile, DexHeader},
+    manifest::AppManifest,
+    resources::ResourceTable,
+    VirtualScreen, API_LEVEL, RELEASE,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
@@ -25,6 +33,7 @@ impl Default for RuntimeConfig {
 pub struct LaunchReport {
     pub package: String,
     pub dex: String,
+    pub launcher_activity: String,
     pub message: String,
 }
 
@@ -35,6 +44,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn validate_apk(&self, path: impl AsRef<Path>) -> Result<LaunchReport> {
+        let path = path.as_ref();
         let info = apk::inspect(path)?;
         if !info.has_manifest {
             bail!("APK has no AndroidManifest.xml");
@@ -42,20 +52,54 @@ impl Runtime {
         if !info.has_dex {
             bail!("APK has no classes.dex");
         }
+        let file = File::open(path).with_context(|| format!("open APK {}", path.display()))?;
+        let mut archive = zip::ZipArchive::new(file)?;
+        let manifest_bytes = {
+            let mut entry = archive.by_name("AndroidManifest.xml")?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            bytes
+        };
+        let dex_bytes = {
+            let mut entry = archive.by_name("classes.dex")?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            bytes
+        };
+        let manifest = AppManifest::parse_axml(&manifest_bytes)?;
+        let dex = DexFile::parse(&dex_bytes)?;
+        let resource_status = if info.entries.iter().any(|entry| entry == "resources.arsc") {
+            let mut entry = archive.by_name("resources.arsc")?;
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            ResourceTable::parse(&bytes)
+                .map(|table| format!("{} resources", table.values.len()))
+                .unwrap_or_else(|_| "present but not decoded".to_owned())
+        } else {
+            "not present".to_owned()
+        };
+        let launcher = manifest
+            .launcher_activity
+            .clone()
+            .unwrap_or_else(|| "none".to_owned());
         Ok(LaunchReport {
-            package: "unknown until AXML decoder is implemented".to_owned(),
-            dex: info
-                .dex_size
-                .map(|size| format!("{size} bytes"))
-                .unwrap_or_else(|| "missing".to_owned()),
-            message: "package structure accepted; launcher is not implemented yet".to_owned(),
+            package: manifest.package,
+            launcher_activity: launcher.clone(),
+            dex: format!(
+                "{} bytes / {} classes / {} methods",
+                dex.header.file_size,
+                dex.classes.len(),
+                dex.methods.len()
+            ),
+            message: format!(
+                "manifest decoded; launcher: {launcher}; resources: {resource_status}"
+            ),
         })
     }
 
     pub fn launch(&self, path: impl AsRef<Path>) -> Result<()> {
         let report = self.validate_apk(path)?;
-        let _ = (&self.config, report);
-        bail!("launch pipeline is not implemented yet: next milestone is AXML + Dalvik")
+        bail!("APK parsed successfully but execution needs Android framework bindings and a host render loop: {}", report.message)
     }
 
     pub fn parse_dex(&self, bytes: &[u8]) -> Result<DexHeader> {
