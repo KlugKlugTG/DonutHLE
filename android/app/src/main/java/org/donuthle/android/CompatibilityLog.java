@@ -2,44 +2,35 @@ package org.donuthle.android;
 
 import android.content.Context;
 
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 final class CompatibilityLog {
-    private static final List<String> lastReport = new ArrayList<>();
     private CompatibilityLog() {}
 
-    static void recordStartup(Context context) {
-        StorageLayout.appendLog(context, "COMPATIBILITY: Android 1.6 API level 4 target");
-        StorageLayout.appendLog(context, "UNIMPLEMENTED: Dalvik interpreter execution");
-        StorageLayout.appendLog(context, "UNIMPLEMENTED: binary AXML manifest decoding");
-        StorageLayout.appendLog(context, "UNIMPLEMENTED: Android framework HLE (Activity, Context, Looper, Binder, services)");
+    static void sessionStart(Context context, String fileName) {
+        StorageLayout.appendLog(context, "SESSION_START: " + fileName);
+        StorageLayout.appendLog(context, "UNIMPLEMENTED: Android framework API bridge (Context/Activity lifecycle)");
+        StorageLayout.appendLog(context, "UNIMPLEMENTED: Dalvik 035 interpreter and Java method execution");
+        StorageLayout.appendLog(context, "UNIMPLEMENTED: Android binary XML resource decoding");
+        StorageLayout.appendLog(context, "UNIMPLEMENTED: resources.arsc and drawable/resource table loading");
         StorageLayout.appendLog(context, "UNIMPLEMENTED: GLES 1.x graphics backend");
         StorageLayout.appendLog(context, "UNIMPLEMENTED: audio mixer/backend");
-        StorageLayout.appendLog(context, "UNIMPLEMENTED: game input event bridge");
-        StorageLayout.appendLog(context, "UNIMPLEMENTED: JNI/native library execution");
+        StorageLayout.appendLog(context, "UNIMPLEMENTED: Android input/event bridge");
+        StorageLayout.appendLog(context, "UNIMPLEMENTED: Activity launch and package class loader");
     }
 
-    static void inspectApk(Context context, File apk) {
-        lastReport.clear();
-        try {
-            ApkCompatibility.Report report = ApkCompatibility.inspect(apk);
-            lastReport.add(report.displayText());
-            for (String item : report.unimplemented) StorageLayout.appendLog(context, "UNIMPLEMENTED: " + item);
-            for (String item : report.present) StorageLayout.appendLog(context, "PRESENT: " + item);
-            StorageLayout.appendLog(context, "COMPATIBILITY REPORT COMPLETE: " + apk.getName());
-        } catch (Exception error) {
-            String message = "APK inspection failed: " + error.getMessage();
-            lastReport.add(message);
-            StorageLayout.appendLog(context, "UNIMPLEMENTED/ERROR: " + message);
-        }
+    static void apkInventory(Context context, String fileName) {
+        StorageLayout.appendLog(context, "APK_SCAN: " + fileName);
+        StorageLayout.appendLog(context, "REQUESTED: package manifest, classes.dex, resources.arsc and native libraries");
     }
 
-    static String statusText() {
-        if (lastReport.isEmpty()) return "No APK compatibility scan has been run in this session.";
-        StringBuilder result = new StringBuilder("\n== LAST APK SCAN ==\n");
-        for (String item : lastReport) result.append(item).append('\n');
-        return result.toString();
+    static void record(Context context, String category, String detail) {
+        StorageLayout.appendLog(context, "REQUESTED[" + category + "]: " + detail);
+        StorageLayout.appendLog(context, "UNIMPLEMENTED[" + category + "]: compatibility handler is not implemented");
+    }
+
+    static void unsupported(Context context, String feature) {
+        StorageLayout.appendLog(context, "UNIMPLEMENTED: " + feature);
     }
 }
