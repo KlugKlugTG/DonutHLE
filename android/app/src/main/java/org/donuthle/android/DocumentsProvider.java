@@ -5,7 +5,6 @@ import android.database.MatrixCursor;
 import android.os.CancellationSignal;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
-import android.provider.DocumentsProvider;
 import android.webkit.MimeTypeMap;
 
 import java.io.File;
