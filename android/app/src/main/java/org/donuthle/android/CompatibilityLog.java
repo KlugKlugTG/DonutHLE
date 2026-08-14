@@ -1,49 +1,51 @@
 package org.donuthle.android;
 
 import android.content.Context;
-import java.util.LinkedHashSet;
-import java.util.Set;
+
+import java.io.File;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
 
 final class CompatibilityLog {
     private CompatibilityLog() {}
 
-    static void startup(Context context) {
-        StorageLayout.appendLog(context, "COMPATIBILITY: Android 1.6 / API 4 HLE prototype");
-        missing(context, "Dalvik 035 interpreter and bytecode execution");
-        missing(context, "Android binary XML manifest/resource decoding");
-        missing(context, "resources.arsc resource table and AssetManager parity");
-        missing(context, "Android framework Activity/Context/View runtime");
-        missing(context, "GLES 1.x graphics backend and framebuffer");
-        missing(context, "AudioTrack/MediaPlayer audio backend");
-        missing(context, "Touch, keyboard, gamepad, and sensor event bridge");
+    static void onStartup(Context context) {
+        missing(context, "Dalvik 035 interpreter and method execution");
+        missing(context, "Android framework Activity, Context, Binder, and lifecycle shims");
+        missing(context, "Android binary XML resource decoding");
+        missing(context, "resources.arsc and compiled resource lookup");
+        missing(context, "GLES 1.x graphics backend");
+        missing(context, "SurfaceView/framebuffer presentation");
+        missing(context, "audio mixer, SoundPool, MediaPlayer, and AudioTrack backends");
+        missing(context, "touch, keyboard, sensor, and gamepad input bridge");
         missing(context, "SQLite and SharedPreferences compatibility layer");
-        missing(context, "Android services, lifecycle, Looper, and Binder shims");
-        missing(context, "Network policy and legacy Android permissions");
+        missing(context, "Android services, Looper, and Handler queues");
+        missing(context, "JNI/native library loading");
+        missing(context, "APK activity launch and process isolation");
     }
 
-    static void apkScan(Context context, ApkCompatibility.Report report) {
-        StorageLayout.appendLog(context, "APK_SCAN: " + report.fileName + " (" + report.fileSize + " bytes)");
-        for (String item : report.missing) missing(context, "APK requested " + item);
-        for (String item : report.requested) requested(context, item);
-        if (report.manifest != null) StorageLayout.appendLog(context, "MANIFEST: package=" + report.manifest.packageName + ", launcher=" + report.manifest.launcherActivity);
+    static void recordApk(Context context, File apk) {
+        try {
+            ApkCompatibility.Report report = ApkCompatibility.inspect(apk);
+            StorageLayout.appendLog(context, "APK_SCAN: " + report.fileName + " (" + report.fileSize + " bytes)");
+            StorageLayout.appendLog(context, "APK_CONTENT: manifest=" + report.hasManifest + " dex=" + report.hasDex + " resources=" + report.hasResources);
+            for (String gap : report.gaps) missing(context, "APK requires " + gap);
+            for (String gap : report.requestedGaps) missing(context, "APK references " + gap);
+            if (report.requestedGaps.isEmpty()) StorageLayout.appendLog(context, "APK_REQUESTS: no known framework references detected in classes.dex");
+        } catch (IOException error) {
+            missing(context, "APK inspection failed: " + error.getMessage());
+        }
     }
 
-    static void launchAttempt(Context context, String name) {
-        StorageLayout.appendLog(context, "LAUNCH_REQUEST: " + name);
-        missing(context, "full Dalvik execution pipeline for this game");
-        missing(context, "native library loading (lib/*.so) and JNI registration");
-        missing(context, "real Android activity launch and rendering");
+    static void recordLaunchAttempt(Context context, File apk) {
+        recordApk(context, apk);
+        missing(context, "launch requested for " + apk.getName() + ": Dalvik execution/render loop is not available");
     }
 
-    static void missing(Context context, String feature) {
+    private static void missing(Context context, String feature) {
         StorageLayout.appendLog(context, "UNIMPLEMENTED: " + feature);
-    }
-
-    static void requested(Context context, String feature) {
-        StorageLayout.appendLog(context, "GAME_REQUESTED: " + feature);
-    }
-
-    static void error(Context context, String message) {
-        StorageLayout.appendLog(context, "ERROR: " + message);
     }
 }
