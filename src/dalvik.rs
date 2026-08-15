@@ -282,6 +282,24 @@ impl DexFile {
         }
     }
 
+    pub fn method_code_by_index(&self, index: usize) -> Option<&CodeItem> {
+        let method = self.methods.get(index)?;
+        self.method_code(&method.class_name, &method.name)
+    }
+
+    pub fn method_access_flags(&self, index: usize) -> Option<u32> {
+        self.classes
+            .iter()
+            .flat_map(|class| {
+                class
+                    .direct_methods
+                    .iter()
+                    .chain(class.virtual_methods.iter())
+            })
+            .find(|method| method.method_index as usize == index)
+            .map(|method| method.access_flags)
+    }
+
     fn direct_method_code(&self, class_name: &str, method_name: &str) -> Option<&CodeItem> {
         let class = self.find_class(class_name)?;
         class

@@ -145,19 +145,23 @@ impl<'a> Vm<'a> {
         {
             return self.dispatch_framework(&method.class_name, &method.name, &args);
         }
-        let code = self
-            .method_code_by_index(method_index)
-            .ok_or_else(|| {
-                self.error(
+        let code = match self.dex.method_code_by_index(method_index) {
+            Some(code) => code.clone(),
+            None => {
+                let flags = self.dex.method_access_flags(method_index).unwrap_or(0);
+                if flags & (0x0100 | 0x0400) != 0 {
+                    return Ok(Value::Void);
+                }
+                return Err(self.error(
                     0,
                     0,
                     format!(
                         "method {} has no code (abstract/native methods are not executable)",
                         method.name
                     ),
-                )
-            })?
-            .clone();
+                ));
+            }
+        };
         self.call_depth += 1;
         let result = self.execute_code(&code, args);
         self.call_depth -= 1;
@@ -700,7 +704,13 @@ impl<'a> Vm<'a> {
             return Ok(Value::Void);
         }
         if class_name == "Ljava/lang/Class;" && method_name == "forName" {
-            let requested = string_arg(args, 0)?;
+            let requested = string_arg(args, 0).map_err(|error| {
+                self.error(
+                    error.pc,
+                    error.opcode,
+                    "Class.forName expects a java.lang.String argument",
+                )
+            })?;
             let descriptor = if requested.starts_with('L') && requested.ends_with(';') {
                 requested
             } else {
@@ -911,11 +921,6 @@ impl<'a> Vm<'a> {
         let id = self.heap.len() as ObjectId;
         self.heap.push(object);
         id
-    }
-
-    fn method_code_by_index(&self, index: usize) -> Option<&CodeItem> {
-        let method = self.dex.method_id(index)?;
-        self.dex.method_code(&method.class_name, &method.name)
     }
 
     fn error(&self, pc: usize, opcode: u8, message: impl Into<String>) -> VmError {
