@@ -183,7 +183,13 @@ impl<'a> Vm<'a> {
         self.call_depth += 1;
         let result = self.execute_code(&code, args);
         self.call_depth -= 1;
-        result
+        result.map_err(|mut error| {
+            error.message = format!(
+                "{} in {}->{}",
+                error.message, method.class_name, method.name
+            );
+            error
+        })
     }
 
     fn execute_code(&mut self, code: &CodeItem, args: Vec<Value>) -> Result<Value, VmError> {
@@ -463,8 +469,13 @@ impl<'a> Vm<'a> {
                     let (left, right) = two_registers(instruction);
                     let left = get_register(&registers, left, pc, opcode)?;
                     let right = get_register(&registers, right, pc, opcode)?;
-                    let equal = values_equal(&left, &right);
-                    let take = if opcode.is_multiple_of(2) {
+                    let equal = match (opcode, &left, &right) {
+                        (0x32 | 0x33, Value::Object(a), Value::Object(b)) => a == b,
+                        (0x34 | 0x35, Value::Int(a), Value::Int(b)) => a == b,
+                        (0x36 | 0x37, Value::Int(a), Value::Int(b)) => a < b,
+                        _ => values_equal(&left, &right),
+                    };
+                    let take = if opcode == 0x32 || opcode == 0x34 || opcode == 0x36 {
                         equal
                     } else {
                         !equal
@@ -1189,7 +1200,7 @@ fn branch_target(
         return Err(VmError {
             pc: at,
             opcode,
-            message: "branch target outside code".to_owned(),
+            message: format!("branch target outside code: pc={pc} offset={offset} target={target} len={len}"),
         });
     }
     Ok(target as usize)
