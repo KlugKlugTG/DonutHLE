@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::dalvik::{CodeItem, DexFile};
 use crate::framework::{Framework, FrameworkCall, FrameworkResult, Value as FrameworkValue};
+use crate::Rgba8;
 
 pub type ObjectId = u32;
 
@@ -141,8 +142,15 @@ impl<'a> Vm<'a> {
             .clone();
         let framework_class = method.class_name.starts_with("Landroid/")
             || method.class_name.starts_with("Ljava/")
-            || method.class_name.starts_with("Ldalvik/");
+            || method.class_name.starts_with("Ldalvik/")
+            || method.class_name.starts_with("Lcom/badlogic/gdx/");
         if framework_class {
+            if method.class_name.starts_with("Lcom/badlogic/gdx/") {
+                if method.name == "<init>" {
+                    return Ok(Value::Void);
+                }
+                return self.dispatch_gdx(&method.class_name, &method.name, &args);
+            }
             if let Some(code) = self.dex.method_code_by_index(method_index).cloned() {
                 self.call_depth += 1;
                 let result = self.execute_code(&code, args);
@@ -385,6 +393,29 @@ impl<'a> Vm<'a> {
                         opcode,
                     )?;
                     pc += if opcode == 0x1a { 2 } else { 3 };
+                }
+                0x1c => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    let type_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let class_name = self
+                        .dex
+                        .types
+                        .get(type_index)
+                        .cloned()
+                        .ok_or_else(|| self.error(pc, opcode, "class type index is invalid"))?;
+                    let object = self.alloc(HeapObject::Class(class_name));
+                    set_register(
+                        &mut registers,
+                        register,
+                        Value::Object(object),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 2;
+                }
+                0x1d | 0x1e => {
+                    pc += 1;
                 }
                 0x1f => {
                     let register = ((instruction >> 8) & 0xff) as usize;
@@ -851,7 +882,11 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
-        if method_name == "<init>" {
+        if method_name == "<init>"
+            && (class_name.starts_with("Lcom/badlogic/gdx/")
+                || class_name.starts_with("Landroid/")
+                || class_name.starts_with("Ljava/"))
+        {
             return Ok(Value::Void);
         }
         if class_name == "Landroid/app/Activity;"
@@ -869,8 +904,43 @@ impl<'a> Vm<'a> {
         {
             return Ok(Value::Void);
         }
+        if class_name.starts_with("Lcom/badlogic/gdx/") {
+            return self.dispatch_gdx(class_name, method_name, args);
+        }
+        if class_name == "Ljava/lang/Object;" {
+            return match method_name {
+                "<init>" => Ok(Value::Void),
+                "equals" => Ok(Value::Int(i32::from(args.first() == args.get(1)))),
+                "getClass" => {
+                    let class = match args.first() {
+                        Some(Value::Object(id)) => match self.heap_object(*id) {
+                            Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
+                            Some(HeapObject::Class(class_name)) => class_name.clone(),
+                            _ => "Ljava/lang/Object;".to_owned(),
+                        },
+                        _ => "Ljava/lang/Object;".to_owned(),
+                    };
+                    Ok(Value::Object(self.alloc(HeapObject::Class(class))))
+                }
+                "toString" => Ok(Value::String(String::new())),
+                _ => Ok(Value::Void),
+            };
+        }
+
+        if class_name == "Ljava/lang/Class;"
+            && matches!(method_name, "getMethod" | "getDeclaredMethod")
+        {
+            object_arg(args, 0)?;
+            return Ok(Value::Object(
+                self.alloc_instance("Ljava/lang/reflect/Method;"),
+            ));
+        }
+        if class_name == "Ljava/lang/reflect/Method;" && method_name == "invoke" {
+            object_arg(args, 0)?;
+            return Ok(Value::Null);
+        }
         if class_name == "Ljava/lang/Class;" && method_name == "forName" {
-            let requested = string_arg(args, 0).or_else(|_| {
+            let requested = self.string_arg(args, 0).or_else(|_| {
                 args.iter()
                     .find_map(|value| match value {
                         Value::String(value) => Some(Ok(value.clone())),
@@ -934,10 +1004,12 @@ impl<'a> Vm<'a> {
             ("Landroid/widget/TextView;", "setText") => {
                 self.framework_call(FrameworkCall::SetViewText {
                     view: object_arg(args, 0)?,
-                    text: string_arg(args, 1)?,
+                    text: self.string_arg(args, 1)?,
                 })?
             }
-            ("Landroid/view/ViewGroup;", "addView") => {
+            ("Landroid/view/ViewGroup;", "addView")
+            | ("Landroid/widget/RelativeLayout;", "addView")
+            | ("Landroid/widget/FrameLayout;", "addView") => {
                 self.framework_call(FrameworkCall::AddView {
                     parent: object_arg(args, 0)?,
                     child: object_arg(args, 1)?,
@@ -961,23 +1033,31 @@ impl<'a> Vm<'a> {
             | ("Landroid/util/Log;", "e")
             | ("Landroid/util/Log;", "v") => self.framework_call(FrameworkCall::Log {
                 priority: 0,
-                tag: string_arg(args, 0)?,
-                message: string_arg(args, 1)?,
+                tag: self.string_arg(args, 0)?,
+                message: self.string_arg(args, 1)?,
             })?,
             ("Landroid/widget/Toast;", "makeText") => {
                 self.framework_call(FrameworkCall::Toast {
-                    text: string_arg(args, 1)?,
+                    text: self.string_arg(args, 1)?,
                     duration: int_arg(args, 2)?,
                 })?;
                 FrameworkResult::Object(self.alloc_instance("Landroid/widget/Toast;"))
             }
             ("Landroid/widget/Toast;", "show") => FrameworkResult::Void,
+            ("Landroid/app/ProgressDialog;", "setCancelable")
+            | ("Landroid/app/Dialog;", "setCancelable")
+            | ("Landroid/app/Dialog;", "show")
+            | ("Landroid/app/Dialog;", "dismiss")
+            | ("Landroid/app/Dialog;", "cancel") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Void
+            }
             ("Landroid/content/Context;", "getString") => {
                 FrameworkResult::String(self.framework_string(int_arg(args, 1)?)?)
             }
             ("Landroid/content/Context;", "getSystemService") => {
                 self.framework_call(FrameworkCall::GetSystemService {
-                    name: string_arg(args, 1)?,
+                    name: self.string_arg(args, 1)?,
                 })?
             }
             ("Landroid/content/Context;", "getSharedPreferences") => {
@@ -989,15 +1069,15 @@ impl<'a> Vm<'a> {
             ("Landroid/content/SharedPreferences;", "getString") => {
                 self.framework_call(FrameworkCall::SharedPreferencesGetString {
                     prefs: object_arg(args, 0)?,
-                    key: string_arg(args, 1)?,
-                    default: string_arg(args, 2)?,
+                    key: self.string_arg(args, 1)?,
+                    default: self.string_arg(args, 2)?,
                 })?
             }
             ("Landroid/content/SharedPreferences$Editor;", "putString") => {
                 self.framework_call(FrameworkCall::SharedPreferencesPutString {
                     prefs: object_arg(args, 0)?,
-                    key: string_arg(args, 1)?,
-                    value: string_arg(args, 2)?,
+                    key: self.string_arg(args, 1)?,
+                    value: self.string_arg(args, 2)?,
                 })?
             }
             ("Landroid/content/SharedPreferences$Editor;", "commit")
@@ -1055,8 +1135,19 @@ impl<'a> Vm<'a> {
             ("Ljava/lang/System;", "currentTimeMillis") => FrameworkResult::Long(0),
             ("Ljava/lang/System;", "arraycopy") => FrameworkResult::Void,
             ("Ljava/lang/Thread;", "sleep") => FrameworkResult::Void,
+            ("Ljava/lang/Object;", "getClass") => {
+                let object = object_arg(args, 0)?;
+                let class_name = match self.heap_object(object) {
+                    Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
+                    Some(HeapObject::Class(class_name)) => class_name.clone(),
+                    Some(HeapObject::String(_)) => "Ljava/lang/String;".to_owned(),
+                    Some(HeapObject::Array { component, .. }) => format!("[{}", component),
+                    _ => "Ljava/lang/Object;".to_owned(),
+                };
+                FrameworkResult::Object(self.alloc(HeapObject::Class(class_name)))
+            }
             ("Ljava/lang/Integer;", "parseInt") => {
-                let text = string_arg(args, 0)?;
+                let text = self.string_arg(args, 0)?;
                 let radix = match args.get(1) {
                     Some(Value::Int(value)) => *value,
                     _ => 10,
@@ -1067,7 +1158,7 @@ impl<'a> Vm<'a> {
             }
             ("Ljava/lang/Integer;", "valueOf") => FrameworkResult::Int(int_arg(args, 0)?),
             ("Ljava/lang/Boolean;", "parseBoolean") => {
-                FrameworkResult::Bool(string_arg(args, 0)?.eq_ignore_ascii_case("true"))
+                FrameworkResult::Bool(self.string_arg(args, 0)?.eq_ignore_ascii_case("true"))
             }
             ("Ljava/lang/Math;", "round") => {
                 let value = match args.first() {
@@ -1080,7 +1171,7 @@ impl<'a> Vm<'a> {
                 FrameworkResult::Int(value)
             }
             ("Ljava/lang/Class;", "forName") => {
-                let name = string_arg(args, 0)?;
+                let name = self.string_arg(args, 0)?;
                 let descriptor = if name.starts_with('L') && name.ends_with(';') {
                     name.clone()
                 } else {
@@ -1174,10 +1265,288 @@ impl<'a> Vm<'a> {
         })
     }
 
+    fn dispatch_gdx(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        let result = match (class_name, method_name) {
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "initializeForView") => {
+                let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
+                self.framework.gdx_view = Some(view);
+                self.framework.gdx_listener = args.get(1).and_then(|value| match value {
+                    Value::Object(id) => Some(*id),
+                    _ => None,
+                });
+                self.framework.surface_size = (320, 480);
+                self.framework
+                    .surface_events
+                    .push(format!("created:{view}"));
+                self.framework
+                    .surface_events
+                    .push(format!("changed:{view}:0:320x480"));
+                FrameworkResult::Object(view)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidGraphics;", "getView") => {
+                let view = self.framework.gdx_view.unwrap_or_else(|| {
+                    let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
+                    self.framework.gdx_view = Some(view);
+                    view
+                });
+                FrameworkResult::Object(view)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getWindow") => {
+                FrameworkResult::Object(self.alloc_instance("Landroid/view/Window;"))
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getInput") => {
+                let value = self.framework.gdx_input.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Input;");
+                    self.framework.gdx_input = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getAudio") => {
+                let value = self.framework.gdx_audio.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Audio;");
+                    self.framework.gdx_audio = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getFiles") => {
+                let value = self.framework.gdx_files.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Files;");
+                    self.framework.gdx_files = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getGraphics") => {
+                let value = self.framework.gdx_graphics.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Graphics;");
+                    self.framework.gdx_graphics = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getAssets") => {
+                FrameworkResult::Object(self.alloc_instance("Landroid/content/res/AssetManager;"))
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "createWakeLock")
+            | ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "onCreate")
+            | ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "postRunnable")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "create")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "resize")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "render")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "pause")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "resume")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Graphics;", "getWidth") => {
+                FrameworkResult::Int(self.framework.surface_size.0)
+            }
+            ("Lcom/badlogic/gdx/Graphics;", "getHeight") => {
+                FrameworkResult::Int(self.framework.surface_size.1)
+            }
+            ("Lcom/badlogic/gdx/Graphics;", "getDeltaTime") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/Graphics;", "getFramesPerSecond") => FrameworkResult::Int(60),
+            ("Lcom/badlogic/gdx/Graphics;", "getGL10")
+            | ("Lcom/badlogic/gdx/Graphics;", "getGLCommon") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/GL10;"))
+            }
+            ("Lcom/badlogic/gdx/Input;", "isTouched") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Input;", "isKeyPressed") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Input;", "setInputProcessor") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Files;", "internal")
+            | ("Lcom/badlogic/gdx/Files;", "external")
+            | ("Lcom/badlogic/gdx/Files;", "local") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/files/FileHandle;"))
+            }
+            ("Lcom/badlogic/gdx/files/FileHandle;", "exists") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/files/FileHandle;", "length") => FrameworkResult::Long(0),
+            ("Lcom/badlogic/gdx/files/FileHandle;", "readBytes") => FrameworkResult::Object(0),
+            ("Lcom/badlogic/gdx/files/FileHandle;", "readString") => {
+                FrameworkResult::String(String::new())
+            }
+            ("Lcom/badlogic/gdx/audio/Sound;", "play")
+            | ("Lcom/badlogic/gdx/audio/Sound;", "loop")
+            | ("Lcom/badlogic/gdx/audio/Sound;", "stop") => FrameworkResult::Long(0),
+            ("Lcom/badlogic/gdx/audio/Music;", "play")
+            | ("Lcom/badlogic/gdx/audio/Music;", "stop")
+            | ("Lcom/badlogic/gdx/audio/Music;", "setLooping")
+            | ("Lcom/badlogic/gdx/audio/Music;", "dispose")
+            | ("Lcom/badlogic/gdx/audio/Music;", "setVolume") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/audio/Music;", "isPlaying") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/audio/Sound;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/Texture;", "dispose")
+            | ("Lcom/badlogic/gdx/graphics/Texture;", "setFilter")
+            | ("Lcom/badlogic/gdx/graphics/Texture;", "setWrap") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/Texture;", "getWidth")
+            | ("Lcom/badlogic/gdx/graphics/Texture;", "getHeight") => FrameworkResult::Int(256),
+            ("Lcom/badlogic/gdx/Application;", "getType") => FrameworkResult::Object(0),
+            ("Lcom/badlogic/gdx/Application;", "getAudio") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Audio;"))
+            }
+            ("Lcom/badlogic/gdx/Application;", "getGraphics") => {
+                let value = self.framework.gdx_graphics.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Graphics;");
+                    self.framework.gdx_graphics = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/Application;", "log") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glClearColor")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glClearColor") => {
+                let color = Rgba8 {
+                    r: (float_arg(args, 1)? * 255.0).clamp(0.0, 255.0) as u8,
+                    g: (float_arg(args, 2)? * 255.0).clamp(0.0, 255.0) as u8,
+                    b: (float_arg(args, 3)? * 255.0).clamp(0.0, 255.0) as u8,
+                    a: (float_arg(args, 4)? * 255.0).clamp(0.0, 255.0) as u8,
+                };
+                self.framework.gles.clear_color(color);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glClear")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glClear") => {
+                self.framework.gles.clear_mask(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glEnable")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glEnable") => {
+                self.framework.gles.enable(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDisable")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDisable") => {
+                self.framework.gles.disable(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glBlendFunc")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glBlendFunc") => {
+                self.framework
+                    .gles
+                    .blend_func(int_arg(args, 1)? as u32, int_arg(args, 2)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glBindTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glBindTexture") => {
+                self.framework
+                    .gles
+                    .bind_texture(int_arg(args, 1)? as u32, int_arg(args, 2)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glViewport")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glViewport") => {
+                self.framework.gles.viewport(
+                    int_arg(args, 1)?,
+                    int_arg(args, 2)?,
+                    int_arg(args, 3)?.max(0) as u32,
+                    int_arg(args, 4)?.max(0) as u32,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDrawArrays")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDrawArrays") => {
+                self.framework.gles.draw_arrays(
+                    int_arg(args, 1)? as u32,
+                    int_arg(args, 2)?,
+                    int_arg(args, 3)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDrawElements")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDrawElements") => {
+                self.framework.gles.draw_elements(
+                    int_arg(args, 1)? as u32,
+                    int_arg(args, 2)?,
+                    int_arg(args, 3)? as u32,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glGetString")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glGetString") => {
+                FrameworkResult::String("DonutHLE GLES 1.0 software renderer".to_owned())
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadIdentity")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadIdentity")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadMatrixf")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadMatrixf")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glMatrixMode")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMatrixMode")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexParameterf")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexParameterf")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexSubImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexSubImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glCompressedTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glCompressedTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glPixelStorei")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPixelStorei")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDepthMask")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDepthMask")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glScissor")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glScissor")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glActiveTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glActiveTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glClientActiveTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glEnableClientState")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDisableClientState")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glVertexPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glColorPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexCoordPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glNormalPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMaterialfv")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPointSize") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glGenTextures")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glGenTextures")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDeleteTextures")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDeleteTextures") => FrameworkResult::Void,
+            _ => {
+                return Err(self.error(
+                    0,
+                    0,
+                    format!("GDX method {class_name}->{method_name} is not implemented"),
+                ))
+            }
+        };
+        Ok(match result {
+            FrameworkResult::Void => Value::Void,
+            FrameworkResult::Int(value) => Value::Int(value),
+            FrameworkResult::Long(value) => Value::Long(value),
+            FrameworkResult::Bool(value) => Value::Int(i32::from(value)),
+            FrameworkResult::Object(value) => {
+                if value == 0 {
+                    Value::Null
+                } else {
+                    Value::Object(value)
+                }
+            }
+            FrameworkResult::String(value) => Value::String(value),
+        })
+    }
+
     fn framework_call(&mut self, call: FrameworkCall) -> Result<FrameworkResult, VmError> {
         self.framework
             .dispatch(call)
             .map_err(|message| self.error(0, 0, message))
+    }
+
+    fn string_arg(&self, args: &[Value], index: usize) -> Result<String, VmError> {
+        match args.get(index) {
+            Some(Value::String(value)) => Ok(value.clone()),
+            Some(Value::Object(id)) => match self.heap_object(*id) {
+                Some(HeapObject::String(value)) => Ok(value.clone()),
+                _ => Err(self.error(
+                    0,
+                    0,
+                    format!("framework argument {index} is object {id}, expected java.lang.String"),
+                )),
+            },
+            _ => Err(self.error(0, 0, format!("framework argument {index} is not a string"))),
+        }
     }
 
     fn framework_string(&self, id: i32) -> Result<String, VmError> {
@@ -1268,10 +1637,10 @@ fn invoke_args(
     let count = ((instruction >> 12) & 0x0f) as usize;
     let candidates = [
         (word & 0x0f) as usize,
-        (word >> 4 & 0x0f) as usize,
-        (word >> 8 & 0x0f) as usize,
-        (word >> 12 & 0x0f) as usize,
-        instruction as usize >> 8 & 0x0f,
+        ((word >> 4) & 0x0f) as usize,
+        ((word >> 8) & 0x0f) as usize,
+        ((word >> 12) & 0x0f) as usize,
+        ((instruction >> 8) & 0x0f) as usize,
     ];
     candidates[..count.min(candidates.len())]
         .iter()
@@ -1320,9 +1689,26 @@ fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
     }
 }
 
+fn float_arg(args: &[Value], index: usize) -> Result<f32, VmError> {
+    match args.get(index) {
+        Some(Value::Float(value)) => Ok(*value),
+        Some(Value::Double(value)) => Ok(*value as f32),
+        Some(Value::Int(value)) => Ok(*value as f32),
+        Some(Value::Long(value)) => Ok(*value as f32),
+        _ => Err(VmError {
+            pc: 0,
+            opcode: 0,
+            message: format!("framework argument {index} is not numeric"),
+        }),
+    }
+}
+
 fn int_arg(args: &[Value], index: usize) -> Result<i32, VmError> {
     match args.get(index) {
         Some(Value::Int(value)) => Ok(*value),
+        Some(Value::Long(value)) => Ok(*value as i32),
+        Some(Value::Float(value)) => Ok(*value as i32),
+        Some(Value::Double(value)) => Ok(*value as i32),
         _ => Err(VmError {
             pc: 0,
             opcode: 0,

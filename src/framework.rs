@@ -1,5 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
+use crate::gles::GlesContext;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Null,
@@ -328,6 +330,14 @@ pub struct Framework {
     pub surface_events: Vec<String>,
     pub audio_writes: usize,
     pub system_services: HashMap<String, u32>,
+    pub gles: GlesContext,
+    pub gdx_listener: Option<u32>,
+    pub gdx_view: Option<u32>,
+    pub gdx_graphics: Option<u32>,
+    pub gdx_audio: Option<u32>,
+    pub gdx_files: Option<u32>,
+    pub gdx_input: Option<u32>,
+    pub surface_size: (i32, i32),
     next_handle: u32,
 }
 
@@ -335,6 +345,7 @@ impl Framework {
     pub fn new() -> Self {
         Self {
             next_handle: 1,
+            gles: GlesContext::default(),
             ..Self::default()
         }
     }

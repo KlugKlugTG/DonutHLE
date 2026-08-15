@@ -21,6 +21,28 @@ pub enum Primitive {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GlesCommand {
     Clear(Rgba8),
+    ClearColor(Rgba8),
+    ClearMask(u32),
+    Enable(u32),
+    Disable(u32),
+    BlendFunc {
+        src: u32,
+        dst: u32,
+    },
+    BindTexture {
+        target: u32,
+        texture: u32,
+    },
+    DrawArrays {
+        mode: u32,
+        first: i32,
+        count: i32,
+    },
+    DrawElements {
+        mode: u32,
+        count: i32,
+        element_type: u32,
+    },
     Viewport {
         x: i32,
         y: i32,
@@ -39,6 +61,12 @@ pub struct GlesContext {
     clear_color: Rgba8,
     viewport: (i32, i32, u32, u32),
     commands: Vec<GlesCommand>,
+}
+
+impl Default for GlesContext {
+    fn default() -> Self {
+        Self::new(VirtualScreen::default())
+    }
 }
 
 impl GlesContext {
@@ -64,6 +92,48 @@ impl GlesContext {
     pub fn clear(&mut self) {
         self.framebuffer.clear(self.clear_color);
         self.commands.push(GlesCommand::Clear(self.clear_color));
+    }
+
+    pub fn clear_color(&mut self, color: Rgba8) {
+        self.clear_color = color;
+        self.commands.push(GlesCommand::ClearColor(color));
+    }
+
+    pub fn clear_mask(&mut self, mask: u32) {
+        if mask & 0x4000 != 0 {
+            self.framebuffer.clear(self.clear_color);
+        }
+        self.commands.push(GlesCommand::ClearMask(mask));
+    }
+
+    pub fn enable(&mut self, capability: u32) {
+        self.commands.push(GlesCommand::Enable(capability));
+    }
+
+    pub fn disable(&mut self, capability: u32) {
+        self.commands.push(GlesCommand::Disable(capability));
+    }
+
+    pub fn blend_func(&mut self, src: u32, dst: u32) {
+        self.commands.push(GlesCommand::BlendFunc { src, dst });
+    }
+
+    pub fn bind_texture(&mut self, target: u32, texture: u32) {
+        self.commands
+            .push(GlesCommand::BindTexture { target, texture });
+    }
+
+    pub fn draw_arrays(&mut self, mode: u32, first: i32, count: i32) {
+        self.commands
+            .push(GlesCommand::DrawArrays { mode, first, count });
+    }
+
+    pub fn draw_elements(&mut self, mode: u32, count: i32, element_type: u32) {
+        self.commands.push(GlesCommand::DrawElements {
+            mode,
+            count,
+            element_type,
+        });
     }
 
     pub fn viewport(&mut self, x: i32, y: i32, width: u32, height: u32) {

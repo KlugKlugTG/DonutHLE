@@ -209,6 +209,28 @@ impl Runtime {
                     vec![VmValue::Object(activity_object), VmValue::Null],
                 )
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let listener = vm.framework.gdx_listener;
+            if let Some(listener) = listener {
+                vm.run_named_method(
+                    "Lcom/badlogic/gdx/ApplicationListener;",
+                    "create",
+                    vec![VmValue::Object(listener)],
+                )?;
+                vm.run_named_method(
+                    "Lcom/badlogic/gdx/ApplicationListener;",
+                    "resize",
+                    vec![
+                        VmValue::Object(listener),
+                        VmValue::Int(320),
+                        VmValue::Int(480),
+                    ],
+                )?;
+                vm.run_named_method(
+                    "Lcom/badlogic/gdx/ApplicationListener;",
+                    "render",
+                    vec![VmValue::Object(listener)],
+                )?;
+            }
             self.framework = vm.framework;
             activities = std::mem::take(&mut self.framework.activities);
             match value {
