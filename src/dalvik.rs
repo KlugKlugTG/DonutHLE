@@ -269,6 +269,20 @@ impl DexFile {
     }
 
     pub fn method_code(&self, class_name: &str, method_name: &str) -> Option<&CodeItem> {
+        let mut class_name = class_name;
+        let mut visited = std::collections::BTreeSet::new();
+        loop {
+            if !visited.insert(class_name.to_owned()) {
+                return None;
+            }
+            if let Some(code) = self.direct_method_code(class_name, method_name) {
+                return Some(code);
+            }
+            class_name = self.find_class(class_name)?.super_class.as_deref()?;
+        }
+    }
+
+    fn direct_method_code(&self, class_name: &str, method_name: &str) -> Option<&CodeItem> {
         let class = self.find_class(class_name)?;
         class
             .direct_methods

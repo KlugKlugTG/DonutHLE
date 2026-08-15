@@ -144,7 +144,16 @@ impl<'a> Vm<'a> {
         }
         let code = self
             .method_code_by_index(method_index)
-            .ok_or_else(|| self.error(0, 0, format!("method {} has no code", method.name)))?
+            .ok_or_else(|| {
+                self.error(
+                    0,
+                    0,
+                    format!(
+                        "method {} has no code (abstract/native methods are not executable)",
+                        method.name
+                    ),
+                )
+            })?
             .clone();
         self.call_depth += 1;
         let result = self.execute_code(&code, args);
@@ -672,7 +681,33 @@ impl<'a> Vm<'a> {
         if method_name == "<init>" {
             return Ok(Value::Void);
         }
+        if class_name == "Landroid/app/Activity;"
+            && matches!(
+                method_name,
+                "onCreate"
+                    | "onStart"
+                    | "onRestart"
+                    | "onResume"
+                    | "onPause"
+                    | "onStop"
+                    | "onDestroy"
+                    | "onNewIntent"
+            )
+        {
+            return Ok(Value::Void);
+        }
         let result = match (class_name, method_name) {
+            ("Landroid/app/Activity;", "onCreate")
+            | ("Landroid/app/Activity;", "onStart")
+            | ("Landroid/app/Activity;", "onRestart")
+            | ("Landroid/app/Activity;", "onResume")
+            | ("Landroid/app/Activity;", "onPause")
+            | ("Landroid/app/Activity;", "onStop")
+            | ("Landroid/app/Activity;", "onDestroy")
+            | ("Landroid/app/Activity;", "onSaveInstanceState")
+            | ("Landroid/app/Activity;", "onRestoreInstanceState")
+            | ("Landroid/app/Activity;", "onNewIntent")
+            | ("Landroid/app/Activity;", "onWindowFocusChanged") => FrameworkResult::Void,
             ("Landroid/app/Activity;", "setContentView") => {
                 let activity = object_arg(args, 0)?;
                 let view = object_arg(args, 1)?;
@@ -851,17 +886,8 @@ impl<'a> Vm<'a> {
     }
 
     fn method_code_by_index(&self, index: usize) -> Option<&CodeItem> {
-        self.dex
-            .classes
-            .iter()
-            .flat_map(|class| {
-                class
-                    .direct_methods
-                    .iter()
-                    .chain(class.virtual_methods.iter())
-            })
-            .find(|method| method.method_index as usize == index)
-            .and_then(|method| method.code.as_ref())
+        let method = self.dex.method_id(index)?;
+        self.dex.method_code(&method.class_name, &method.name)
     }
 
     fn error(&self, pc: usize, opcode: u8, message: impl Into<String>) -> VmError {
