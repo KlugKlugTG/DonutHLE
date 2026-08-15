@@ -243,12 +243,9 @@ impl<'a> Vm<'a> {
                 }
                 0x0e => return Ok(Value::Void),
                 0x0f..=0x11 => {
-                    return get_register(
-                        &registers,
-                        ((instruction >> 8) & 0xff) as usize,
-                        pc,
-                        opcode,
-                    );
+                    let value =
+                        get_register(&registers, ((instruction >> 8) & 0xff) as usize, pc, opcode)?;
+                    return Ok(value);
                 }
                 0x12 => {
                     let register = ((instruction >> 8) & 0x0f) as usize;
@@ -581,7 +578,7 @@ impl<'a> Vm<'a> {
                     }
                     pc += 2;
                 }
-                0x60..=0x66 => {
+                0x60..=0x6d => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let field_index = code_word(code, pc + 1, pc, opcode)? as u32;
                     if opcode <= 0x62 {
@@ -662,6 +659,28 @@ impl<'a> Vm<'a> {
                         0x98 => a.wrapping_shl((b & 31) as u32),
                         0x99 => a.wrapping_shr((b & 31) as u32),
                         _ => ((a as u32).wrapping_shr((b & 31) as u32)) as i32,
+                    };
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 2;
+                }
+                0xd0..=0xd7 => {
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
+                    let source = ((instruction >> 12) & 0x0f) as usize;
+                    let literal = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
+                    let a = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xd0 => a.wrapping_add(literal),
+                        0xd1 => literal.wrapping_sub(a),
+                        0xd2 => a.wrapping_mul(literal),
+                        0xd3 => a
+                            .checked_div(literal)
+                            .ok_or_else(|| self.error(pc, opcode, "division by zero"))?,
+                        0xd4 => a
+                            .checked_rem(literal)
+                            .ok_or_else(|| self.error(pc, opcode, "remainder by zero"))?,
+                        0xd5 => a & literal,
+                        0xd6 => a | literal,
+                        _ => a ^ literal,
                     };
                     set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
                     pc += 2;
