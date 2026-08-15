@@ -2,6 +2,7 @@
 
 pub mod apk;
 pub mod audio;
+pub mod compat;
 pub mod dalvik;
 pub mod framework;
 pub mod gles;

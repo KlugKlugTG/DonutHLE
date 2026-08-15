@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::{
     apk,
+    compat::{self, CompatibilityReport},
     dalvik::{DexFile, DexHeader, ExecutionResult},
     framework::Framework,
     framework::{ActivityManager, Intent, Value},
@@ -41,6 +42,7 @@ pub struct LaunchReport {
     pub dex: String,
     pub launcher_activity: String,
     pub message: String,
+    pub compatibility: CompatibilityReport,
 }
 
 pub struct Runtime {
@@ -90,6 +92,7 @@ impl Runtime {
             .launcher_activity
             .clone()
             .unwrap_or_else(|| "none".to_owned());
+        let compatibility = compat::scan_dex(&dex);
         Ok(LaunchReport {
             package: manifest.package,
             launcher_activity: launcher.clone(),
@@ -102,6 +105,7 @@ impl Runtime {
             message: format!(
                 "manifest decoded; launcher: {launcher}; resources: {resource_status}"
             ),
+            compatibility,
         })
     }
 
@@ -109,6 +113,7 @@ impl Runtime {
         let plan = self.launch_plan(path)?;
         let state = self.boot(&plan)?;
         self.activities = state.activities;
+        let compatibility = compat::scan_dex(&plan.dex);
         Ok(LaunchReport {
             package: plan.package,
             dex: format!(
@@ -119,6 +124,7 @@ impl Runtime {
             ),
             launcher_activity: plan.activity,
             message: format!("booted launcher; result: {:?}", state.result),
+            compatibility,
         })
     }
 

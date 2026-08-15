@@ -42,9 +42,16 @@ fn main() -> Result<()> {
             println!("package: {}", report.package);
             println!("dex: {}", report.dex);
             println!("status: {}", report.message);
+            for line in report.compatibility.format_lines() {
+                println!("{line}");
+            }
         }
         Command::Run { apk: path } => {
-            runtime.launch(&path)?;
+            let report = runtime.launch(&path)?;
+            println!("{}", report.message);
+            for line in report.compatibility.format_lines() {
+                println!("{line}");
+            }
         }
     }
     Ok(())
