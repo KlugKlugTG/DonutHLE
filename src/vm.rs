@@ -1200,7 +1200,9 @@ fn branch_target(
         return Err(VmError {
             pc: at,
             opcode,
-            message: format!("branch target outside code: pc={pc} offset={offset} target={target} len={len}"),
+            message: format!(
+                "branch target outside code: pc={pc} offset={offset} target={target} len={len}"
+            ),
         });
     }
     Ok(target as usize)

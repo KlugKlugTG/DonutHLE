@@ -284,7 +284,15 @@ impl DexFile {
 
     pub fn method_code_by_index(&self, index: usize) -> Option<&CodeItem> {
         let method = self.methods.get(index)?;
-        self.method_code(&method.class_name, &method.name)
+        let class = self.find_class(&method.class_name)?;
+        let encoded = class
+            .direct_methods
+            .iter()
+            .chain(class.virtual_methods.iter())
+            .find(|encoded| encoded.method_index as usize == index);
+        encoded
+            .and_then(|method| method.code.as_ref())
+            .or_else(|| self.method_code(&method.class_name, &method.name))
     }
     pub fn framework_method_owner(&self, class_name: &str, _method_name: &str) -> Option<String> {
         let mut current = class_name;
