@@ -131,7 +131,7 @@ impl DexHeader {
         }
         let u32_at =
             |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        let encoded_header_size = u32_at(0x70);
+        let encoded_header_size = u32_at(0x24);
         let header_size = if encoded_header_size == DEX_HEADER_SIZE as u32 {
             encoded_header_size
         } else {
