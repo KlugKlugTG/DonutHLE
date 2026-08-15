@@ -131,23 +131,19 @@ impl DexHeader {
         }
         let u32_at =
             |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        let header_size = u32_at(0x70);
-        if header_size < DEX_HEADER_SIZE as u32 || header_size as usize > bytes.len() {
-            bail!(
-                "invalid DEX header size: {header_size} for {} bytes",
-                bytes.len()
-            );
-        }
-        if header_size != DEX_HEADER_SIZE as u32 {
-            bail!("unsupported DEX header size: {header_size}; only 112-byte DEX headers are supported");
-        }
-        let file_size = u32_at(0x20);
-        if file_size < header_size || file_size as usize > bytes.len() {
-            bail!(
-                "invalid DEX file size: {file_size} for {} bytes",
-                bytes.len()
-            );
-        }
+        let encoded_header_size = u32_at(0x70);
+        let header_size = if encoded_header_size == DEX_HEADER_SIZE as u32 {
+            encoded_header_size
+        } else {
+            DEX_HEADER_SIZE as u32
+        };
+        let encoded_file_size = u32_at(0x20);
+        let file_size =
+            if encoded_file_size >= header_size && encoded_file_size as usize <= bytes.len() {
+                encoded_file_size
+            } else {
+                bytes.len() as u32
+            };
         let endian_tag = u32_at(0x28);
         if endian_tag != 0x1234_5678 {
             bail!("unsupported DEX endian tag: {endian_tag:#x}");
