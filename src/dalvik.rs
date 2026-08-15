@@ -286,6 +286,22 @@ impl DexFile {
         let method = self.methods.get(index)?;
         self.method_code(&method.class_name, &method.name)
     }
+    pub fn framework_method_owner(&self, class_name: &str, _method_name: &str) -> Option<String> {
+        let mut current = class_name;
+        let mut visited = std::collections::BTreeSet::new();
+        loop {
+            if !visited.insert(current.to_owned()) {
+                return None;
+            }
+            if current.starts_with("Landroid/")
+                || current.starts_with("Ljava/")
+                || current.starts_with("Ldalvik/")
+            {
+                return Some(current.to_owned());
+            }
+            current = self.find_class(current)?.super_class.as_deref()?;
+        }
+    }
 
     pub fn method_access_flags(&self, index: usize) -> Option<u32> {
         self.classes
