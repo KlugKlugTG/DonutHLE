@@ -123,7 +123,7 @@ impl Runtime {
                 plan.dex.methods.len()
             ),
             launcher_activity: plan.activity,
-            message: format!("booted launcher; result: {:?}", state.result),
+            message: format!("booted launcher; {}", state.graphics),
             compatibility,
         })
     }
@@ -209,44 +209,28 @@ impl Runtime {
                     vec![VmValue::Object(activity_object), VmValue::Null],
                 )
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            let listener = vm.framework.gdx_listener;
-            if let Some(listener) = listener {
-                vm.run_named_method(
-                    "Lcom/badlogic/gdx/ApplicationListener;",
-                    "create",
-                    vec![VmValue::Object(listener)],
-                )?;
-                vm.run_named_method(
-                    "Lcom/badlogic/gdx/ApplicationListener;",
-                    "resize",
-                    vec![
-                        VmValue::Object(listener),
-                        VmValue::Int(320),
-                        VmValue::Int(480),
-                    ],
-                )?;
-                vm.run_named_method(
-                    "Lcom/badlogic/gdx/ApplicationListener;",
-                    "render",
-                    vec![VmValue::Object(listener)],
-                )?;
-            }
             self.framework = vm.framework;
             activities = std::mem::take(&mut self.framework.activities);
-            match value {
-                VmValue::Void => ExecutionResult::ReturnVoid,
-                VmValue::Int(value) => ExecutionResult::Return(value),
-                VmValue::Null
-                | VmValue::Object(_)
-                | VmValue::Long(_)
-                | VmValue::Float(_)
-                | VmValue::Double(_)
-                | VmValue::String(_) => ExecutionResult::Return(0),
-            }
+            return Ok(BootState {
+                result: match value {
+                    VmValue::Void => ExecutionResult::ReturnVoid,
+                    VmValue::Int(value) => ExecutionResult::Return(value),
+                    _ => ExecutionResult::Return(0),
+                },
+                activities,
+                graphics: "launcher onCreate completed; application render loop deferred"
+                    .to_owned(),
+                vm_result: "onCreate completed".to_owned(),
+            });
         } else {
             ExecutionResult::ReturnVoid
         };
-        Ok(BootState { result, activities })
+        Ok(BootState {
+            result,
+            activities,
+            graphics: "no application code executed".to_owned(),
+            vm_result: "launcher has no executable onCreate".to_owned(),
+        })
     }
 
     pub fn demo_framework(&mut self) -> FrameworkSnapshot {
@@ -295,6 +279,8 @@ pub struct LaunchPlan {
 pub struct BootState {
     pub result: ExecutionResult,
     pub activities: ActivityManager,
+    pub graphics: String,
+    pub vm_result: String,
 }
 
 fn read_manifest(archive: &mut zip::ZipArchive<File>) -> Result<AppManifest> {

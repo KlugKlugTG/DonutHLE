@@ -49,6 +49,8 @@ fn main() -> Result<()> {
         Command::Run { apk: path } => {
             let report = runtime.launch(&path)?;
             println!("{}", report.message);
+            println!("launcher: {}", report.launcher_activity);
+            println!("dex: {}", report.dex);
             for line in report.compatibility.format_lines() {
                 println!("{line}");
             }

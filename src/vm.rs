@@ -116,11 +116,25 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: Vec<Value>,
     ) -> Result<Value, VmError> {
+        self.run_named_method_with_prototype(class_name, method_name, None, args)
+    }
+
+    pub fn run_named_method_with_prototype(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        prototype: Option<&str>,
+        args: Vec<Value>,
+    ) -> Result<Value, VmError> {
         let method_index = self
             .dex
             .methods
             .iter()
-            .position(|method| method.class_name == class_name && method.name == method_name)
+            .position(|method| {
+                method.class_name == class_name
+                    && method.name == method_name
+                    && prototype.is_none_or(|expected| method.prototype == expected)
+            })
             .ok_or_else(|| {
                 self.error(
                     0,
@@ -128,6 +142,48 @@ impl<'a> Vm<'a> {
                     format!("method {class_name}->{method_name} not found"),
                 )
             })?;
+        self.call_method(method_index, args)
+    }
+
+    pub fn run_instance_method(
+        &mut self,
+        object: ObjectId,
+        method_name: &str,
+        mut args: Vec<Value>,
+    ) -> Result<Value, VmError> {
+        let class_name = match self.heap_object(object) {
+            Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
+            _ => return Err(self.error(0, 0, "listener is not an object instance")),
+        };
+        let method_index = self
+            .dex
+            .methods
+            .iter()
+            .enumerate()
+            .find(|(index, method)| {
+                method.class_name == class_name
+                    && method.name == method_name
+                    && self.dex.method_code_by_index(*index).is_some()
+            })
+            .map(|(index, _)| index)
+            .or_else(|| {
+                self.dex
+                    .methods
+                    .iter()
+                    .enumerate()
+                    .find(|(_, method)| {
+                        method.class_name == class_name && method.name == method_name
+                    })
+                    .map(|(index, _)| index)
+            })
+            .ok_or_else(|| {
+                self.error(
+                    0,
+                    0,
+                    format!("method {class_name}->{method_name} not found"),
+                )
+            })?;
+        args.insert(0, Value::Object(object));
         self.call_method(method_index, args)
     }
 
@@ -796,6 +852,38 @@ impl<'a> Vm<'a> {
                     )?;
                     pc += 1;
                 }
+                0x7d..=0x7f => {
+                    let (dest, source) = two_registers(instruction);
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_register(
+                        &mut registers,
+                        dest,
+                        Value::Int(if opcode == 0x7d { -value } else { value }),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 1;
+                }
+                0x80..=0x8a => {
+                    let (dest, source) = two_registers(instruction);
+                    let value = get_register(&registers, source, pc, opcode)?;
+                    let converted = match opcode {
+                        0x80 => Value::Long(as_int(value, pc, opcode)? as i64),
+                        0x81 => Value::Float(as_int(value, pc, opcode)? as f32),
+                        0x82 => Value::Double(as_int(value, pc, opcode)? as f64),
+                        0x83 => Value::Int(as_float(value, pc, opcode)? as i32),
+                        0x84 => Value::Double(as_float(value, pc, opcode)? as f64),
+                        0x85 => Value::Int(as_float(value, pc, opcode)? as i32),
+                        0x86 => Value::Long(as_float(value, pc, opcode)? as i64),
+                        0x87 => Value::Int(as_float(value, pc, opcode)? as i32),
+                        0x88 => Value::Int(as_int(value, pc, opcode)?),
+                        0x89 => Value::Float(as_int(value, pc, opcode)? as f32),
+                        _ => Value::Double(as_int(value, pc, opcode)? as f64),
+                    };
+                    set_register(&mut registers, dest, converted, self, pc, opcode)?;
+                    pc += 1;
+                }
                 0x90..=0x9a => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
                     let word = code_word(code, pc + 1, pc, opcode)?;
@@ -1275,7 +1363,7 @@ impl<'a> Vm<'a> {
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "initializeForView") => {
                 let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
                 self.framework.gdx_view = Some(view);
-                self.framework.gdx_listener = args.get(1).and_then(|value| match value {
+                self.framework.gdx_listener = args.first().and_then(|value| match value {
                     Value::Object(id) => Some(*id),
                     _ => None,
                 });
@@ -1384,6 +1472,18 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/Texture;", "setWrap") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/graphics/Texture;", "getWidth")
             | ("Lcom/badlogic/gdx/graphics/Texture;", "getHeight") => FrameworkResult::Int(256),
+            ("Lcom/badlogic/gdx/Application;", "getPreferences") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Preferences;"))
+            }
+            ("Lcom/badlogic/gdx/Preferences;", "getString") => {
+                FrameworkResult::String(String::new())
+            }
+            ("Lcom/badlogic/gdx/Preferences;", "getBoolean") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Preferences;", "getInteger") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/Preferences;", "putString")
+            | ("Lcom/badlogic/gdx/Preferences;", "putBoolean")
+            | ("Lcom/badlogic/gdx/Preferences;", "putInteger")
+            | ("Lcom/badlogic/gdx/Preferences;", "flush") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/Application;", "getType") => FrameworkResult::Object(0),
             ("Lcom/badlogic/gdx/Application;", "getAudio") => {
                 FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Audio;"))
