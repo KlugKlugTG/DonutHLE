@@ -300,6 +300,33 @@ impl DexFile {
             .map(|method| method.access_flags)
     }
 
+    pub fn method_access_flags_by_name(&self, class_name: &str, method_name: &str) -> Option<u32> {
+        let mut class_name = class_name;
+        let mut visited = std::collections::BTreeSet::new();
+        loop {
+            if !visited.insert(class_name.to_owned()) {
+                return None;
+            }
+            if let Some(class) = self.find_class(class_name) {
+                if let Some(encoded) = class
+                    .direct_methods
+                    .iter()
+                    .chain(class.virtual_methods.iter())
+                    .find(|method| {
+                        self.methods
+                            .get(method.method_index as usize)
+                            .is_some_and(|id| id.name == method_name)
+                    })
+                {
+                    return Some(encoded.access_flags);
+                }
+                class_name = class.super_class.as_deref()?;
+            } else {
+                return None;
+            }
+        }
+    }
+
     fn direct_method_code(&self, class_name: &str, method_name: &str) -> Option<&CodeItem> {
         let class = self.find_class(class_name)?;
         class
