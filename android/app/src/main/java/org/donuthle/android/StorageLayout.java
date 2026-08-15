@@ -52,6 +52,31 @@ final class StorageLayout {
         if (!readme.exists()) writeText(readme, "DonutHLE files\n\nDonutHLE_apps: APK library.\nDonutHLE_sandbox: per-game writable data.\nDonutHLE_log.txt: UTF-8 emulator log.\nDonutHLE_options.txt: emulator options.\n");
     }
 
+    static int importFromDefaultFolder(Context context) {
+        File publicApps = new File(android.os.Environment.getExternalStorageDirectory(), APPS_NAME);
+        if (!publicApps.isDirectory() || publicApps.equals(apps(context))) return 0;
+        int imported = 0;
+        File[] files = publicApps.listFiles((file, name) -> name.toLowerCase(Locale.US).endsWith(".apk"));
+        if (files == null) return 0;
+        for (File file : files) {
+            try {
+                File target = new File(apps(context), file.getName());
+                if (!target.exists() || target.length() != file.length()) {
+                    try (InputStream input = new FileInputStream(file); FileOutputStream output = new FileOutputStream(target)) {
+                        byte[] buffer = new byte[8192];
+                        int count;
+                        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                    }
+                    imported++;
+                }
+            } catch (IOException error) {
+                appendLog(context, "APK_IMPORT_FAILED: " + file.getName() + ": " + error.getMessage());
+            }
+        }
+        if (imported > 0) appendLog(context, "APK_IMPORTED_FROM_DEFAULT_FOLDER: " + imported);
+        return imported;
+    }
+
     static File[] apks(Context context) {
         ensure(context);
         File[] files = apps(context).listFiles((file, name) -> name.toLowerCase(Locale.US).endsWith(".apk"));

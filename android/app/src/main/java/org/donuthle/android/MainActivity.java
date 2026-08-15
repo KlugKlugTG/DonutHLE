@@ -23,6 +23,7 @@ public final class MainActivity extends Activity {
     private native String nativeRuntimeInfo();
     private native String nativeLaunchApk(String path);
     private static final int PICK_APK = 42;
+    private static final int PICK_DONUTHLE_FOLDER = 43;
     private final int teal = Color.rgb(128, 203, 196);
     private final int text = Color.rgb(232, 240, 242);
     private final int muted = Color.rgb(158, 174, 180);
@@ -63,6 +64,7 @@ public final class MainActivity extends Activity {
 
     private void showLibrary() {
         StorageLayout.ensure(this);
+        StorageLayout.importFromDefaultFolder(this);
         LinearLayout content = page("GAME LIBRARY", "Import APKs or scan an existing DonutHLE_apps folder.");
         content.setId(7001);
         content.addView(button("＋  IMPORT APK", true, v -> pickApk()), margins(0, 18, 0, 8));
@@ -96,6 +98,14 @@ public final class MainActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PICK_APK && resultCode == RESULT_OK && data != null && data.getData() != null) importApk(data.getData());
+        if (requestCode == PICK_DONUTHLE_FOLDER && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            Uri tree = data.getData();
+            try { getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION); } catch (Exception ignored) {}
+            StorageLayout.saveTree(this, tree);
+            int imported = StorageLayout.importFromTree(this, tree);
+            Toast.makeText(this, imported + " APK(s) found in selected folder", Toast.LENGTH_SHORT).show();
+            showLibrary();
+        }
     }
 
     private void launchApk(File apk) {
@@ -115,11 +125,28 @@ public final class MainActivity extends Activity {
         showMessage("LAUNCH REPORT", message.toString());
     }
 
-    private void showOptions() { LinearLayout content = page("OPTIONS", "Portable settings and file locations."); TextView options = label(StorageLayout.readText(StorageLayout.options(this)), 15, text); options.setTextIsSelectable(true); options.setPadding(dp(14), dp(14), dp(14), dp(14)); options.setBackgroundColor(panel); content.addView(options, margins(0, 18, 0, 16)); content.addView(button("OPEN DONUTHLE FOLDER", false, v -> openFolder(StorageLayout.publicRoot(this))), margins(0, 0, 0, 8)); content.addView(button("‹  BACK", false, v -> showHome())); setContentView(scroll(content)); }
+    private void showOptions() { LinearLayout content = page("OPTIONS", "Portable settings and file locations."); TextView options = label(StorageLayout.readText(StorageLayout.options(this)), 15, text); options.setTextIsSelectable(true); options.setPadding(dp(14), dp(14), dp(14), dp(14)); options.setBackgroundColor(panel); content.addView(options, margins(0, 18, 0, 16)); content.addView(button("OPEN DONUTHLE FOLDER", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 8)); content.addView(button("‹  BACK", false, v -> showHome())); setContentView(scroll(content)); }
     private void showLog() { StorageLayout.appendLog(this, "LOG_VIEW_OPENED"); LinearLayout content = page("EMULATOR LOG", "UTF-8 compatibility log with unimplemented features."); TextView log = label(nativeRuntimeInfo() + "\n\n" + StorageLayout.readText(StorageLayout.logFile(this)), 14, text); log.setTextIsSelectable(true); log.setPadding(dp(14), dp(14), dp(14), dp(14)); log.setTypeface(android.graphics.Typeface.MONOSPACE); log.setBackgroundColor(panel); content.addView(log, margins(0, 16, 0, 16)); content.addView(button("‹  BACK", true, v -> showHome())); setContentView(scroll(content)); }
     private void showAbout() { LinearLayout content = page("ABOUT DONUTHLE", "A clean-room Android 1.6 HLE project."); content.addView(label("The current APK pipeline scans packages, reports their requested APIs, and prepares the compatibility log. Dalvik execution, Android framework shims, graphics, audio, input, and activity launching remain active development milestones.", 16, text), margins(0, 18, 0, 20)); content.addView(button("‹  BACK", true, v -> showHome())); setContentView(scroll(content)); }
     private void showMessage(String heading, String message) { LinearLayout content = page(heading, "Compatibility inspection"); content.addView(label(message, 16, text), margins(0, 18, 0, 20)); content.addView(button("‹  BACK TO LIBRARY", false, v -> showLibrary())); setContentView(scroll(content)); }
-    private void openFolder(File folder) { Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); try { startActivity(intent); } catch (Exception error) { Toast.makeText(this, folder.getAbsolutePath(), Toast.LENGTH_LONG).show(); } }
+    private void chooseDonutHleFolder() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.putExtra("android.content.extra.SHOW_ADVANCED", true);
+        startActivityForResult(intent, PICK_DONUTHLE_FOLDER);
+    }
+
+    private void openFolder(File folder) {
+        if (folder.exists()) {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(Uri.parse("content://org.donuthle.android.documents/root/donuthle"), "vnd.android.document/root");
+            try {
+                startActivity(intent);
+                return;
+            } catch (Exception ignored) {
+            }
+        }
+        chooseDonutHleFolder();
+    }
     private LinearLayout page(String heading, String description) { LinearLayout content = column(); content.setPadding(dp(22), dp(20), dp(22), dp(28)); content.addView(label("DONUTHLE", 22, teal)); TextView h = label(heading, 28, text); h.setTypeface(null, 1); content.addView(h, margins(0, 28, 0, 4)); content.addView(label(description, 15, muted)); return content; }
     private LinearLayout card(String icon, String heading, String description, String action, View.OnClickListener listener) { LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackgroundColor(panel); card.addView(label(icon, 26, teal)); TextView h = label(heading, 15, text); h.setTypeface(null, 1); card.addView(h, margins(0, 6, 0, 3)); card.addView(label(description, 14, muted), margins(0, 0, 0, 10)); card.addView(button(action, false, listener)); return card; }
     private LinearLayout column() { LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); layout.setBackgroundColor(background); return layout; }
