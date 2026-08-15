@@ -307,23 +307,20 @@ impl DexFile {
             if !visited.insert(class_name.to_owned()) {
                 return None;
             }
-            if let Some(class) = self.find_class(class_name) {
-                if let Some(encoded) = class
-                    .direct_methods
-                    .iter()
-                    .chain(class.virtual_methods.iter())
-                    .find(|method| {
-                        self.methods
-                            .get(method.method_index as usize)
-                            .is_some_and(|id| id.name == method_name)
-                    })
-                {
-                    return Some(encoded.access_flags);
-                }
-                class_name = class.super_class.as_deref()?;
-            } else {
-                return None;
+            let class = self.find_class(class_name)?;
+            if let Some(encoded) = class
+                .direct_methods
+                .iter()
+                .chain(class.virtual_methods.iter())
+                .find(|method| {
+                    self.methods
+                        .get(method.method_index as usize)
+                        .is_some_and(|id| id.name == method_name)
+                })
+            {
+                return Some(encoded.access_flags);
             }
+            class_name = class.super_class.as_deref()?;
         }
     }
 
