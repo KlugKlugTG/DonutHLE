@@ -20,7 +20,6 @@ import java.util.Locale;
 public final class MainActivity extends Activity {
     private static final int PICK_APK = 1001;
     private static final int PICK_DONUTHLE_FOLDER = 1002;
-    private static final int OPEN_DONUTHLE_FOLDER = 1003;
     private final int background = 0xff101416;
     private final int panel = 0xff192125;
     private final int teal = 0xff62d6c4;
@@ -28,7 +27,6 @@ public final class MainActivity extends Activity {
     private final int muted = 0xffa5b5b2;
 
     @Override public void onCreate(Bundle state) { super.onCreate(state); showHome(); }
-    @Override protected void onResume() { super.onResume(); }
 
     private void showHome() {
         LinearLayout content = page("DONUTHLE", "Android 1.6 high-level emulator prototype");
@@ -48,9 +46,7 @@ public final class MainActivity extends Activity {
         content.addView(button("IMPORT FROM DONUTHLE_APPS", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 18));
         File[] apks = StorageLayout.apks(this);
         if (apks.length == 0) content.addView(label("No APKs yet. Add an Android 1.6 APK or import a folder.", 15, muted));
-        for (File apk : apks) {
-            content.addView(card("▸", apk.getName(), formatBytes(apk.length()), "LAUNCH GAME", v -> launchApk(apk)), margins(0, 0, 0, 10));
-        }
+        for (File apk : apks) content.addView(card("▸", apk.getName(), formatBytes(apk.length()), "LAUNCH GAME", v -> launchApk(apk)), margins(0, 0, 0, 10));
         content.addView(button("‹ BACK", false, v -> showHome()), margins(0, 12, 0, 0));
         setContentView(scroll(content));
     }
@@ -58,7 +54,8 @@ public final class MainActivity extends Activity {
     private void chooseApk() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/vnd.android.package-archive");
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/vnd.android.package-archive", "application/octet-stream"});
         startActivityForResult(intent, PICK_APK);
     }
 
@@ -106,10 +103,11 @@ public final class MainActivity extends Activity {
     private void chooseDonutHleFolder() { Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE); intent.putExtra("android.content.extra.SHOW_ADVANCED", true); startActivityForResult(intent, PICK_DONUTHLE_FOLDER); }
     private void openFolder(File folder) {
         if (!folder.exists()) folder.mkdirs();
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.setDataAndType(DocumentsContract.buildRootUri("org.donuthle.android.documents", "donuthle"), "vnd.android.document/root");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        try { startActivityForResult(intent, OPEN_DONUTHLE_FOLDER); } catch (Exception error) { chooseDonutHleFolder(); }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.putExtra("android.content.extra.SHOW_ADVANCED", true);
+        intent.putExtra("android.provider.extra.SHOW_ADVANCED", true);
+        intent.putExtra("android.content.extra.INITIAL_URI", DocumentsContract.buildRootUri("org.donuthle.android.documents", "donuthle"));
+        try { startActivityForResult(intent, PICK_DONUTHLE_FOLDER); } catch (Exception error) { chooseDonutHleFolder(); }
     }
     private LinearLayout page(String heading, String description) { LinearLayout content = column(); content.setPadding(dp(22), dp(20), dp(22), dp(28)); content.addView(label("DONUTHLE", 22, teal)); TextView h = label(heading, 28, text); h.setTypeface(null, 1); content.addView(h, margins(0, 28, 0, 4)); content.addView(label(description, 15, muted)); return content; }
     private LinearLayout card(String icon, String heading, String description, String action, View.OnClickListener listener) { LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackgroundColor(panel); card.addView(label(icon, 26, teal)); TextView h = label(heading, 15, text); h.setTypeface(null, 1); card.addView(h, margins(0, 6, 0, 3)); card.addView(label(description, 14, muted), margins(0, 0, 0, 10)); card.addView(button(action, false, listener)); return card; }
