@@ -137,7 +137,10 @@ impl DexHeader {
         }
         let file_size = u32_at(0x20);
         if file_size < DEX_HEADER_SIZE as u32 || file_size as usize > bytes.len() {
-            bail!("invalid DEX file size: {file_size} for {} bytes", bytes.len());
+            bail!(
+                "invalid DEX file size: {file_size} for {} bytes",
+                bytes.len()
+            );
         }
         let endian_tag = u32_at(0x28);
         if endian_tag != 0x1234_5678 {
