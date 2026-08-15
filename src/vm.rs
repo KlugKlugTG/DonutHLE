@@ -306,6 +306,19 @@ impl<'a> Vm<'a> {
                     )?;
                     pc += 2;
                 }
+                0x17 => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    let value = code_word(code, pc + 1, pc, opcode)? as i16 as i64;
+                    set_register(
+                        &mut registers,
+                        register,
+                        Value::Long(value << 48),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 2;
+                }
                 0x16 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let low = code_word(code, pc + 1, pc, opcode)? as u32;
@@ -319,6 +332,19 @@ impl<'a> Vm<'a> {
                         opcode,
                     )?;
                     pc += 3;
+                }
+                0x19 => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    let value = (code_word(code, pc + 1, pc, opcode)? as i16 as i64) << 48;
+                    set_register(
+                        &mut registers,
+                        register,
+                        Value::Long(value),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 2;
                 }
                 0x1a | 0x1b => {
                     let register = ((instruction >> 8) & 0xff) as usize;
@@ -572,8 +598,8 @@ impl<'a> Vm<'a> {
                         };
                         set_register(&mut registers, first, value, self, pc, opcode)?;
                     } else {
-                        let object = get_object(&registers, first, self, pc, opcode)?;
-                        let value = get_register(&registers, second, pc, opcode)?.clone();
+                        let object = get_object(&registers, second, self, pc, opcode)?;
+                        let value = get_register(&registers, first, pc, opcode)?.clone();
                         match self.heap.get_mut(object as usize) {
                             Some(HeapObject::Instance { fields, .. }) => {
                                 fields.insert(field_index, value);
@@ -592,7 +618,7 @@ impl<'a> Vm<'a> {
                 0x60..=0x6d => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let field_index = code_word(code, pc + 1, pc, opcode)? as u32;
-                    if opcode <= 0x62 {
+                    if opcode <= 0x66 {
                         set_register(
                             &mut registers,
                             register,
@@ -918,6 +944,15 @@ impl<'a> Vm<'a> {
             }
             ("Landroid/net/ConnectivityManager;", "getActiveNetworkInfo") => {
                 FrameworkResult::Object(0)
+            }
+            ("Ljava/lang/Math;", "round") => {
+                let value = match args.get(0) {
+                    Some(Value::Float(value)) => value.round() as i32,
+                    Some(Value::Double(value)) => value.round() as i64 as i32,
+                    Some(Value::Int(value)) => *value,
+                    _ => return Err(self.error(0, 0, "Math.round argument is not numeric")),
+                };
+                FrameworkResult::Int(value)
             }
             ("Ljava/lang/Class;", "forName") => {
                 let name = string_arg(args, 0)?;
