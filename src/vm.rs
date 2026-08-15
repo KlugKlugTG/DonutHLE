@@ -1002,11 +1002,11 @@ fn invoke_args(
 ) -> Result<Vec<Value>, VmError> {
     let count = ((instruction >> 12) & 0x0f) as usize;
     let candidates = [
-        instruction as usize >> 8 & 0x0f,
         (word & 0x0f) as usize,
         (word >> 4 & 0x0f) as usize,
         (word >> 8 & 0x0f) as usize,
         (word >> 12 & 0x0f) as usize,
+        instruction as usize >> 8 & 0x0f,
     ];
     candidates[..count.min(candidates.len())]
         .iter()
