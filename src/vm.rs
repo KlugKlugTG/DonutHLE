@@ -139,7 +139,10 @@ impl<'a> Vm<'a> {
             .method_id(method_index)
             .ok_or_else(|| self.error(0, 0, format!("method index {method_index} is invalid")))?
             .clone();
-        if method.class_name.starts_with("Landroid/") || method.class_name.starts_with("Ljava/") {
+        if method.class_name.starts_with("Landroid/")
+            || method.class_name == "Ljava/lang/Class;"
+            || method.class_name.starts_with("Ljava/lang/reflect/")
+        {
             return self.dispatch_framework(&method.class_name, &method.name, &args);
         }
         let code = self
@@ -696,6 +699,15 @@ impl<'a> Vm<'a> {
         {
             return Ok(Value::Void);
         }
+        if class_name == "Ljava/lang/Class;" && method_name == "forName" {
+            let requested = string_arg(args, 0)?;
+            let descriptor = if requested.starts_with('L') && requested.ends_with(';') {
+                requested
+            } else {
+                format!("L{};", requested.replace('.', "/"))
+            };
+            return Ok(Value::Object(self.alloc(HeapObject::Class(descriptor))));
+        }
         let result = match (class_name, method_name) {
             ("Landroid/app/Activity;", "onCreate")
             | ("Landroid/app/Activity;", "onStart")
@@ -841,6 +853,22 @@ impl<'a> Vm<'a> {
             }
             ("Landroid/net/ConnectivityManager;", "getActiveNetworkInfo") => {
                 FrameworkResult::Object(0)
+            }
+            ("Ljava/lang/Class;", "forName") => {
+                let name = string_arg(args, 0)?;
+                let descriptor = if name.starts_with('L') && name.ends_with(';') {
+                    name.clone()
+                } else {
+                    format!("L{};", name.replace('.', "/"))
+                };
+                if self.dex.find_class(&descriptor).is_some()
+                    || descriptor.starts_with("Landroid/")
+                    || descriptor.starts_with("Ljava/")
+                {
+                    FrameworkResult::Object(self.alloc(HeapObject::Class(descriptor)))
+                } else {
+                    FrameworkResult::Object(0)
+                }
             }
             _ => {
                 return Err(self.error(
