@@ -491,7 +491,7 @@ impl<'a> Vm<'a> {
                     let size = (code.instructions[payload + 2] as u32)
                         | ((code.instructions[payload + 3] as u32) << 16);
                     let size = size as usize;
-                    let words = (element_width * size + 1) / 2;
+                    let words = (element_width * size).div_ceil(2);
                     if payload + 4 + words > code.instructions.len() {
                         return Err(self.error(pc, opcode, "truncated fill-array-data payload"));
                     }
@@ -511,7 +511,7 @@ impl<'a> Vm<'a> {
                         let mut raw = 0u32;
                         for byte in 0..element_width {
                             let unit = code.instructions[payload + 4 + (bit_offset + byte) / 2];
-                            let value = if (bit_offset + byte) % 2 == 0 {
+                            let value = if (bit_offset + byte).is_multiple_of(2) {
                                 (unit & 0xff) as u32
                             } else {
                                 (unit >> 8) as u32
@@ -1070,7 +1070,7 @@ impl<'a> Vm<'a> {
                 FrameworkResult::Bool(string_arg(args, 0)?.eq_ignore_ascii_case("true"))
             }
             ("Ljava/lang/Math;", "round") => {
-                let value = match args.get(0) {
+                let value = match args.first() {
                     Some(Value::Float(value)) => value.round() as i32,
                     Some(Value::Double(value)) => value.round() as i64 as i32,
                     Some(Value::Int(value)) => f32::from_bits(*value as u32).round() as i32,
