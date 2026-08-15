@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
@@ -211,6 +212,62 @@ pub enum ViewEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameworkCall {
+    GetSystemService {
+        name: String,
+    },
+    GetSharedPreferences {
+        name: String,
+        mode: i32,
+    },
+    SharedPreferencesGetString {
+        prefs: u32,
+        key: String,
+        default: String,
+    },
+    SharedPreferencesPutString {
+        prefs: u32,
+        key: String,
+        value: String,
+    },
+    SurfaceCreated {
+        surface: u32,
+    },
+    SurfaceChanged {
+        surface: u32,
+        format: i32,
+        width: i32,
+        height: i32,
+    },
+    SurfaceDestroyed {
+        surface: u32,
+    },
+    AudioTrackWrite {
+        track: u32,
+        samples: i32,
+    },
+    MediaPlayerPrepare {
+        player: u32,
+    },
+    MediaPlayerStart {
+        player: u32,
+    },
+    MediaPlayerStop {
+        player: u32,
+    },
+    SoundPoolPlay {
+        pool: u32,
+        sound: i32,
+        left: i32,
+        right: i32,
+        loop_count: i32,
+        rate: i32,
+    },
+    SensorRegister {
+        sensor: u32,
+    },
+    NetworkRequest {
+        url: String,
+    },
     NewView {
         class_name: String,
     },
@@ -266,6 +323,10 @@ pub struct Framework {
     pub logs: Vec<String>,
     pub toasts: Vec<String>,
     pub content_views: HashMap<u32, u32>,
+    pub preferences: HashMap<(String, String), String>,
+    pub surface_events: Vec<String>,
+    pub audio_writes: usize,
+    pub system_services: HashMap<String, u32>,
     next_handle: u32,
 }
 
@@ -317,6 +378,64 @@ impl Framework {
 
     pub fn dispatch(&mut self, call: FrameworkCall) -> Result<FrameworkResult, String> {
         match call {
+            FrameworkCall::GetSystemService { name } => {
+                let handle = if let Some(handle) = self.system_services.get(&name) {
+                    *handle
+                } else {
+                    let handle = self.next_handle;
+                    self.next_handle = self.next_handle.saturating_add(1);
+                    self.system_services.insert(name, handle);
+                    handle
+                };
+                Ok(FrameworkResult::Object(handle))
+            }
+            FrameworkCall::GetSharedPreferences { name, .. } => {
+                let handle = self.next_handle;
+                self.next_handle = self.next_handle.saturating_add(1);
+                self.system_services.insert(format!("prefs:{name}"), handle);
+                Ok(FrameworkResult::Object(handle))
+            }
+            FrameworkCall::SharedPreferencesGetString { key, default, .. } => {
+                Ok(FrameworkResult::String(
+                    self.preferences
+                        .iter()
+                        .find(|((_, k), _)| k == &key)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(default),
+                ))
+            }
+            FrameworkCall::SharedPreferencesPutString { key, value, .. } => {
+                self.preferences.insert(("default".to_owned(), key), value);
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::SurfaceCreated { surface } => {
+                self.surface_events.push(format!("created:{surface}"));
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::SurfaceChanged {
+                surface,
+                format,
+                width,
+                height,
+            } => {
+                self.surface_events
+                    .push(format!("changed:{surface}:{format}:{width}x{height}"));
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::SurfaceDestroyed { surface } => {
+                self.surface_events.push(format!("destroyed:{surface}"));
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::AudioTrackWrite { samples, .. } => {
+                self.audio_writes = self.audio_writes.saturating_add(samples.max(0) as usize);
+                Ok(FrameworkResult::Int(samples))
+            }
+            FrameworkCall::MediaPlayerPrepare { .. }
+            | FrameworkCall::MediaPlayerStart { .. }
+            | FrameworkCall::MediaPlayerStop { .. }
+            | FrameworkCall::SoundPoolPlay { .. } => Ok(FrameworkResult::Void),
+            FrameworkCall::SensorRegister { .. } => Ok(FrameworkResult::Bool(true)),
+            FrameworkCall::NetworkRequest { .. } => Ok(FrameworkResult::Object(0)),
             FrameworkCall::NewView { class_name } => {
                 Ok(FrameworkResult::Object(self.alloc_view(class_name)))
             }

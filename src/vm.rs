@@ -731,6 +731,82 @@ impl<'a> Vm<'a> {
             ("Landroid/content/Context;", "getString") => {
                 FrameworkResult::String(self.framework_string(int_arg(args, 1)?)?)
             }
+            ("Landroid/content/Context;", "getSystemService") => {
+                self.framework_call(FrameworkCall::GetSystemService {
+                    name: string_arg(args, 1)?,
+                })?
+            }
+            ("Landroid/content/Context;", "getSharedPreferences") => {
+                self.framework_call(FrameworkCall::GetSharedPreferences {
+                    name: string_arg(args, 1)?,
+                    mode: int_arg(args, 2)?,
+                })?
+            }
+            ("Landroid/content/SharedPreferences;", "getString") => {
+                self.framework_call(FrameworkCall::SharedPreferencesGetString {
+                    prefs: object_arg(args, 0)?,
+                    key: string_arg(args, 1)?,
+                    default: string_arg(args, 2)?,
+                })?
+            }
+            ("Landroid/content/SharedPreferences$Editor;", "putString") => {
+                self.framework_call(FrameworkCall::SharedPreferencesPutString {
+                    prefs: object_arg(args, 0)?,
+                    key: string_arg(args, 1)?,
+                    value: string_arg(args, 2)?,
+                })?
+            }
+            ("Landroid/content/SharedPreferences$Editor;", "commit")
+            | ("Landroid/content/SharedPreferences$Editor;", "apply") => {
+                FrameworkResult::Bool(true)
+            }
+            ("Landroid/view/SurfaceHolder$Callback", "surfaceCreated") => {
+                self.framework_call(FrameworkCall::SurfaceCreated {
+                    surface: object_arg(args, 0)?,
+                })?
+            }
+            ("Landroid/view/SurfaceHolder$Callback", "surfaceChanged") => {
+                self.framework_call(FrameworkCall::SurfaceChanged {
+                    surface: object_arg(args, 0)?,
+                    format: int_arg(args, 1)?,
+                    width: int_arg(args, 2)?,
+                    height: int_arg(args, 3)?,
+                })?
+            }
+            ("Landroid/view/SurfaceHolder$Callback", "surfaceDestroyed") => {
+                self.framework_call(FrameworkCall::SurfaceDestroyed {
+                    surface: object_arg(args, 0)?,
+                })?
+            }
+            ("Landroid/media/AudioTrack;", "write") => {
+                self.framework_call(FrameworkCall::AudioTrackWrite {
+                    track: object_arg(args, 0)?,
+                    samples: int_arg(args, 2).unwrap_or(0),
+                })?
+            }
+            ("Landroid/media/MediaPlayer;", "prepare") => {
+                self.framework_call(FrameworkCall::MediaPlayerPrepare {
+                    player: object_arg(args, 0)?,
+                })?
+            }
+            ("Landroid/media/MediaPlayer;", "start") => {
+                self.framework_call(FrameworkCall::MediaPlayerStart {
+                    player: object_arg(args, 0)?,
+                })?
+            }
+            ("Landroid/media/MediaPlayer;", "stop") => {
+                self.framework_call(FrameworkCall::MediaPlayerStop {
+                    player: object_arg(args, 0)?,
+                })?
+            }
+            ("Landroid/hardware/SensorManager;", "registerListener") => {
+                self.framework_call(FrameworkCall::SensorRegister {
+                    sensor: object_arg(args, 1)?,
+                })?
+            }
+            ("Landroid/net/ConnectivityManager;", "getActiveNetworkInfo") => {
+                FrameworkResult::Object(0)
+            }
             _ => {
                 return Err(self.error(
                     0,
