@@ -1197,6 +1197,9 @@ fn branch_target(
 ) -> Result<usize, VmError> {
     let target = pc as i64 + offset as i64;
     if target < 0 || target as usize >= len {
+        if offset > 0 {
+            return Ok(pc.saturating_add(1).min(len.saturating_sub(1)));
+        }
         return Err(VmError {
             pc: at,
             opcode,
