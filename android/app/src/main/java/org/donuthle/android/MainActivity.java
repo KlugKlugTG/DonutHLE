@@ -103,6 +103,10 @@ public final class MainActivity extends Activity {
     private void chooseDonutHleFolder() { Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE); intent.putExtra("android.content.extra.SHOW_ADVANCED", true); startActivityForResult(intent, PICK_DONUTHLE_FOLDER); }
     private void openFolder(File folder) {
         if (!folder.exists()) folder.mkdirs();
+        Uri saved = StorageLayout.savedTree(this);
+        if (saved != null) {
+            try { startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).setData(saved).putExtra("android.content.extra.SHOW_ADVANCED", true), PICK_DONUTHLE_FOLDER); return; } catch (Exception ignored) {}
+        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         intent.putExtra("android.content.extra.SHOW_ADVANCED", true);
         intent.putExtra("android.provider.extra.SHOW_ADVANCED", true);
