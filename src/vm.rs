@@ -149,11 +149,23 @@ impl<'a> Vm<'a> {
                 self.call_depth -= 1;
                 return result;
             }
+            if let Some(owner) = self
+                .dex
+                .framework_method_owner(&method.class_name, &method.name)
+            {
+                return self.dispatch_framework(&owner, &method.name, &args);
+            }
             return self.dispatch_framework(&method.class_name, &method.name, &args);
         }
         let code = match self.dex.method_code_by_index(method_index) {
             Some(code) => code.clone(),
             None => {
+                if let Some(owner) = self
+                    .dex
+                    .framework_method_owner(&method.class_name, &method.name)
+                {
+                    return self.dispatch_framework(&owner, &method.name, &args);
+                }
                 let flags = self.dex.method_access_flags(method_index).unwrap_or(0);
                 if flags & (0x0100 | 0x0400) != 0 {
                     return Ok(Value::Void);
@@ -710,12 +722,19 @@ impl<'a> Vm<'a> {
             return Ok(Value::Void);
         }
         if class_name == "Ljava/lang/Class;" && method_name == "forName" {
-            let requested = string_arg(args, 0).map_err(|error| {
-                self.error(
-                    error.pc,
-                    error.opcode,
-                    "Class.forName expects a java.lang.String argument",
-                )
+            let requested = string_arg(args, 0).or_else(|_| {
+                args.iter()
+                    .find_map(|value| match value {
+                        Value::String(value) => Some(Ok(value.clone())),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| {
+                        Err(VmError {
+                            pc: 0,
+                            opcode: 0,
+                            message: "Class.forName expects a java.lang.String argument".to_owned(),
+                        })
+                    })
             })?;
             let descriptor = if requested.starts_with('L') && requested.ends_with(';') {
                 requested
@@ -885,6 +904,61 @@ impl<'a> Vm<'a> {
                 } else {
                     FrameworkResult::Object(0)
                 }
+            }
+            ("Landroid/content/Intent;", "addFlags") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(object_arg(args, 0)?)
+            }
+            ("Landroid/content/Intent;", "setFlags") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(object_arg(args, 0)?)
+            }
+            ("Landroid/content/Intent;", "setClassName") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(object_arg(args, 0)?)
+            }
+            ("Landroid/content/Intent;", "putExtra") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(object_arg(args, 0)?)
+            }
+            ("Landroid/app/Activity;", "getIntent") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(self.alloc_instance("Landroid/content/Intent;"))
+            }
+            ("Landroid/content/Intent;", "getExtras") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(0)
+            }
+            ("Landroid/content/Intent;", "getStringExtra") => {
+                object_arg(args, 0)?;
+                FrameworkResult::String(String::new())
+            }
+            ("Landroid/content/Intent;", "hasExtra") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Bool(false)
+            }
+            ("Landroid/content/Intent;", "getData") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(0)
+            }
+            ("Landroid/content/Intent;", "getDataString") => {
+                object_arg(args, 0)?;
+                FrameworkResult::String(String::new())
+            }
+            ("Landroid/content/Intent;", "getAction") => {
+                object_arg(args, 0)?;
+                FrameworkResult::String(String::new())
+            }
+            ("Landroid/app/Activity;", "startActivity")
+            | ("Landroid/app/Activity;", "startActivityForResult") => {
+                object_arg(args, 0)?;
+                object_arg(args, 1)?;
+                FrameworkResult::Void
+            }
+            ("Landroid/app/Activity;", "startActivityIfNeeded") => {
+                object_arg(args, 0)?;
+                object_arg(args, 1)?;
+                FrameworkResult::Bool(true)
             }
             _ => {
                 return Err(self.error(
