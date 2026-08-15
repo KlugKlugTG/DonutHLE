@@ -966,7 +966,7 @@ impl<'a> Vm<'a> {
                 let value = match args.get(0) {
                     Some(Value::Float(value)) => value.round() as i32,
                     Some(Value::Double(value)) => value.round() as i64 as i32,
-                    Some(Value::Int(value)) => f32::from_bits(*value as u32).round() as i32,
+                    Some(Value::Int(value)) => (*value as f32).round() as i32,
                     _ => return Err(self.error(0, 0, "Math.round argument is not numeric")),
                 };
                 FrameworkResult::Int(value)
@@ -1199,7 +1199,7 @@ fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
 fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
     match value {
         Value::Float(value) => Ok(value),
-        Value::Int(value) => Ok(f32::from_bits(value as u32)),
+        Value::Int(value) => Ok(value as f32),
         Value::Null => Ok(0.0),
         _ => Err(VmError {
             pc,
