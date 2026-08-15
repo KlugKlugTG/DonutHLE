@@ -6,11 +6,11 @@ This directory is the Android Studio/Gradle shell for DonutHLE. It builds a nati
 - `armeabi-v7a`
 - `x86_64`
 
-The current Android app is a native smoke-test shell. It loads the `donuthle` JNI library and displays the Android 1.6 target profile. The Rust core is already configured as a `cdylib`; the next integration step is to connect the Rust runtime to the JNI bridge.
+The Android app loads the Rust `donuthle` core through a JNI bridge. GitHub Actions cross-compiles the Rust static library for every supported ABI before Gradle packages the APK. A local Android build without a prebuilt Rust library remains a UI-only fallback and reports that state in the About screen.
 
 ## Build on a normal development machine
 
-Install Android Studio with SDK Platform 35, Build Tools, NDK 25.2.9519653 or newer, CMake 3.22.1 or newer, Java 17, and Rust.
+Install Android Studio with SDK Platform 35, Build Tools 35.0.0, NDK 27.0.12077973, CMake 3.22.1, Java 17, and Rust.
 
 From this directory:
 
