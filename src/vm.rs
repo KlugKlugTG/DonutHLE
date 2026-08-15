@@ -139,10 +139,16 @@ impl<'a> Vm<'a> {
             .method_id(method_index)
             .ok_or_else(|| self.error(0, 0, format!("method index {method_index} is invalid")))?
             .clone();
-        if method.class_name.starts_with("Landroid/")
-            || method.class_name == "Ljava/lang/Class;"
-            || method.class_name.starts_with("Ljava/lang/reflect/")
-        {
+        let framework_class = method.class_name.starts_with("Landroid/")
+            || method.class_name.starts_with("Ljava/")
+            || method.class_name.starts_with("Ldalvik/");
+        if framework_class {
+            if let Some(code) = self.dex.method_code_by_index(method_index).cloned() {
+                self.call_depth += 1;
+                let result = self.execute_code(&code, args);
+                self.call_depth -= 1;
+                return result;
+            }
             return self.dispatch_framework(&method.class_name, &method.name, &args);
         }
         let code = match self.dex.method_code_by_index(method_index) {
@@ -1059,7 +1065,13 @@ fn object_arg(args: &[Value], index: usize) -> Result<ObjectId, VmError> {
 fn string_arg(args: &[Value], index: usize) -> Result<String, VmError> {
     match args.get(index) {
         Some(Value::String(value)) => Ok(value.clone()),
-        Some(Value::Object(_)) => Ok(String::new()),
+        Some(Value::Object(id)) => Err(VmError {
+            pc: 0,
+            opcode: 0,
+            message: format!(
+                "framework argument {index} is object {id}, expected java.lang.String"
+            ),
+        }),
         _ => Err(VmError {
             pc: 0,
             opcode: 0,
