@@ -1055,6 +1055,20 @@ impl<'a> Vm<'a> {
             ("Ljava/lang/System;", "currentTimeMillis") => FrameworkResult::Long(0),
             ("Ljava/lang/System;", "arraycopy") => FrameworkResult::Void,
             ("Ljava/lang/Thread;", "sleep") => FrameworkResult::Void,
+            ("Ljava/lang/Integer;", "parseInt") => {
+                let text = string_arg(args, 0)?;
+                let radix = match args.get(1) {
+                    Some(Value::Int(value)) => *value,
+                    _ => 10,
+                };
+                let value = i32::from_str_radix(text.trim(), radix as u32)
+                    .map_err(|_| self.error(0, 0, "Integer.parseInt received invalid text"))?;
+                FrameworkResult::Int(value)
+            }
+            ("Ljava/lang/Integer;", "valueOf") => FrameworkResult::Int(int_arg(args, 0)?),
+            ("Ljava/lang/Boolean;", "parseBoolean") => {
+                FrameworkResult::Bool(string_arg(args, 0)?.eq_ignore_ascii_case("true"))
+            }
             ("Ljava/lang/Math;", "round") => {
                 let value = match args.get(0) {
                     Some(Value::Float(value)) => value.round() as i32,
