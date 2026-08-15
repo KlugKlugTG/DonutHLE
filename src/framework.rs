@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 pub enum Value {
     Null,
     Int(i32),
+    Long(i64),
     Bool(bool),
     String(String),
 }
@@ -308,6 +309,7 @@ pub enum FrameworkCall {
 pub enum FrameworkResult {
     Void,
     Int(i32),
+    Long(i64),
     Bool(bool),
     Object(u32),
     String(String),

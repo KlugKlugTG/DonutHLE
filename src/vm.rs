@@ -306,40 +306,56 @@ impl<'a> Vm<'a> {
                     )?;
                     pc += 2;
                 }
-                0x17 => {
+                0x16 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let value = code_word(code, pc + 1, pc, opcode)? as i16 as i64;
                     set_register(
                         &mut registers,
                         register,
-                        Value::Long(value << 48),
+                        Value::Long(value),
                         self,
                         pc,
                         opcode,
                     )?;
                     pc += 2;
                 }
-                0x16 => {
+                0x17 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let low = code_word(code, pc + 1, pc, opcode)? as u32;
-                    let high = code_word(code, pc + 2, pc, opcode)? as u32;
+                    let value = code_word(code, pc + 1, pc, opcode)? as i32 as i64
+                        | ((code_word(code, pc + 2, pc, opcode)? as i32 as i64) << 16);
                     set_register(
                         &mut registers,
                         register,
-                        Value::Long((low | high << 16) as i64),
+                        Value::Long(value),
                         self,
                         pc,
                         opcode,
                     )?;
                     pc += 3;
                 }
-                0x19 => {
+                0x18 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let value = (code_word(code, pc + 1, pc, opcode)? as i16 as i64) << 48;
+                    let mut bits = 0u64;
+                    for part in 0..4 {
+                        bits |= (code_word(code, pc + 1 + part, pc, opcode)? as u64) << (part * 16);
+                    }
                     set_register(
                         &mut registers,
                         register,
-                        Value::Long(value),
+                        Value::Long(bits as i64),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 5;
+                }
+                0x19 => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    let value = (code_word(code, pc + 1, pc, opcode)? as u64) << 48;
+                    set_register(
+                        &mut registers,
+                        register,
+                        Value::Long(value as i64),
                         self,
                         pc,
                         opcode,
@@ -460,6 +476,65 @@ impl<'a> Vm<'a> {
                         opcode,
                     )?;
                     pc += 2;
+                }
+                0x26 => {
+                    let array_register = ((instruction >> 8) & 0xff) as usize;
+                    let array = get_object(&registers, array_register, self, pc, opcode)?;
+                    let offset = (code_word(code, pc + 1, pc, opcode)? as u32)
+                        | ((code_word(code, pc + 2, pc, opcode)? as u32) << 16);
+                    let payload = (pc as i64 + offset as i32 as i64) as usize;
+                    if payload + 4 > code.instructions.len() || code.instructions[payload] != 0x0300
+                    {
+                        return Err(self.error(pc, opcode, "invalid fill-array-data payload"));
+                    }
+                    let element_width = code.instructions[payload + 1] as usize;
+                    let size = (code.instructions[payload + 2] as u32)
+                        | ((code.instructions[payload + 3] as u32) << 16);
+                    let size = size as usize;
+                    let words = (element_width * size + 1) / 2;
+                    if payload + 4 + words > code.instructions.len() {
+                        return Err(self.error(pc, opcode, "truncated fill-array-data payload"));
+                    }
+                    let component = match self.heap_object(array) {
+                        Some(HeapObject::Array { component, .. }) => component.clone(),
+                        _ => {
+                            return Err(self.error(
+                                pc,
+                                opcode,
+                                "fill-array-data target is not an array",
+                            ))
+                        }
+                    };
+                    let mut values = Vec::with_capacity(size);
+                    for index in 0..size {
+                        let bit_offset = index * element_width;
+                        let mut raw = 0u32;
+                        for byte in 0..element_width {
+                            let unit = code.instructions[payload + 4 + (bit_offset + byte) / 2];
+                            let value = if (bit_offset + byte) % 2 == 0 {
+                                (unit & 0xff) as u32
+                            } else {
+                                (unit >> 8) as u32
+                            };
+                            raw |= value << (byte * 8);
+                        }
+                        values.push(if component == "F" {
+                            Value::Float(f32::from_bits(raw))
+                        } else {
+                            Value::Int(raw as i32)
+                        });
+                    }
+                    match self.heap.get_mut(array as usize) {
+                        Some(HeapObject::Array { values: target, .. }) => *target = values,
+                        _ => {
+                            return Err(self.error(
+                                pc,
+                                opcode,
+                                "fill-array-data target is not an array",
+                            ))
+                        }
+                    }
+                    pc += 3;
                 }
                 0x27 => {
                     return Err(self.error(
@@ -828,6 +903,20 @@ impl<'a> Vm<'a> {
             | ("Landroid/app/Activity;", "onRestoreInstanceState")
             | ("Landroid/app/Activity;", "onNewIntent")
             | ("Landroid/app/Activity;", "onWindowFocusChanged") => FrameworkResult::Void,
+            ("Landroid/app/Activity;", "getWindow") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(self.alloc_instance("Landroid/view/Window;"))
+            }
+            ("Landroid/view/Window;", "setFlags")
+            | ("Landroid/view/Window;", "addFlags")
+            | ("Landroid/view/Window;", "clearFlags") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Void
+            }
+            ("Landroid/app/Activity;", "requestWindowFeature") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Bool(true)
+            }
             ("Landroid/app/Activity;", "setContentView") => {
                 let activity = object_arg(args, 0)?;
                 let view = object_arg(args, 1)?;
@@ -962,11 +1051,16 @@ impl<'a> Vm<'a> {
             ("Landroid/net/ConnectivityManager;", "getActiveNetworkInfo") => {
                 FrameworkResult::Object(0)
             }
+            ("Ljava/lang/System;", "nanoTime") => FrameworkResult::Long(0),
+            ("Ljava/lang/System;", "currentTimeMillis") => FrameworkResult::Long(0),
+            ("Ljava/lang/System;", "arraycopy") => FrameworkResult::Void,
+            ("Ljava/lang/Thread;", "sleep") => FrameworkResult::Void,
             ("Ljava/lang/Math;", "round") => {
                 let value = match args.get(0) {
                     Some(Value::Float(value)) => value.round() as i32,
                     Some(Value::Double(value)) => value.round() as i64 as i32,
-                    Some(Value::Int(value)) => (*value as f32).round() as i32,
+                    Some(Value::Int(value)) => f32::from_bits(*value as u32).round() as i32,
+                    Some(Value::Long(value)) => f64::from_bits(*value as u64).round() as i64 as i32,
                     _ => return Err(self.error(0, 0, "Math.round argument is not numeric")),
                 };
                 FrameworkResult::Int(value)
@@ -1053,6 +1147,7 @@ impl<'a> Vm<'a> {
         Ok(match result {
             FrameworkResult::Void => Value::Void,
             FrameworkResult::Int(value) => Value::Int(value),
+            FrameworkResult::Long(value) => Value::Long(value),
             FrameworkResult::Bool(value) => Value::Int(i32::from(value)),
             FrameworkResult::Object(value) => {
                 if value == 0 {
@@ -1199,7 +1294,9 @@ fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
 fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
     match value {
         Value::Float(value) => Ok(value),
+        Value::Double(value) => Ok(value as f32),
         Value::Int(value) => Ok(value as f32),
+        Value::Long(value) => Ok(value as f32),
         Value::Null => Ok(0.0),
         _ => Err(VmError {
             pc,
