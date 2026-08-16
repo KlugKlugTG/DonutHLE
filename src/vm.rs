@@ -859,7 +859,9 @@ impl<'a> Vm<'a> {
                     if opcode <= 0x58 {
                         let object = get_object(&registers, object_register, self, pc, opcode)?;
                         let existing = match self.heap_object(object) {
-                            Some(HeapObject::Instance { fields, .. }) => fields.get(&field_key).cloned(),
+                            Some(HeapObject::Instance { fields, .. }) => {
+                                fields.get(&field_key).cloned()
+                            }
                             _ => {
                                 return Err(self.error(
                                     pc,
@@ -876,21 +878,22 @@ impl<'a> Vm<'a> {
                             .is_some_and(|field| field.name == "mMainLayer")
                         {
                             let layer = self.alloc_instance("Lcom/hyperkani/common/Layer;");
-                            if let Some(HeapObject::Instance { fields, .. }) = self.heap.get_mut(object as usize) {
+                            if let Some(HeapObject::Instance { fields, .. }) =
+                                self.heap.get_mut(object as usize)
+                            {
                                 fields.insert(field_key, Value::Object(layer));
                             }
                             Value::Object(layer)
                         } else {
-                            self.dex.field_id(field_index as usize).map_or(
-                                Value::Null,
-                                |field| match field.type_name.as_str() {
+                            self.dex
+                                .field_id(field_index as usize)
+                                .map_or(Value::Null, |field| match field.type_name.as_str() {
                                     "I" | "Z" | "B" | "S" | "C" => Value::Int(0),
                                     "F" => Value::Float(0.0),
                                     "J" => Value::Long(0),
                                     "D" => Value::Double(0.0),
                                     _ => Value::Null,
-                                },
-                            )
+                                })
                         };
                         set_register(&mut registers, value_register, value, self, pc, opcode)?;
                     } else {
