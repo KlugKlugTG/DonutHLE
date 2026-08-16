@@ -1085,6 +1085,39 @@ impl<'a> Vm<'a> {
                     };
                     return Ok(Value::Int(i32::from(matched)));
                 }
+                "split" => {
+                    let value = value_of(args.first());
+                    let separator = value_of(args.get(1));
+                    let values = if separator.is_empty() {
+                        value
+                            .chars()
+                            .map(|c| Value::Object(self.alloc_string(c.to_string())))
+                            .collect()
+                    } else {
+                        value
+                            .split(&separator)
+                            .map(|part| Value::Object(self.alloc_string(part.to_owned())))
+                            .collect()
+                    };
+                    let array = self.alloc(HeapObject::Array {
+                        component: "Ljava/lang/String;".to_owned(),
+                        values,
+                    });
+                    return Ok(Value::Object(array));
+                }
+                "charAt" => {
+                    let value = value_of(args.first());
+                    let index = int_arg(args, 1)? as usize;
+                    let ch = value.chars().nth(index).unwrap_or('\0') as i32;
+                    return Ok(Value::Int(ch));
+                }
+                "indexOf" => {
+                    let value = value_of(args.first());
+                    let needle = value_of(args.get(1));
+                    return Ok(Value::Int(
+                        value.find(&needle).map_or(-1, |index| index as i32),
+                    ));
+                }
 
                 _ => {}
             }
