@@ -881,19 +881,68 @@ impl<'a> Vm<'a> {
             if class_name == "Ljava/util/ArrayList;" || class_name == "Ljava/util/LinkedList;" || class_name == "Ljava/util/HashMap;" {
                 if let Some(Value::Object(receiver)) = args.first() { if (*receiver as usize) < self.heap.len() { self.heap[*receiver as usize] = HeapObject::Collection(Vec::new()); } }
             } else if class_name == "Ljava/lang/StringBuilder;" {
-                if let Some(Value::Object(receiver)) = args.first() { if (*receiver as usize) < self.heap.len() { let initial = args.get(1).and_then(|value| match value { Value::String(text) => Some(text.clone()), Value::Object(id) => match self.heap_object(*id) { Some(HeapObject::String(text)) => Some(text.clone()), _ => None }, _ => None }).unwrap_or_default(); self.heap[*receiver as usize] = HeapObject::StringBuilder(initial); } }
+                if let Some(Value::Object(receiver)) = args.first() {
+                    if (*receiver as usize) < self.heap.len() {
+                        let initial = args
+                            .get(1)
+                            .and_then(|value| match value {
+                                Value::String(text) => Some(text.clone()),
+                                Value::Object(id) => match self.heap_object(*id) {
+                                    Some(HeapObject::String(text)) => Some(text.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        self.heap[*receiver as usize] = HeapObject::StringBuilder(initial);
+                    }
+                }
+
             }
             return Ok(Value::Void);
         }
         if class_name == "Ljava/lang/String;" {
-            let value_of = |value: Option<&Value>| match value { Some(Value::String(value)) => value.clone(), Some(Value::Int(value)) => value.to_string(), Some(Value::Long(value)) => value.to_string(), Some(Value::Float(value)) => value.to_string(), Some(Value::Double(value)) => value.to_string(), Some(Value::Object(id)) => match self.heap_object(*id) { Some(HeapObject::String(value)) => value.clone(), Some(HeapObject::StringBuilder(value)) => value.clone(), Some(HeapObject::Boxed(value)) => format!("{value:?}"), Some(HeapObject::Class(value)) => value.clone(), _ => "null".to_owned() }, _ => "null".to_owned() };
+            let value_of = |value: Option<&Value>| match value {
+                Some(Value::String(value)) => value.clone(),
+                Some(Value::Int(value)) => value.to_string(),
+                Some(Value::Long(value)) => value.to_string(),
+                Some(Value::Float(value)) => value.to_string(),
+                Some(Value::Double(value)) => value.to_string(),
+                Some(Value::Object(id)) => match self.heap_object(*id) {
+                    Some(HeapObject::String(value)) => value.clone(),
+                    Some(HeapObject::StringBuilder(value)) => value.clone(),
+                    Some(HeapObject::Boxed(value)) => format!("{value:?}"),
+                    Some(HeapObject::Class(value)) => value.clone(),
+                    _ => "null".to_owned(),
+                },
+                _ => "null".to_owned(),
+            };
+
             match method_name {
                 "valueOf" => return Ok(Value::Object(self.alloc_string(value_of(args.first())))),
                 "length" => return Ok(Value::Int(value_of(args.first()).chars().count() as i32)),
                 "toString" => return Ok(Value::Object(object_arg(args, 0)?)),
-                "concat" => { let mut value = value_of(args.first()); value.push_str(&value_of(args.get(1))); return Ok(Value::Object(self.alloc_string(value))); }
-                "equals" => { let left = value_of(args.first()); let right = value_of(args.get(1)); return Ok(Value::Int(i32::from(left == right))); }
-                "startsWith" | "endsWith" | "contains" => { let left = value_of(args.first()); let right = value_of(args.get(1)); let matched = match method_name { "startsWith" => left.starts_with(&right), "endsWith" => left.ends_with(&right), _ => left.contains(&right) }; return Ok(Value::Int(i32::from(matched))); }
+                "concat" => {
+                    let mut value = value_of(args.first());
+                    value.push_str(&value_of(args.get(1)));
+                    return Ok(Value::Object(self.alloc_string(value)));
+                }
+                "equals" => {
+                    let left = value_of(args.first());
+                    let right = value_of(args.get(1));
+                    return Ok(Value::Int(i32::from(left == right)));
+                }
+                "startsWith" | "endsWith" | "contains" => {
+                    let left = value_of(args.first());
+                    let right = value_of(args.get(1));
+                    let matched = match method_name {
+                        "startsWith" => left.starts_with(&right),
+                        "endsWith" => left.ends_with(&right),
+                        _ => left.contains(&right),
+                    };
+                    return Ok(Value::Int(i32::from(matched)));
+                }
+
                 _ => {}
             }
         }
