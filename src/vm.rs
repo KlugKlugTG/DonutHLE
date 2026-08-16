@@ -282,9 +282,31 @@ impl<'a> Vm<'a> {
                 .dex
                 .framework_method_owner(&method.class_name, &method.name)
             {
-                return self.dispatch_framework(&owner, &method.name, &args);
+                return self
+                    .dispatch_framework(&owner, &method.name, &args)
+                    .map_err(|error| {
+                        self.error(
+                            error.pc,
+                            error.opcode,
+                            format!(
+                                "{} while dispatching {}->{}",
+                                error.message, owner, method.name
+                            ),
+                        )
+                    });
             }
-            return self.dispatch_framework(&method.class_name, &method.name, &args);
+            return self
+                .dispatch_framework(&method.class_name, &method.name, &args)
+                .map_err(|error| {
+                    self.error(
+                        error.pc,
+                        error.opcode,
+                        format!(
+                            "{} while dispatching {}->{}",
+                            error.message, method.class_name, method.name
+                        ),
+                    )
+                });
         }
         let code = match self.dex.method_code_by_index(method_index) {
             Some(code) => code.clone(),
@@ -591,7 +613,10 @@ impl<'a> Vm<'a> {
                     let class_name = self.dex.types.get(type_index).cloned().ok_or_else(|| {
                         self.error(pc, opcode, "new-instance type index is invalid")
                     })?;
-                    let object = if class_name == "Ljava/util/ArrayList;" {
+                    let object = if matches!(
+                        class_name.as_str(),
+                        "Ljava/util/ArrayList;" | "Ljava/util/LinkedList;" | "Ljava/util/HashMap;"
+                    ) {
                         self.alloc(HeapObject::Collection(Vec::new()))
                     } else {
                         self.alloc_instance(class_name.clone())
@@ -871,29 +896,41 @@ impl<'a> Vm<'a> {
                                 ))
                             }
                         };
+                        if std::env::var_os("DONUTHLE_TRACE").is_some() {
+                            eprintln!(
+                                "iget field={field_key} object={object} existing={existing:?}"
+                            );
+                        }
                         let value = if let Some(value) = existing {
                             value
-                        } else if self
-                            .dex
-                            .field_id(field_index as usize)
-                            .is_some_and(|field| field.name == "mMainLayer")
-                        {
-                            let layer = self.alloc_instance("Lcom/hyperkani/common/Layer;");
-                            if let Some(HeapObject::Instance { fields, .. }) =
-                                self.heap.get_mut(object as usize)
-                            {
-                                fields.insert(field_key, Value::Object(layer));
-                            }
-                            Value::Object(layer)
                         } else {
                             self.dex
                                 .field_id(field_index as usize)
-                                .map_or(Value::Null, |field| match field.type_name.as_str() {
-                                    "I" | "Z" | "B" | "S" | "C" => Value::Int(0),
-                                    "F" => Value::Float(0.0),
-                                    "J" => Value::Long(0),
-                                    "D" => Value::Double(0.0),
-                                    _ => Value::Null,
+                                .map_or(Value::Null, |field| {
+                                    if field.name == "mMainLayer" {
+                                        let layer =
+                                            self.alloc_instance("Lcom/hyperkani/common/Layer;");
+                                        if let Some(HeapObject::Instance { fields, .. }) =
+                                            self.heap.get_mut(object as usize)
+                                        {
+                                            fields.insert(field_key.clone(), Value::Object(layer));
+                                        }
+                                        Value::Object(layer)
+                                    } else if field.name == "mChildren"
+                                        && field.type_name == "Ljava/util/ArrayList;"
+                                    {
+                                        Value::Object(
+                                            self.alloc(HeapObject::Collection(Vec::new())),
+                                        )
+                                    } else {
+                                        match field.type_name.as_str() {
+                                            "I" | "Z" | "B" | "S" | "C" => Value::Int(0),
+                                            "F" => Value::Float(0.0),
+                                            "J" => Value::Long(0),
+                                            "D" => Value::Double(0.0),
+                                            _ => Value::Null,
+                                        }
+                                    }
                                 })
                         };
                         set_register(&mut registers, value_register, value, self, pc, opcode)?;
@@ -908,6 +945,9 @@ impl<'a> Vm<'a> {
                         } else {
                             get_register(&registers, value_register, pc, opcode)?.clone()
                         };
+                        if std::env::var_os("DONUTHLE_TRACE").is_some() {
+                            eprintln!("iput field={field_key} object={object} value={value:?}");
+                        }
                         match self.heap.get_mut(object as usize) {
                             Some(HeapObject::Instance { fields, .. }) => {
                                 fields.insert(field_key, value);
@@ -973,6 +1013,14 @@ impl<'a> Vm<'a> {
                     } else {
                         method_index
                     };
+                    if std::env::var_os("DONUTHLE_TRACE").is_some() {
+                        let label = self
+                            .dex
+                            .method_id(method_index)
+                            .map(|m| format!("{}->{}", m.class_name, m.name))
+                            .unwrap_or_else(|| format!("#{}", method_index));
+                        eprintln!("invoke op={opcode:#x} pc={pc} {label} args={args:?}");
+                    }
                     pending_result = self.call_method(target, args)?;
                     pc += 3;
                 }
@@ -985,6 +1033,14 @@ impl<'a> Vm<'a> {
                         pc,
                         opcode,
                     )?;
+                    if std::env::var_os("DONUTHLE_TRACE").is_some() {
+                        let label = self
+                            .dex
+                            .method_id(method_index)
+                            .map(|m| format!("{}->{}", m.class_name, m.name))
+                            .unwrap_or_else(|| format!("#{}", method_index));
+                        eprintln!("invoke-direct pc={pc} {label} args={args:?}");
+                    }
                     pending_result = self.call_method(method_index, args)?;
                     pc += 3;
                 }
@@ -1872,6 +1928,8 @@ impl<'a> Vm<'a> {
     ) -> Result<Value, VmError> {
         let result = match (class_name, method_name) {
             (_, "<clinit>") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getType")
+            | ("Lcom/badlogic/gdx/Application;", "getType") => FrameworkResult::Object(0),
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "initializeForView") => {
                 let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
                 self.framework.gdx_view = Some(view);
@@ -2062,7 +2120,6 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/Preferences;", "putBoolean")
             | ("Lcom/badlogic/gdx/Preferences;", "putInteger")
             | ("Lcom/badlogic/gdx/Preferences;", "flush") => FrameworkResult::Void,
-            ("Lcom/badlogic/gdx/Application;", "getType") => FrameworkResult::Object(0),
             ("Lcom/badlogic/gdx/Application;", "getAudio") => {
                 FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Audio;"))
             }
@@ -2228,6 +2285,25 @@ impl<'a> Vm<'a> {
                 let _z = float_arg(args, 3)?;
                 FrameworkResult::Object(receiver)
             }
+            ("Lcom/badlogic/gdx/Graphics;", "setVSync")
+            | ("Lcom/badlogic/gdx/Graphics;", "setContinuousRendering")
+            | ("Lcom/badlogic/gdx/Graphics;", "setDisplayMode")
+            | ("Lcom/badlogic/gdx/Graphics;", "setTitle")
+            | ("Lcom/badlogic/gdx/Graphics;", "setResizable")
+            | ("Lcom/badlogic/gdx/Graphics;", "setFullscreenMode")
+            | ("Lcom/badlogic/gdx/Graphics;", "setWindowedMode")
+            | ("Lcom/badlogic/gdx/Graphics;", "setSystemCursor")
+            | ("Lcom/badlogic/gdx/Graphics;", "setUndecorated")
+            | ("Lcom/badlogic/gdx/Graphics;", "setBorderlessWindow")
+            | ("Lcom/badlogic/gdx/Graphics;", "setForegroundFPS")
+            | ("Lcom/badlogic/gdx/Graphics;", "setIdleFPS") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Graphics;", "isFullscreen")
+            | ("Lcom/badlogic/gdx/Graphics;", "isGL30Available")
+            | ("Lcom/badlogic/gdx/Graphics;", "isGL31Available")
+            | ("Lcom/badlogic/gdx/Graphics;", "isGL32Available") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Graphics;", "getDensity")
+            | ("Lcom/badlogic/gdx/Graphics;", "getPpcX")
+            | ("Lcom/badlogic/gdx/Graphics;", "getPpcY") => FrameworkResult::Int(1),
             ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "update")
             | ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "apply")
             | ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "translate")
