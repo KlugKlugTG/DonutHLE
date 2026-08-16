@@ -799,17 +799,46 @@ impl<'a> Vm<'a> {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
                 }
+                0xc0..=0xc7 => {
+                    let (dest, source) = two_registers(instruction);
+                    let left = as_long(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let right = get_register(&registers, source, pc, opcode)?;
+                    let value = match opcode {
+                        0xc0 => left.wrapping_add(as_long(right, pc, opcode)?),
+                        0xc1 => left.wrapping_sub(as_long(right, pc, opcode)?),
+                        0xc2 => left.wrapping_mul(as_long(right, pc, opcode)?),
+                        0xc3 => {
+                            let divisor = as_long(right, pc, opcode)?;
+                            if divisor == 0 {
+                                return Err(self.error(pc, opcode, "long division by zero"));
+                            }
+                            left.wrapping_div(divisor)
+                        }
+                        0xc4 => {
+                            let divisor = as_long(right, pc, opcode)?;
+                            if divisor == 0 {
+                                return Err(self.error(pc, opcode, "long remainder by zero"));
+                            }
+                            left.wrapping_rem(divisor)
+                        }
+                        0xc5 => left & as_long(right, pc, opcode)?,
+                        0xc6 => left | as_long(right, pc, opcode)?,
+                        _ => left ^ as_long(right, pc, opcode)?,
+                    };
+                    set_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
                 0xc8..=0xca => {
                     let (dest, source) = two_registers(instruction);
-                    let left = as_float(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
-                    let right =
-                        as_float(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let left = as_long(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let right = as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let shift = (right as u32) & 0x3f;
                     let value = match opcode {
-                        0xc8 => left * right,
-                        0xc9 => left / right,
-                        _ => left % right,
+                        0xc8 => left.wrapping_shl(shift),
+                        0xc9 => left >> shift,
+                        _ => ((left as u64) >> shift) as i64,
                     };
-                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    set_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
                     pc += 1;
                 }
                 0xcb..=0xcf => {
@@ -1982,6 +2011,20 @@ fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
         }),
     }
 }
+
+fn as_long(value: Value, pc: usize, opcode: u8) -> Result<i64, VmError> {
+    match value {
+        Value::Long(value) => Ok(value),
+        Value::Int(value) => Ok(value as i64),
+        Value::Null => Ok(0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not a long".to_owned(),
+        }),
+    }
+}
+
 fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> {
     match value {
         Value::Double(value) => Ok(value),
