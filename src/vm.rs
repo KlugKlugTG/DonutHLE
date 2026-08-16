@@ -510,7 +510,7 @@ impl<'a> Vm<'a> {
                 0x16 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let value = code_word(code, pc + 1, pc, opcode)? as i16 as i64;
-                    set_register(
+                    set_wide_register(
                         &mut registers,
                         register,
                         Value::Long(value),
@@ -524,7 +524,7 @@ impl<'a> Vm<'a> {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let low = code_word(code, pc + 1, pc, opcode)? as u32;
                     let high = code_word(code, pc + 2, pc, opcode)? as u32;
-                    set_register(
+                    set_wide_register(
                         &mut registers,
                         register,
                         Value::Long((low | high << 16) as i64),
@@ -540,7 +540,7 @@ impl<'a> Vm<'a> {
                     let high = code_word(code, pc + 2, pc, opcode)? as u64;
                     let upper = code_word(code, pc + 3, pc, opcode)? as u64;
                     let top = code_word(code, pc + 4, pc, opcode)? as u64;
-                    set_register(
+                    set_wide_register(
                         &mut registers,
                         register,
                         Value::Long((low | high << 16 | upper << 32 | top << 48) as i64),
@@ -1928,6 +1928,26 @@ fn set_register(
         opcode,
         message: format!("register v{index} is outside the frame"),
     })? = value;
+    Ok(())
+}
+
+fn set_wide_register(
+    registers: &mut [Value],
+    index: usize,
+    value: Value,
+    vm: &Vm<'_>,
+    pc: usize,
+    opcode: u8,
+) -> Result<(), VmError> {
+    if index + 1 >= registers.len() {
+        return Err(vm.error(
+            pc,
+            opcode,
+            format!("wide register v{index} is outside the frame"),
+        ));
+    }
+    registers[index] = value;
+    registers[index + 1] = Value::Void;
     Ok(())
 }
 
