@@ -1426,9 +1426,7 @@ impl<'a> Vm<'a> {
         if class_name.starts_with("Lcom/badlogic/gdx/") {
             return self.dispatch_gdx(class_name, method_name, args);
         }
-        if class_name.starts_with("Lcom/hyperkani/common/")
-            && (method_name == "addChild" || method_name == "add" || method_name == "<init>")
-        {
+        if class_name.starts_with("Lcom/hyperkani/common/") {
             if method_name == "addChild" || method_name == "add" {
                 let mut objects = args.iter().filter_map(|value| match value {
                     Value::Object(id) => Some(*id),
