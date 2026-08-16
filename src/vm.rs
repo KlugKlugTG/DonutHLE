@@ -600,11 +600,20 @@ impl<'a> Vm<'a> {
                     let dest = ((instruction >> 8) & 0xff) as usize;
                     let source = ((instruction >> 12) & 0x0f) as usize;
                     let result = match get_register(&registers, source, pc, opcode)? {
-                        Value::Object(id) => matches!(self.heap_object(id), Some(HeapObject::Instance { .. })),
+                        Value::Object(id) => {
+                            matches!(self.heap_object(id), Some(HeapObject::Instance { .. }))
+                        }
                         Value::Null => false,
                         _ => false,
                     };
-                    set_register(&mut registers, dest, Value::Int(i32::from(result)), self, pc, opcode)?;
+                    set_register(
+                        &mut registers,
+                        dest,
+                        Value::Int(i32::from(result)),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
                     pc += 1;
                 }
                 0x21 => {
@@ -734,7 +743,13 @@ impl<'a> Vm<'a> {
                     }
                     match self.heap.get_mut(array as usize) {
                         Some(HeapObject::Array { values: target, .. }) => *target = values,
-                        _ => return Err(self.error(pc, opcode, "fill-array-data target is not an array")),
+                        _ => {
+                            return Err(self.error(
+                                pc,
+                                opcode,
+                                "fill-array-data target is not an array",
+                            ))
+                        }
                     }
                     pc += 3;
                 }
@@ -753,8 +768,10 @@ impl<'a> Vm<'a> {
                 0x2d..=0x31 => {
                     let (dest, left_reg, right_reg) =
                         three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
-                    let left = as_float(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
-                    let right = as_float(get_register(&registers, right_reg, pc, opcode)?, pc, opcode)?;
+                    let left =
+                        as_float(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
+                    let right =
+                        as_float(get_register(&registers, right_reg, pc, opcode)?, pc, opcode)?;
                     let value = match opcode {
                         0x2d => left + right,
                         0x2e => left - right,
@@ -772,35 +789,62 @@ impl<'a> Vm<'a> {
                     let right_value = get_register(&registers, right, pc, opcode)?;
                     let equal = values_equal(&left_value, &right_value);
                     let take = if opcode <= 0x33 { equal } else { !equal };
-                        if take { pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?; } else { pc += 2; }
+                    if take {
+                        pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
+                    } else {
+                        pc += 2;
+                    }
                 }
                 0x38..=0x3d => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     let value = get_register(&registers, register, pc, opcode)?;
-                    let zero = matches!(value, Value::Null) || as_int(value.clone(), pc, opcode).unwrap_or(0) == 0;
-                    let take = match opcode { 0x38 => zero, 0x39 => !zero, 0x3a => zero, 0x3b => !zero, 0x3c => zero, _ => !zero };
-                    if take { pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?; } else { pc += 2; }
+                    let zero = matches!(value, Value::Null)
+                        || as_int(value.clone(), pc, opcode).unwrap_or(0) == 0;
+                    let take = match opcode {
+                        0x38 => zero,
+                        0x39 => !zero,
+                        0x3a => zero,
+                        0x3b => !zero,
+                        0x3c => zero,
+                        _ => !zero,
+                    };
+                    if take {
+                        pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
+                    } else {
+                        pc += 2;
+                    }
                 }
                 0x44..=0x4b => {
-                    let (dest, array_reg, index_reg) = three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let (dest, array_reg, index_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
                     let array = get_object(&registers, array_reg, self, pc, opcode)?;
-                    let index = as_int(get_register(&registers, index_reg, pc, opcode)?, pc, opcode)? as usize;
+                    let index =
+                        as_int(get_register(&registers, index_reg, pc, opcode)?, pc, opcode)?
+                            as usize;
                     let value = match self.heap_object(array) {
-                        Some(HeapObject::Array { values, .. }) => values.get(index).cloned().ok_or_else(|| self.error(pc, opcode, "array index out of bounds"))?,
+                        Some(HeapObject::Array { values, .. }) => values
+                            .get(index)
+                            .cloned()
+                            .ok_or_else(|| self.error(pc, opcode, "array index out of bounds"))?,
                         _ => return Err(self.error(pc, opcode, "array target is not an array")),
                     };
                     set_register(&mut registers, dest, value, self, pc, opcode)?;
                     pc += 2;
                 }
                 0x4c..=0x51 => {
-                    let (value_reg, array_reg, index_reg) = three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let (value_reg, array_reg, index_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
                     let array = get_object(&registers, array_reg, self, pc, opcode)?;
-                    let index = as_int(get_register(&registers, index_reg, pc, opcode)?, pc, opcode)? as usize;
+                    let index =
+                        as_int(get_register(&registers, index_reg, pc, opcode)?, pc, opcode)?
+                            as usize;
                     let value = get_register(&registers, value_reg, pc, opcode)?.clone();
                     match self.heap.get_mut(array as usize) {
                         Some(HeapObject::Array { values, .. }) => {
-                            let slot = values.get_mut(index).ok_or_else(|| self.error(pc, opcode, "array index out of bounds"))?;
+                            let slot = values.get_mut(index).ok_or_else(|| {
+                                self.error(pc, opcode, "array index out of bounds")
+                            })?;
                             *slot = value;
                         }
                         _ => return Err(self.error(pc, opcode, "array target is not an array")),
@@ -810,29 +854,64 @@ impl<'a> Vm<'a> {
                 0x52..=0x5f => {
                     let (value_register, object_register) = two_registers(instruction);
                     let field_index = code_word(code, pc + 1, pc, opcode)? as u32;
-                    let field_key = self.dex.field_key(field_index as usize).unwrap_or_else(|| format!("#{field_index}"));
+                    let field_key = self
+                        .dex
+                        .field_key(field_index as usize)
+                        .unwrap_or_else(|| format!("#{field_index}"));
                     if opcode <= 0x58 {
                         let object = get_object(&registers, object_register, self, pc, opcode)?;
                         let existing = match self.heap_object(object) {
-                            Some(HeapObject::Instance { fields, .. }) => fields.get(&field_key).cloned(),
-                            _ => return Err(self.error(pc, opcode, "instance field target is not an object")),
+                            Some(HeapObject::Instance { fields, .. }) => {
+                                fields.get(&field_key).cloned()
+                            }
+                            _ => {
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    "instance field target is not an object",
+                                ))
+                            }
                         };
                         let value = if let Some(value) = existing {
                             value
-                        } else if self.dex.field_id(field_index as usize).is_some_and(|field| field.name == "mMainLayer") {
+                        } else if self
+                            .dex
+                            .field_id(field_index as usize)
+                            .is_some_and(|field| field.name == "mMainLayer")
+                        {
                             let layer = self.alloc_instance("Lcom/hyperkani/common/Layer;");
-                            if let Some(HeapObject::Instance { fields, .. }) = self.heap.get_mut(object as usize) { fields.insert(field_key, Value::Object(layer)); }
+                            if let Some(HeapObject::Instance { fields, .. }) =
+                                self.heap.get_mut(object as usize)
+                            {
+                                fields.insert(field_key, Value::Object(layer));
+                            }
                             Value::Object(layer)
                         } else {
-                            self.dex.field_id(field_index as usize).map_or(Value::Null, |field| match field.type_name.as_str() { "I" | "Z" | "B" | "S" | "C" => Value::Int(0), "F" => Value::Float(0.0), "J" => Value::Long(0), "D" => Value::Double(0.0), _ => Value::Null })
+                            self.dex
+                                .field_id(field_index as usize)
+                                .map_or(Value::Null, |field| match field.type_name.as_str() {
+                                    "I" | "Z" | "B" | "S" | "C" => Value::Int(0),
+                                    "F" => Value::Float(0.0),
+                                    "J" => Value::Long(0),
+                                    "D" => Value::Double(0.0),
+                                    _ => Value::Null,
+                                })
                         };
                         set_register(&mut registers, value_register, value, self, pc, opcode)?;
                     } else {
                         let object = get_object(&registers, object_register, self, pc, opcode)?;
                         let value = get_register(&registers, value_register, pc, opcode)?.clone();
                         match self.heap.get_mut(object as usize) {
-                            Some(HeapObject::Instance { fields, .. }) => { fields.insert(field_key, value); }
-                            _ => return Err(self.error(pc, opcode, "instance field target is not an object")),
+                            Some(HeapObject::Instance { fields, .. }) => {
+                                fields.insert(field_key, value);
+                            }
+                            _ => {
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    "instance field target is not an object",
+                                ))
+                            }
                         }
                     }
                     pc += 2;
@@ -840,25 +919,65 @@ impl<'a> Vm<'a> {
                 0x60..=0x6d => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let field_index = code_word(code, pc + 1, pc, opcode)? as u32;
-                    let field_key = self.dex.field_key(field_index as usize).unwrap_or_else(|| format!("#{field_index}"));
+                    let field_key = self
+                        .dex
+                        .field_key(field_index as usize)
+                        .unwrap_or_else(|| format!("#{field_index}"));
                     if opcode <= 0x66 {
-                        if let Some(field) = self.dex.field_id(field_index as usize) { self.ensure_class_initialized(&field.class_name)?; }
-                        set_register(&mut registers, register, self.static_fields.get(&field_key).cloned().unwrap_or(Value::Null), self, pc, opcode)?;
+                        if let Some(field) = self.dex.field_id(field_index as usize) {
+                            self.ensure_class_initialized(&field.class_name)?;
+                        }
+                        set_register(
+                            &mut registers,
+                            register,
+                            self.static_fields
+                                .get(&field_key)
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                            self,
+                            pc,
+                            opcode,
+                        )?;
                     } else {
-                        self.static_fields.insert(field_key, get_register(&registers, register, pc, opcode)?.clone());
+                        self.static_fields.insert(
+                            field_key,
+                            get_register(&registers, register, pc, opcode)?.clone(),
+                        );
                     }
                     pc += 2;
                 }
                 0x6e | 0x6f | 0x71 | 0x72 => {
                     let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
-                    let args = invoke_args(&registers, instruction, code_word(code, pc + 2, pc, opcode)?, pc, opcode)?;
-                    let target = if opcode == 0x6e || opcode == 0x72 { args.first().and_then(|value| match value { Value::Object(id) => Some(*id), _ => None }).and_then(|object| self.instance_method_index(object, method_index)).unwrap_or(method_index) } else { method_index };
+                    let args = invoke_args(
+                        &registers,
+                        instruction,
+                        code_word(code, pc + 2, pc, opcode)?,
+                        pc,
+                        opcode,
+                    )?;
+                    let target = if opcode == 0x6e || opcode == 0x72 {
+                        args.first()
+                            .and_then(|value| match value {
+                                Value::Object(id) => Some(*id),
+                                _ => None,
+                            })
+                            .and_then(|object| self.instance_method_index(object, method_index))
+                            .unwrap_or(method_index)
+                    } else {
+                        method_index
+                    };
                     pending_result = self.call_method(target, args)?;
                     pc += 3;
                 }
                 0x70 => {
                     let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
-                    let args = invoke_args(&registers, instruction, code_word(code, pc + 2, pc, opcode)?, pc, opcode)?;
+                    let args = invoke_args(
+                        &registers,
+                        instruction,
+                        code_word(code, pc + 2, pc, opcode)?,
+                        pc,
+                        opcode,
+                    )?;
                     pending_result = self.call_method(method_index, args)?;
                     pc += 3;
                 }
@@ -866,7 +985,9 @@ impl<'a> Vm<'a> {
                     let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
                     let count = ((instruction >> 8) & 0xff) as usize;
                     let first = code_word(code, pc + 2, pc, opcode)? as usize;
-                    let args = (0..count).map(|offset| get_register(&registers, first + offset, pc, opcode)).collect::<Result<Vec<_>, _>>()?;
+                    let args = (0..count)
+                        .map(|offset| get_register(&registers, first + offset, pc, opcode))
+                        .collect::<Result<Vec<_>, _>>()?;
                     pending_result = self.call_method(method_index, args)?;
                     pc += 3;
                 }
@@ -876,10 +997,31 @@ impl<'a> Vm<'a> {
         Ok(Value::Void)
     }
 
-    fn dispatch_framework(&mut self, class_name: &str, method_name: &str, args: &[Value]) -> Result<Value, VmError> {
-        if method_name == "<init>" && (class_name.starts_with("Lcom/badlogic/gdx/") || class_name.starts_with("Landroid/") || class_name.starts_with("Ljava/lang/ref/") || class_name == "Ljava/lang/Enum;" || class_name == "Ljava/util/ArrayList;" || class_name == "Ljava/util/LinkedList;" || class_name == "Ljava/util/HashMap;" || class_name == "Ljava/lang/StringBuilder;") {
-            if class_name == "Ljava/util/ArrayList;" || class_name == "Ljava/util/LinkedList;" || class_name == "Ljava/util/HashMap;" {
-                if let Some(Value::Object(receiver)) = args.first() { if (*receiver as usize) < self.heap.len() { self.heap[*receiver as usize] = HeapObject::Collection(Vec::new()); } }
+    fn dispatch_framework(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        if method_name == "<init>"
+            && (class_name.starts_with("Lcom/badlogic/gdx/")
+                || class_name.starts_with("Landroid/")
+                || class_name.starts_with("Ljava/lang/ref/")
+                || class_name == "Ljava/lang/Enum;"
+                || class_name == "Ljava/util/ArrayList;"
+                || class_name == "Ljava/util/LinkedList;"
+                || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/lang/StringBuilder;")
+        {
+            if class_name == "Ljava/util/ArrayList;"
+                || class_name == "Ljava/util/LinkedList;"
+                || class_name == "Ljava/util/HashMap;"
+            {
+                if let Some(Value::Object(receiver)) = args.first() {
+                    if (*receiver as usize) < self.heap.len() {
+                        self.heap[*receiver as usize] = HeapObject::Collection(Vec::new());
+                    }
+                }
             } else if class_name == "Ljava/lang/StringBuilder;" {
                 if let Some(Value::Object(receiver)) = args.first() {
                     if (*receiver as usize) < self.heap.len() {
@@ -897,7 +1039,6 @@ impl<'a> Vm<'a> {
                         self.heap[*receiver as usize] = HeapObject::StringBuilder(initial);
                     }
                 }
-
             }
             return Ok(Value::Void);
         }
@@ -949,26 +1090,140 @@ impl<'a> Vm<'a> {
         if class_name == "Ljava/lang/StringBuilder;" {
             let receiver = object_arg(args, 0)?;
             match method_name {
-                "append" => { let text = match args.get(1) { Some(Value::String(value)) => value.clone(), Some(Value::Int(value)) => value.to_string(), Some(Value::Long(value)) => value.to_string(), Some(Value::Float(value)) => value.to_string(), Some(Value::Double(value)) => value.to_string(), Some(Value::Object(id)) => match self.heap_object(*id) { Some(HeapObject::String(value)) => value.clone(), Some(HeapObject::StringBuilder(value)) => value.clone(), _ => String::new() }, _ => String::new() }; if let Some(HeapObject::StringBuilder(value)) = self.heap.get_mut(receiver as usize) { value.push_str(&text); } return Ok(Value::Object(receiver)); }
-                "toString" => { let value = match self.heap_object(receiver) { Some(HeapObject::StringBuilder(value)) => value.clone(), Some(HeapObject::String(value)) => value.clone(), _ => String::new() }; return Ok(Value::Object(self.alloc_string(value))); }
-                "length" => return Ok(Value::Int(match self.heap_object(receiver) { Some(HeapObject::StringBuilder(value)) => value.chars().count() as i32, _ => 0 })),
+                "append" => {
+                    let text = match args.get(1) {
+                        Some(Value::String(value)) => value.clone(),
+                        Some(Value::Int(value)) => value.to_string(),
+                        Some(Value::Long(value)) => value.to_string(),
+                        Some(Value::Float(value)) => value.to_string(),
+                        Some(Value::Double(value)) => value.to_string(),
+                        Some(Value::Object(id)) => match self.heap_object(*id) {
+                            Some(HeapObject::String(value)) => value.clone(),
+                            Some(HeapObject::StringBuilder(value)) => value.clone(),
+                            _ => String::new(),
+                        },
+                        _ => String::new(),
+                    };
+                    if let Some(HeapObject::StringBuilder(value)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        value.push_str(&text);
+                    }
+                    return Ok(Value::Object(receiver));
+                }
+                "toString" => {
+                    let value = match self.heap_object(receiver) {
+                        Some(HeapObject::StringBuilder(value)) => value.clone(),
+                        Some(HeapObject::String(value)) => value.clone(),
+                        _ => String::new(),
+                    };
+                    return Ok(Value::Object(self.alloc_string(value)));
+                }
+                "length" => {
+                    return Ok(Value::Int(match self.heap_object(receiver) {
+                        Some(HeapObject::StringBuilder(value)) => value.chars().count() as i32,
+                        _ => 0,
+                    }))
+                }
                 _ => {}
             }
         }
-        if class_name == "Ljava/util/ArrayList;" || class_name == "Ljava/util/LinkedList;" || class_name == "Ljava/util/HashMap;" || class_name == "Ljava/util/Collection;" || class_name == "Ljava/util/List;" || class_name == "Ljava/util/AbstractList;" || class_name == "Ljava/util/AbstractCollection;" {
+        if class_name == "Ljava/util/ArrayList;"
+            || class_name == "Ljava/util/LinkedList;"
+            || class_name == "Ljava/util/HashMap;"
+            || class_name == "Ljava/util/Collection;"
+            || class_name == "Ljava/util/List;"
+            || class_name == "Ljava/util/AbstractList;"
+            || class_name == "Ljava/util/AbstractCollection;"
+        {
             let receiver = object_arg(args, 0)?;
-            match method_name { "size" => return Ok(Value::Int(match self.heap_object(receiver) { Some(HeapObject::Collection(values)) => values.len() as i32, _ => 0 })), "isEmpty" => return Ok(Value::Int(match self.heap_object(receiver) { Some(HeapObject::Collection(values)) => i32::from(values.is_empty()), _ => 1 })), "add" => { if let Some(HeapObject::Collection(values)) = self.heap.get_mut(receiver as usize) { values.push(args.get(1).cloned().unwrap_or(Value::Null)); } return Ok(Value::Int(1)); }, "get" => { let index = int_arg(args, 1)? as usize; return Ok(match self.heap_object(receiver) { Some(HeapObject::Collection(values)) => values.get(index).cloned().unwrap_or(Value::Null), _ => Value::Null }); }, _ => return Ok(Value::Void) }
+            match method_name {
+                "size" => {
+                    return Ok(Value::Int(match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => values.len() as i32,
+                        _ => 0,
+                    }))
+                }
+                "isEmpty" => {
+                    return Ok(Value::Int(match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => i32::from(values.is_empty()),
+                        _ => 1,
+                    }))
+                }
+                "add" => {
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        values.push(args.get(1).cloned().unwrap_or(Value::Null));
+                    }
+                    return Ok(Value::Int(1));
+                }
+                "get" => {
+                    let index = int_arg(args, 1)? as usize;
+                    return Ok(match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => {
+                            values.get(index).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => Value::Null,
+                    });
+                }
+                _ => return Ok(Value::Void),
+            }
         }
-        if class_name == "Ljava/lang/Class;" && method_name == "forName" { let requested = self.string_arg(args, 0)?; let descriptor = if requested.starts_with('L') && requested.ends_with(';') { requested } else { format!("L{};", requested.replace('.', "/")) }; return Ok(Value::Object(self.alloc(HeapObject::Class(descriptor)))); }
+        if class_name == "Ljava/lang/Class;" && method_name == "forName" {
+            let requested = self.string_arg(args, 0)?;
+            let descriptor = if requested.starts_with('L') && requested.ends_with(';') {
+                requested
+            } else {
+                format!("L{};", requested.replace('.', "/"))
+            };
+            return Ok(Value::Object(self.alloc(HeapObject::Class(descriptor))));
+        }
         let result = match (class_name, method_name) {
-            _ => return Err(self.error(0, 0, format!("framework method {class_name}->{method_name} is not implemented"))),
+            _ => {
+                return Err(self.error(
+                    0,
+                    0,
+                    format!("framework method {class_name}->{method_name} is not implemented"),
+                ))
+            }
         };
-        Ok(match result { FrameworkResult::Void => Value::Void, FrameworkResult::Int(value) => Value::Int(value), FrameworkResult::Long(value) => Value::Long(value), FrameworkResult::Bool(value) => Value::Int(i32::from(value)), FrameworkResult::Object(value) => if value == 0 { Value::Null } else { Value::Object(value) }, FrameworkResult::String(value) => Value::String(value) })
+        Ok(match result {
+            FrameworkResult::Void => Value::Void,
+            FrameworkResult::Int(value) => Value::Int(value),
+            FrameworkResult::Long(value) => Value::Long(value),
+            FrameworkResult::Bool(value) => Value::Int(i32::from(value)),
+            FrameworkResult::Object(value) => {
+                if value == 0 {
+                    Value::Null
+                } else {
+                    Value::Object(value)
+                }
+            }
+            FrameworkResult::String(value) => Value::String(value),
+        })
     }
 
-    fn framework_call(&mut self, call: FrameworkCall) -> Result<FrameworkResult, VmError> { self.framework.dispatch(call).map_err(|message| self.error(0, 0, message)) }
+    fn framework_call(&mut self, call: FrameworkCall) -> Result<FrameworkResult, VmError> {
+        self.framework
+            .dispatch(call)
+            .map_err(|message| self.error(0, 0, message))
+    }
 
-    fn string_arg(&self, args: &[Value], index: usize) -> Result<String, VmError> { match args.get(index) { Some(Value::String(value)) => Ok(value.clone()), Some(Value::Object(id)) => match self.heap_object(*id) { Some(HeapObject::String(value)) => Ok(value.clone()), _ => Err(self.error(0, 0, format!("framework argument {index} is object {id}, expected java.lang.String"))) }, _ => Err(self.error(0, 0, format!("framework argument {index} is not a string"))) } }
+    fn string_arg(&self, args: &[Value], index: usize) -> Result<String, VmError> {
+        match args.get(index) {
+            Some(Value::String(value)) => Ok(value.clone()),
+            Some(Value::Object(id)) => match self.heap_object(*id) {
+                Some(HeapObject::String(value)) => Ok(value.clone()),
+                _ => Err(self.error(
+                    0,
+                    0,
+                    format!("framework argument {index} is object {id}, expected java.lang.String"),
+                )),
+            },
+            _ => Err(self.error(0, 0, format!("framework argument {index} is not a string"))),
+        }
+    }
 
     fn alloc(&mut self, object: HeapObject) -> ObjectId {
         let id = self.heap.len() as ObjectId;
@@ -976,39 +1231,246 @@ impl<'a> Vm<'a> {
         id
     }
 
-    fn error(&self, pc: usize, opcode: u8, message: impl Into<String>) -> VmError { VmError { pc, opcode, message: message.into() } }
+    fn error(&self, pc: usize, opcode: u8, message: impl Into<String>) -> VmError {
+        VmError {
+            pc,
+            opcode,
+            message: message.into(),
+        }
+    }
 }
 
-fn code_word(code: &CodeItem, index: usize, pc: usize, opcode: u8) -> Result<u16, VmError> { code.instructions.get(index).copied().ok_or_else(|| VmError { pc, opcode, message: "instruction payload is truncated".to_owned() }) }
+fn code_word(code: &CodeItem, index: usize, pc: usize, opcode: u8) -> Result<u16, VmError> {
+    code.instructions
+        .get(index)
+        .copied()
+        .ok_or_else(|| VmError {
+            pc,
+            opcode,
+            message: "instruction payload is truncated".to_owned(),
+        })
+}
 
-fn get_register(registers: &[Value], index: usize, pc: usize, opcode: u8) -> Result<Value, VmError> { registers.get(index).cloned().ok_or_else(|| VmError { pc, opcode, message: format!("register v{index} is outside the frame") }) }
+fn get_register(
+    registers: &[Value],
+    index: usize,
+    pc: usize,
+    opcode: u8,
+) -> Result<Value, VmError> {
+    registers.get(index).cloned().ok_or_else(|| VmError {
+        pc,
+        opcode,
+        message: format!("register v{index} is outside the frame"),
+    })
+}
 
-fn set_register(registers: &mut [Value], index: usize, value: Value, _vm: &Vm<'_>, pc: usize, opcode: u8) -> Result<(), VmError> { *registers.get_mut(index).ok_or_else(|| VmError { pc, opcode, message: format!("register v{index} is outside the frame") })? = value; Ok(()) }
+fn set_register(
+    registers: &mut [Value],
+    index: usize,
+    value: Value,
+    _vm: &Vm<'_>,
+    pc: usize,
+    opcode: u8,
+) -> Result<(), VmError> {
+    *registers.get_mut(index).ok_or_else(|| VmError {
+        pc,
+        opcode,
+        message: format!("register v{index} is outside the frame"),
+    })? = value;
+    Ok(())
+}
 
-fn two_registers(instruction: u16) -> (usize, usize) { (((instruction >> 8) & 0x0f) as usize, ((instruction >> 12) & 0x0f) as usize) }
+fn two_registers(instruction: u16) -> (usize, usize) {
+    (
+        ((instruction >> 8) & 0x0f) as usize,
+        ((instruction >> 12) & 0x0f) as usize,
+    )
+}
 
-fn three_registers(instruction: u16, word: u16) -> (usize, usize, usize) { (((instruction >> 8) & 0xff) as usize, (word & 0xff) as usize, (word >> 8) as usize) }
+fn three_registers(instruction: u16, word: u16) -> (usize, usize, usize) {
+    (
+        ((instruction >> 8) & 0xff) as usize,
+        (word & 0xff) as usize,
+        (word >> 8) as usize,
+    )
+}
 
-fn invoke_args(registers: &[Value], instruction: u16, word: u16, pc: usize, opcode: u8) -> Result<Vec<Value>, VmError> { let count = ((instruction >> 12) & 0x0f) as usize; let candidates = [(word & 0x0f) as usize, ((word >> 4) & 0x0f) as usize, ((word >> 8) & 0x0f) as usize, ((word >> 12) & 0x0f) as usize, ((instruction >> 8) & 0x0f) as usize]; candidates[..count.min(candidates.len())].iter().map(|index| get_register(registers, *index, pc, opcode)).collect() }
+fn invoke_args(
+    registers: &[Value],
+    instruction: u16,
+    word: u16,
+    pc: usize,
+    opcode: u8,
+) -> Result<Vec<Value>, VmError> {
+    let count = ((instruction >> 12) & 0x0f) as usize;
+    let candidates = [
+        (word & 0x0f) as usize,
+        ((word >> 4) & 0x0f) as usize,
+        ((word >> 8) & 0x0f) as usize,
+        ((word >> 12) & 0x0f) as usize,
+        ((instruction >> 8) & 0x0f) as usize,
+    ];
+    candidates[..count.min(candidates.len())]
+        .iter()
+        .map(|index| get_register(registers, *index, pc, opcode))
+        .collect()
+}
 
-fn get_object(registers: &[Value], register: usize, vm: &Vm<'_>, pc: usize, opcode: u8) -> Result<ObjectId, VmError> { match get_register(registers, register, pc, opcode)? { Value::Object(id) => Ok(id), Value::Null => Err(vm.error(pc, opcode, "null object reference")), value => Err(vm.error(pc, opcode, format!("value in v{register} is not an object: {value:?}"))) } }
+fn get_object(
+    registers: &[Value],
+    register: usize,
+    vm: &Vm<'_>,
+    pc: usize,
+    opcode: u8,
+) -> Result<ObjectId, VmError> {
+    match get_register(registers, register, pc, opcode)? {
+        Value::Object(id) => Ok(id),
+        Value::Null => Err(vm.error(pc, opcode, "null object reference")),
+        value => Err(vm.error(
+            pc,
+            opcode,
+            format!("value in v{register} is not an object: {value:?}"),
+        )),
+    }
+}
 
-fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> { match value { Value::Int(value) => Ok(value), Value::Null => Ok(0), _ => Err(VmError { pc, opcode, message: "value is not an integer".to_owned() }) } }
+fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
+    match value {
+        Value::Int(value) => Ok(value),
+        Value::Null => Ok(0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not an integer".to_owned(),
+        }),
+    }
+}
 
-fn as_long(value: Value, pc: usize, opcode: u8) -> Result<i64, VmError> { match value { Value::Long(value) => Ok(value), Value::Int(value) => Ok(value as i64), Value::Float(value) => Ok(value as i64), Value::Double(value) => Ok(value as i64), Value::Null => Ok(0), _ => Err(VmError { pc, opcode, message: "value is not a long".to_owned() }) } }
+fn as_long(value: Value, pc: usize, opcode: u8) -> Result<i64, VmError> {
+    match value {
+        Value::Long(value) => Ok(value),
+        Value::Int(value) => Ok(value as i64),
+        Value::Float(value) => Ok(value as i64),
+        Value::Double(value) => Ok(value as i64),
+        Value::Null => Ok(0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not a long".to_owned(),
+        }),
+    }
+}
 
-fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> { match value { Value::Float(value) => Ok(value), Value::Double(value) => Ok(value as f32), Value::Int(value) => Ok(value as f32), Value::Long(value) => Ok(value as f32), Value::Null => Ok(0.0), _ => Err(VmError { pc, opcode, message: "value is not a float".to_owned() }) } }
+fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
+    match value {
+        Value::Float(value) => Ok(value),
+        Value::Double(value) => Ok(value as f32),
+        Value::Int(value) => Ok(value as f32),
+        Value::Long(value) => Ok(value as f32),
+        Value::Null => Ok(0.0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not a float".to_owned(),
+        }),
+    }
+}
 
-fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> { match value { Value::Double(value) => Ok(value), Value::Float(value) => Ok(value as f64), Value::Int(value) => Ok(value as f64), Value::Long(value) => Ok(value as f64), Value::Null => Ok(0.0), _ => Err(VmError { pc, opcode, message: "value is not a double".to_owned() }) } }
+fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> {
+    match value {
+        Value::Double(value) => Ok(value),
+        Value::Float(value) => Ok(value as f64),
+        Value::Int(value) => Ok(value as f64),
+        Value::Long(value) => Ok(value as f64),
+        Value::Null => Ok(0.0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not a double".to_owned(),
+        }),
+    }
+}
 
-fn float_arg(args: &[Value], index: usize) -> Result<f32, VmError> { match args.get(index) { Some(Value::Float(value)) => Ok(*value), Some(Value::Double(value)) => Ok(*value as f32), Some(Value::Int(value)) => Ok(*value as f32), Some(Value::Long(value)) => Ok(*value as f32), _ => Err(VmError { pc: 0, opcode: 0, message: format!("framework argument {index} is not numeric") }) } }
+fn float_arg(args: &[Value], index: usize) -> Result<f32, VmError> {
+    match args.get(index) {
+        Some(Value::Float(value)) => Ok(*value),
+        Some(Value::Double(value)) => Ok(*value as f32),
+        Some(Value::Int(value)) => Ok(*value as f32),
+        Some(Value::Long(value)) => Ok(*value as f32),
+        _ => Err(VmError {
+            pc: 0,
+            opcode: 0,
+            message: format!("framework argument {index} is not numeric"),
+        }),
+    }
+}
 
-fn int_arg(args: &[Value], index: usize) -> Result<i32, VmError> { match args.get(index) { Some(Value::Int(value)) => Ok(*value), Some(Value::Long(value)) => Ok(*value as i32), Some(Value::Float(value)) => Ok(*value as i32), Some(Value::Double(value)) => Ok(*value as i32), _ => Err(VmError { pc: 0, opcode: 0, message: format!("framework argument {index} is not an integer") }) } }
+fn int_arg(args: &[Value], index: usize) -> Result<i32, VmError> {
+    match args.get(index) {
+        Some(Value::Int(value)) => Ok(*value),
+        Some(Value::Long(value)) => Ok(*value as i32),
+        Some(Value::Float(value)) => Ok(*value as i32),
+        Some(Value::Double(value)) => Ok(*value as i32),
+        _ => Err(VmError {
+            pc: 0,
+            opcode: 0,
+            message: format!("framework argument {index} is not an integer"),
+        }),
+    }
+}
 
-fn object_arg(args: &[Value], index: usize) -> Result<ObjectId, VmError> { match args.get(index) { Some(Value::Object(value)) => Ok(*value), _ => Err(VmError { pc: 0, opcode: 0, message: format!("framework argument {index} is not an object") }) } }
+fn object_arg(args: &[Value], index: usize) -> Result<ObjectId, VmError> {
+    match args.get(index) {
+        Some(Value::Object(value)) => Ok(*value),
+        _ => Err(VmError {
+            pc: 0,
+            opcode: 0,
+            message: format!("framework argument {index} is not an object"),
+        }),
+    }
+}
 
-fn string_arg(args: &[Value], index: usize) -> Result<String, VmError> { match args.get(index) { Some(Value::String(value)) => Ok(value.clone()), Some(Value::Object(id)) => Err(VmError { pc: 0, opcode: 0, message: format!("framework argument {index} is object {id}, expected java.lang.String") }), _ => Err(VmError { pc: 0, opcode: 0, message: format!("framework argument {index} is not a string") }) } }
+fn string_arg(args: &[Value], index: usize) -> Result<String, VmError> {
+    match args.get(index) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(Value::Object(id)) => Err(VmError {
+            pc: 0,
+            opcode: 0,
+            message: format!(
+                "framework argument {index} is object {id}, expected java.lang.String"
+            ),
+        }),
+        _ => Err(VmError {
+            pc: 0,
+            opcode: 0,
+            message: format!("framework argument {index} is not a string"),
+        }),
+    }
+}
 
-fn values_equal(left: &Value, right: &Value) -> bool { left == right }
+fn values_equal(left: &Value, right: &Value) -> bool {
+    left == right
+}
 
-fn branch_target(pc: usize, offset: i32, len: usize, at: usize, opcode: u8) -> Result<usize, VmError> { let target = pc as i64 + offset as i64; if target < 0 || target as usize >= len { if offset > 0 { return Ok(pc.saturating_add(1).min(len.saturating_sub(1))); } return Err(VmError { pc: at, opcode, message: format!("branch target outside code: pc={pc} offset={offset} target={target} len={len}") }); } Ok(target as usize) }
+fn branch_target(
+    pc: usize,
+    offset: i32,
+    len: usize,
+    at: usize,
+    opcode: u8,
+) -> Result<usize, VmError> {
+    let target = pc as i64 + offset as i64;
+    if target < 0 || target as usize >= len {
+        if offset > 0 {
+            return Ok(pc.saturating_add(1).min(len.saturating_sub(1)));
+        }
+        return Err(VmError {
+            pc: at,
+            opcode,
+            message: format!(
+                "branch target outside code: pc={pc} offset={offset} target={target} len={len}"
+            ),
+        });
+    }
+    Ok(target as usize)
+}
