@@ -1325,6 +1325,36 @@ impl<'a> Vm<'a> {
                     }
                 }
             } else if class_name == "Ljava/lang/StringBuilder;" {
+                if class_name == "Ljava/lang/String;" {
+                    match method_name {
+                        "valueOf" => {
+                            let value = match args.get(0) {
+                                Some(Value::String(value)) => value.clone(),
+                                Some(Value::Int(value)) => value.to_string(),
+                                Some(Value::Long(value)) => value.to_string(),
+                                Some(Value::Float(value)) => value.to_string(),
+                                Some(Value::Double(value)) => value.to_string(),
+                                Some(Value::Object(id)) => match self.heap_object(*id) {
+                                    Some(HeapObject::String(value)) => value.clone(),
+                                    Some(HeapObject::StringBuilder(value)) => value.clone(),
+                                    Some(HeapObject::Boxed(value)) => format!("{value:?}"),
+                                    Some(HeapObject::Class(value)) => value.clone(),
+                                    _ => "null".to_owned(),
+                                },
+                                _ => "null".to_owned(),
+                            };
+                            return Ok(Value::Object(self.alloc_string(value)));
+                        }
+                        "length" => {
+                            return Ok(
+                                Value::Int(self.string_arg(args, 0)?.chars().count() as i32),
+                            );
+                        }
+                        "toString" => return Ok(Value::Object(object_arg(args, 0)?)),
+                        _ => {}
+                    }
+                }
+
                 if let Some(Value::Object(receiver)) = args.first() {
                     if (*receiver as usize) < self.heap.len() {
                         let initial = args
