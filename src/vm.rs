@@ -591,7 +591,7 @@ impl<'a> Vm<'a> {
                     pc += 2;
                 }
                 0x21 => {
-                    let dest = ((instruction >> 8) & 0xff) as usize;
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
                     let array_register = ((instruction >> 12) & 0x0f) as usize;
                     let array = get_object(&registers, array_register, self, pc, opcode)?;
                     let length = match self.heap_object(array) {
