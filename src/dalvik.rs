@@ -264,6 +264,12 @@ impl DexFile {
         self.fields.get(index)
     }
 
+    pub fn field_key(&self, index: usize) -> Option<String> {
+        self.fields
+            .get(index)
+            .map(|field| format!("{}->{}:{}", field.class_name, field.name, field.type_name))
+    }
+
     pub fn prototype(&self, index: usize) -> Option<&Prototype> {
         self.prototypes.get(index)
     }
@@ -304,6 +310,7 @@ impl DexFile {
             if current.starts_with("Landroid/")
                 || current.starts_with("Ljava/")
                 || current.starts_with("Ldalvik/")
+                || current.starts_with("Lcom/badlogic/gdx/")
             {
                 return Some(current.to_owned());
             }

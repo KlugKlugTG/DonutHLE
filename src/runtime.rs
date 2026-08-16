@@ -209,6 +209,21 @@ impl Runtime {
                     vec![VmValue::Object(activity_object), VmValue::Null],
                 )
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let listener = vm
+                .framework
+                .gdx_listener
+                .or_else(|| vm.find_instance_by_class("Lcom/hyperkani/sliceice/Engine;"));
+            let mut frame_status = "application listener not captured".to_owned();
+            if let Some(listener) = listener {
+                vm.run_instance_method(listener, "create", Vec::new())
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                vm.run_instance_method(listener, "render", Vec::new())
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                frame_status = format!(
+                    "application create/render completed; GLES commands: {}",
+                    vm.framework.gles.command_count()
+                );
+            }
             self.framework = vm.framework;
             activities = std::mem::take(&mut self.framework.activities);
             return Ok(BootState {
@@ -218,8 +233,7 @@ impl Runtime {
                     _ => ExecutionResult::Return(0),
                 },
                 activities,
-                graphics: "launcher onCreate completed; application render loop deferred"
-                    .to_owned(),
+                graphics: frame_status,
                 vm_result: "onCreate completed".to_owned(),
             });
         } else {

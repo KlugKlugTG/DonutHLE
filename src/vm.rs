@@ -24,7 +24,7 @@ impl Eq for Value {}
 pub enum HeapObject {
     Instance {
         class_name: String,
-        fields: HashMap<u32, Value>,
+        fields: HashMap<String, Value>,
     },
     Array {
         component: String,
@@ -32,6 +32,9 @@ pub enum HeapObject {
     },
     String(String),
     Class(String),
+    Collection(Vec<Value>),
+    StringBuilder(String),
+    Boxed(Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +76,8 @@ pub struct Vm<'a> {
     pub framework: Framework,
     pub config: VmConfig,
     heap: Vec<HeapObject>,
-    static_fields: HashMap<u32, Value>,
+    static_fields: HashMap<String, Value>,
+    initialized_classes: std::collections::HashSet<String>,
     call_depth: usize,
     executed_steps: usize,
 }
@@ -86,6 +90,7 @@ impl<'a> Vm<'a> {
             config,
             heap: Vec::new(),
             static_fields: HashMap::new(),
+            initialized_classes: std::collections::HashSet::new(),
             call_depth: 0,
             executed_steps: 0,
         }
@@ -104,6 +109,10 @@ impl<'a> Vm<'a> {
 
     pub fn alloc_string(&mut self, value: impl Into<String>) -> ObjectId {
         self.alloc(HeapObject::String(value.into()))
+    }
+
+    pub fn alloc_collection(&mut self) -> ObjectId {
+        self.alloc(HeapObject::Collection(Vec::new()))
     }
 
     pub fn run_method(&mut self, method_index: usize, args: Vec<Value>) -> Result<Value, VmError> {
@@ -187,6 +196,55 @@ impl<'a> Vm<'a> {
         self.call_method(method_index, args)
     }
 
+    pub fn find_instance_by_class(&self, class_name: &str) -> Option<ObjectId> {
+        self.heap
+            .iter()
+            .enumerate()
+            .find_map(|(id, value)| match value {
+                HeapObject::Instance {
+                    class_name: value_class,
+                    ..
+                } if value_class == class_name => Some(id as ObjectId),
+                _ => None,
+            })
+    }
+
+    fn instance_method_index(&self, object: ObjectId, referenced_index: usize) -> Option<usize> {
+        let referenced = self.dex.method_id(referenced_index)?;
+        let class_name = match self.heap_object(object)? {
+            HeapObject::Instance { class_name, .. } => class_name,
+            _ => return None,
+        };
+        let mut current = class_name.as_str();
+        let mut visited = std::collections::BTreeSet::new();
+        while visited.insert(current.to_owned()) {
+            if let Some((index, _)) = self.dex.methods.iter().enumerate().find(|(index, method)| {
+                method.class_name == current
+                    && method.name == referenced.name
+                    && method.prototype == referenced.prototype
+                    && self.dex.method_code_by_index(*index).is_some()
+            }) {
+                return Some(index);
+            }
+            current = self.dex.find_class(current)?.super_class.as_deref()?;
+        }
+        None
+    }
+
+    fn ensure_class_initialized(&mut self, class_name: &str) -> Result<(), VmError> {
+        if !self.initialized_classes.insert(class_name.to_owned()) {
+            return Ok(());
+        }
+        if let Some((initializer_index, _)) =
+            self.dex.methods.iter().enumerate().find(|(_, candidate)| {
+                candidate.class_name == class_name && candidate.name == "<clinit>"
+            })
+        {
+            self.call_method(initializer_index, Vec::new())?;
+        }
+        Ok(())
+    }
+
     fn call_method(&mut self, method_index: usize, args: Vec<Value>) -> Result<Value, VmError> {
         if self.call_depth >= self.config.max_call_depth {
             return Err(self.error(0, 0, "maximum call depth exceeded"));
@@ -196,13 +254,19 @@ impl<'a> Vm<'a> {
             .method_id(method_index)
             .ok_or_else(|| self.error(0, 0, format!("method index {method_index} is invalid")))?
             .clone();
+        if method.name != "<clinit>" {
+            self.ensure_class_initialized(&method.class_name)?;
+        }
         let framework_class = method.class_name.starts_with("Landroid/")
             || method.class_name.starts_with("Ljava/")
             || method.class_name.starts_with("Ldalvik/")
             || method.class_name.starts_with("Lcom/badlogic/gdx/");
         if framework_class {
+            if method.name == "<clinit>" {
+                return Ok(Value::Void);
+            }
             if method.class_name.starts_with("Lcom/badlogic/gdx/") {
-                if method.name == "<init>" {
+                if method.name == "<init>" || method.name == "<clinit>" {
                     return Ok(Value::Void);
                 }
                 return self.dispatch_gdx(&method.class_name, &method.name, &args);
@@ -280,34 +344,44 @@ impl<'a> Vm<'a> {
             let opcode = (instruction & 0xff) as u8;
             match opcode {
                 0x00 => pc += 1,
-                0x01..=0x09 => {
+                0x01 | 0x04 | 0x07 => {
                     let (dest, source) = two_registers(instruction);
                     let value = get_register(&registers, source, pc, opcode)?;
                     set_register(&mut registers, dest, value, self, pc, opcode)?;
                     pc += 1;
                 }
+                0x02 | 0x05 | 0x08 => {
+                    let dest = ((instruction >> 8) & 0xff) as usize;
+                    let source = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let value = get_register(&registers, source, pc, opcode)?;
+                    set_register(&mut registers, dest, value, self, pc, opcode)?;
+                    pc += 2;
+                }
+                0x03 | 0x06 | 0x09 => {
+                    let dest = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let source = code_word(code, pc + 2, pc, opcode)? as usize;
+                    let value = get_register(&registers, source, pc, opcode)?;
+                    set_register(&mut registers, dest, value, self, pc, opcode)?;
+                    pc += 3;
+                }
                 0x0a..=0x0c => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
-                    set_register(
-                        &mut registers,
-                        dest,
-                        pending_result.clone(),
-                        self,
-                        pc,
-                        opcode,
-                    )?;
+                    let result = if matches!(pending_result, Value::Void) {
+                        Value::Null
+                    } else {
+                        pending_result.clone()
+                    };
+                    set_register(&mut registers, dest, result, self, pc, opcode)?;
                     pc += 1;
                 }
                 0x0d => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
-                    set_register(
-                        &mut registers,
-                        dest,
-                        pending_result.clone(),
-                        self,
-                        pc,
-                        opcode,
-                    )?;
+                    let result = if matches!(pending_result, Value::Void) {
+                        Value::Long(0)
+                    } else {
+                        pending_result.clone()
+                    };
+                    set_register(&mut registers, dest, result, self, pc, opcode)?;
                     set_register(&mut registers, dest + 1, Value::Int(0), self, pc, opcode)?;
                     pc += 1;
                 }
@@ -516,7 +590,11 @@ impl<'a> Vm<'a> {
                     let class_name = self.dex.types.get(type_index).cloned().ok_or_else(|| {
                         self.error(pc, opcode, "new-instance type index is invalid")
                     })?;
-                    let object = self.alloc_instance(class_name.clone());
+                    let object = if class_name == "Ljava/util/ArrayList;" {
+                        self.alloc(HeapObject::Collection(Vec::new()))
+                    } else {
+                        self.alloc_instance(class_name.clone())
+                    };
                     if class_name.starts_with("Landroid/view/")
                         || class_name.starts_with("Landroid/widget/")
                     {
@@ -653,6 +731,36 @@ impl<'a> Vm<'a> {
                     let high = code_word(code, pc + 2, pc, opcode)? as i32;
                     pc = branch_target(pc, low | high << 16, code.instructions.len(), pc, opcode)?;
                 }
+                0x2b => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    let offset = (code_word(code, pc + 1, pc, opcode)? as u32)
+                        | ((code_word(code, pc + 2, pc, opcode)? as u32) << 16);
+                    let payload = (pc as i64 + offset as i32 as i64) as usize;
+                    if payload + 8 > code.instructions.len() || code.instructions[payload] != 0x0100
+                    {
+                        return Err(self.error(pc, opcode, "invalid packed-switch payload"));
+                    }
+                    let size = (code.instructions[payload + 2] as u32)
+                        | ((code.instructions[payload + 3] as u32) << 16);
+                    let first_key = (code.instructions[payload + 4] as u32)
+                        | ((code.instructions[payload + 5] as u32) << 16);
+                    let key = as_int(get_register(&registers, register, pc, opcode)?, pc, opcode)?;
+                    let index = key.wrapping_sub(first_key as i32);
+                    if index < 0 || index as u32 >= size {
+                        pc += 3;
+                    } else {
+                        let target = payload + 8 + index as usize * 2;
+                        let low = code.instructions[target] as u32;
+                        let high = code.instructions[target + 1] as u32;
+                        pc = branch_target(
+                            pc,
+                            (low | high << 16) as i32,
+                            code.instructions.len(),
+                            pc,
+                            opcode,
+                        )?;
+                    }
+                }
                 0x32..=0x37 => {
                     let (left, right) = two_registers(instruction);
                     let left = get_register(&registers, left, pc, opcode)?;
@@ -742,14 +850,16 @@ impl<'a> Vm<'a> {
                     pc += 2;
                 }
                 0x52..=0x5f => {
-                    let (first, second) = two_registers(instruction);
+                    let (value_register, object_register) = two_registers(instruction);
                     let field_index = code_word(code, pc + 1, pc, opcode)? as u32;
+                    let field_key = self
+                        .dex
+                        .field_key(field_index as usize)
+                        .unwrap_or_else(|| format!("#{field_index}"));
                     if opcode <= 0x58 {
-                        let object = get_object(&registers, second, self, pc, opcode)?;
-                        let value = match self.heap_object(object) {
-                            Some(HeapObject::Instance { fields, .. }) => {
-                                fields.get(&field_index).cloned().unwrap_or(Value::Null)
-                            }
+                        let object = get_object(&registers, object_register, self, pc, opcode)?;
+                        let existing = match self.heap_object(object) {
+                            Some(HeapObject::Instance { fields, .. }) => fields.get(&field_key).cloned(),
                             _ => {
                                 return Err(self.error(
                                     pc,
@@ -758,13 +868,45 @@ impl<'a> Vm<'a> {
                                 ))
                             }
                         };
-                        set_register(&mut registers, first, value, self, pc, opcode)?;
+                        let value = if let Some(value) = existing {
+                            value
+                        } else if self
+                            .dex
+                            .field_id(field_index as usize)
+                            .is_some_and(|field| field.name == "mMainLayer")
+                        {
+                            let layer = self.alloc_instance("Lcom/hyperkani/common/Layer;");
+                            if let Some(HeapObject::Instance { fields, .. }) = self.heap.get_mut(object as usize) {
+                                fields.insert(field_key, Value::Object(layer));
+                            }
+                            Value::Object(layer)
+                        } else {
+                            self.dex.field_id(field_index as usize).map_or(
+                                Value::Null,
+                                |field| match field.type_name.as_str() {
+                                    "I" | "Z" | "B" | "S" | "C" => Value::Int(0),
+                                    "F" => Value::Float(0.0),
+                                    "J" => Value::Long(0),
+                                    "D" => Value::Double(0.0),
+                                    _ => Value::Null,
+                                },
+                            )
+                        };
+                        set_register(&mut registers, value_register, value, self, pc, opcode)?;
                     } else {
-                        let object = get_object(&registers, second, self, pc, opcode)?;
-                        let value = get_register(&registers, first, pc, opcode)?.clone();
+                        let object = get_object(&registers, object_register, self, pc, opcode)?;
+                        let value = if opcode == 0x5a {
+                            Value::Long(as_long(
+                                get_register(&registers, value_register, pc, opcode)?.clone(),
+                                pc,
+                                opcode,
+                            )?)
+                        } else {
+                            get_register(&registers, value_register, pc, opcode)?.clone()
+                        };
                         match self.heap.get_mut(object as usize) {
                             Some(HeapObject::Instance { fields, .. }) => {
-                                fields.insert(field_index, value);
+                                fields.insert(field_key, value);
                             }
                             _ => {
                                 return Err(self.error(
@@ -780,12 +922,19 @@ impl<'a> Vm<'a> {
                 0x60..=0x6d => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let field_index = code_word(code, pc + 1, pc, opcode)? as u32;
+                    let field_key = self
+                        .dex
+                        .field_key(field_index as usize)
+                        .unwrap_or_else(|| format!("#{field_index}"));
                     if opcode <= 0x66 {
+                        if let Some(field) = self.dex.field_id(field_index as usize) {
+                            self.ensure_class_initialized(&field.class_name)?;
+                        }
                         set_register(
                             &mut registers,
                             register,
                             self.static_fields
-                                .get(&field_index)
+                                .get(&field_key)
                                 .cloned()
                                 .unwrap_or(Value::Null),
                             self,
@@ -794,13 +943,36 @@ impl<'a> Vm<'a> {
                         )?;
                     } else {
                         self.static_fields.insert(
-                            field_index,
+                            field_key,
                             get_register(&registers, register, pc, opcode)?.clone(),
                         );
                     }
                     pc += 2;
                 }
-                0x6e..=0x72 => {
+                0x6e | 0x6f | 0x71 | 0x72 => {
+                    let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let args = invoke_args(
+                        &registers,
+                        instruction,
+                        code_word(code, pc + 2, pc, opcode)?,
+                        pc,
+                        opcode,
+                    )?;
+                    let target = if opcode == 0x6e || opcode == 0x72 {
+                        args.first()
+                            .and_then(|value| match value {
+                                Value::Object(id) => Some(*id),
+                                _ => None,
+                            })
+                            .and_then(|object| self.instance_method_index(object, method_index))
+                            .unwrap_or(method_index)
+                    } else {
+                        method_index
+                    };
+                    pending_result = self.call_method(target, args)?;
+                    pc += 3;
+                }
+                0x70 => {
                     let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
                     let args = invoke_args(
                         &registers,
@@ -911,6 +1083,108 @@ impl<'a> Vm<'a> {
                     set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
                     pc += 2;
                 }
+                0xa6..=0xaa => {
+                    let (dest, left_reg, right_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let left =
+                        as_float(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
+                    let right =
+                        as_float(get_register(&registers, right_reg, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xa6 => left + right,
+                        0xa7 => left - right,
+                        0xa8 => left * right,
+                        0xa9 => left / right,
+                        _ => left % right,
+                    };
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 2;
+                }
+                0xb0..=0xc9 => {
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
+                    let source = ((instruction >> 12) & 0x0f) as usize;
+                    let left = get_register(&registers, dest, pc, opcode)?;
+                    let right = get_register(&registers, source, pc, opcode)?;
+                    let value = match opcode {
+                        0xb0..=0xba => {
+                            let left = as_int(left, pc, opcode)?;
+                            let right = as_int(right, pc, opcode)?;
+                            Value::Int(match opcode {
+                                0xb0 => left.wrapping_add(right),
+                                0xb1 => left.wrapping_sub(right),
+                                0xb2 => left.wrapping_mul(right),
+                                0xb3 => left
+                                    .checked_div(right)
+                                    .ok_or_else(|| self.error(pc, opcode, "division by zero"))?,
+                                0xb4 => left
+                                    .checked_rem(right)
+                                    .ok_or_else(|| self.error(pc, opcode, "remainder by zero"))?,
+                                0xb5 => left & right,
+                                0xb6 => left | right,
+                                0xb7 => left ^ right,
+                                0xb8 => left.wrapping_shl((right & 31) as u32),
+                                0xb9 => left.wrapping_shr((right & 31) as u32),
+                                _ => ((left as u32).wrapping_shr((right & 31) as u32)) as i32,
+                            })
+                        }
+                        0xbb..=0xbf => {
+                            let left = as_long(left, pc, opcode)?;
+                            let right = as_long(right, pc, opcode)?;
+                            Value::Long(match opcode {
+                                0xbb => left.wrapping_add(right),
+                                0xbc => left.wrapping_sub(right),
+                                0xbd => left.wrapping_mul(right),
+                                0xbe => left
+                                    .checked_div(right)
+                                    .ok_or_else(|| self.error(pc, opcode, "division by zero"))?,
+                                _ => left
+                                    .checked_rem(right)
+                                    .ok_or_else(|| self.error(pc, opcode, "remainder by zero"))?,
+                            })
+                        }
+                        0xc0..=0xc4 => {
+                            let left = as_float(left, pc, opcode)?;
+                            let right = as_float(right, pc, opcode)?;
+                            Value::Float(match opcode {
+                                0xc0 => left + right,
+                                0xc1 => left - right,
+                                0xc2 => left * right,
+                                0xc3 => left / right,
+                                _ => left % right,
+                            })
+                        }
+                        _ => {
+                            let left = as_double(left, pc, opcode)?;
+                            let right = as_double(right, pc, opcode)?;
+                            Value::Double(match opcode {
+                                0xc5 => left + right,
+                                0xc6 => left - right,
+                                0xc7 => left * right,
+                                0xc8 => left / right,
+                                _ => left % right,
+                            })
+                        }
+                    };
+                    set_register(&mut registers, dest, value, self, pc, opcode)?;
+                    pc += 1;
+                }
+                0xab..=0xaf => {
+                    let (dest, left_reg, right_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let left =
+                        as_double(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
+                    let right =
+                        as_double(get_register(&registers, right_reg, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xab => left + right,
+                        0xac => left - right,
+                        0xad => left * right,
+                        0xae => left / right,
+                        _ => left % right,
+                    };
+                    set_register(&mut registers, dest, Value::Double(value), self, pc, opcode)?;
+                    pc += 2;
+                }
                 0xd0..=0xd7 => {
                     let dest = ((instruction >> 8) & 0x0f) as usize;
                     let source = ((instruction >> 12) & 0x0f) as usize;
@@ -935,8 +1209,9 @@ impl<'a> Vm<'a> {
                 }
                 0xd8..=0xe2 => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
-                    let source = ((instruction >> 12) & 0x0f) as usize;
-                    let literal = (code_word(code, pc + 1, pc, opcode)? as i8) as i32;
+                    let operand = code_word(code, pc + 1, pc, opcode)?;
+                    let source = (operand & 0xff) as usize;
+                    let literal = (operand >> 8) as i8 as i32;
                     let a = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
                     let value = match opcode {
                         0xd8 => a.wrapping_add(literal),
@@ -973,11 +1248,162 @@ impl<'a> Vm<'a> {
         if method_name == "<init>"
             && (class_name.starts_with("Lcom/badlogic/gdx/")
                 || class_name.starts_with("Landroid/")
-                || class_name.starts_with("Ljava/"))
+                || class_name.starts_with("Ljava/lang/ref/")
+                || class_name == "Ljava/lang/Enum;"
+                || class_name == "Ljava/util/ArrayList;"
+                || class_name == "Ljava/util/LinkedList;"
+                || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/lang/StringBuilder;")
         {
+            if class_name == "Ljava/util/ArrayList;"
+                || class_name == "Ljava/util/LinkedList;"
+                || class_name == "Ljava/util/HashMap;"
+            {
+                if let Some(Value::Object(receiver)) = args.first() {
+                    if (*receiver as usize) < self.heap.len() {
+                        self.heap[*receiver as usize] = HeapObject::Collection(Vec::new());
+                    }
+                }
+            } else if class_name == "Ljava/lang/StringBuilder;" {
+                if let Some(Value::Object(receiver)) = args.first() {
+                    if (*receiver as usize) < self.heap.len() {
+                        let initial = args
+                            .get(1)
+                            .and_then(|value| match value {
+                                Value::String(text) => Some(text.clone()),
+                                Value::Object(id) => match self.heap_object(*id) {
+                                    Some(HeapObject::String(text)) => Some(text.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        self.heap[*receiver as usize] = HeapObject::StringBuilder(initial);
+                    }
+                }
+            }
             return Ok(Value::Void);
         }
-        if class_name == "Landroid/app/Activity;"
+        if class_name == "Ljava/lang/StringBuilder;" {
+            let receiver = object_arg(args, 0)?;
+            match method_name {
+                "append" => {
+                    let text = match args.get(1) {
+                        Some(Value::String(value)) => value.clone(),
+                        Some(Value::Int(value)) => value.to_string(),
+                        Some(Value::Long(value)) => value.to_string(),
+                        Some(Value::Float(value)) => value.to_string(),
+                        Some(Value::Double(value)) => value.to_string(),
+                        Some(Value::Object(id)) => match self.heap_object(*id) {
+                            Some(HeapObject::String(value)) => value.clone(),
+                            Some(HeapObject::StringBuilder(value)) => value.clone(),
+                            _ => String::new(),
+                        },
+                        _ => String::new(),
+                    };
+                    if let Some(HeapObject::StringBuilder(value)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        value.push_str(&text);
+                    }
+                    return Ok(Value::Object(receiver));
+                }
+                "toString" => {
+                    let value = match self.heap_object(receiver) {
+                        Some(HeapObject::StringBuilder(value)) => value.clone(),
+                        Some(HeapObject::String(value)) => value.clone(),
+                        _ => String::new(),
+                    };
+                    return Ok(Value::Object(self.alloc_string(value)));
+                }
+                "length" => {
+                    return Ok(Value::Int(match self.heap_object(receiver) {
+                        Some(HeapObject::StringBuilder(value)) => value.chars().count() as i32,
+                        _ => 0,
+                    }));
+                }
+                _ => {}
+            }
+        }
+
+        if class_name == "Ljava/util/ArrayList;"
+            || class_name == "Ljava/util/LinkedList;"
+            || class_name == "Ljava/util/HashMap;"
+            || class_name == "Ljava/util/Collection;"
+            || class_name == "Ljava/util/List;"
+            || class_name == "Ljava/util/AbstractList;"
+            || class_name == "Ljava/util/AbstractCollection;"
+        {
+            let receiver = object_arg(args, 0)?;
+            match method_name {
+                "size" => {
+                    return Ok(Value::Int(match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => values.len() as i32,
+                        _ => 0,
+                    }))
+                }
+                "isEmpty" => {
+                    return Ok(Value::Int(match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => i32::from(values.is_empty()),
+                        _ => 1,
+                    }))
+                }
+                "add" => {
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        values.push(args.get(1).cloned().unwrap_or(Value::Null));
+                    }
+                    return Ok(Value::Int(1));
+                }
+                "clear" => {
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        values.clear();
+                    }
+                    return Ok(Value::Void);
+                }
+                "get" => {
+                    let index = int_arg(args, 1)? as usize;
+                    return Ok(match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => {
+                            values.get(index).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => Value::Null,
+                    });
+                }
+                "remove" => {
+                    if let Some(Value::Object(target)) = args.get(1) {
+                        if let Some(HeapObject::Collection(values)) =
+                            self.heap.get_mut(receiver as usize)
+                        {
+                            if let Some(index) = values
+                                .iter()
+                                .position(|value| value == &Value::Object(*target))
+                            {
+                                values.remove(index);
+                            }
+                        }
+                        return Ok(Value::Int(0));
+                    }
+                    let index = int_arg(args, 1)? as usize;
+                    return Ok(match self.heap.get_mut(receiver as usize) {
+                        Some(HeapObject::Collection(values)) => {
+                            if index < values.len() {
+                                values.remove(index)
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        _ => Value::Null,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if (class_name == "Landroid/app/Activity;" || class_name == "Landroid/app/Service;")
             && matches!(
                 method_name,
                 "onCreate"
@@ -988,6 +1414,7 @@ impl<'a> Vm<'a> {
                     | "onStop"
                     | "onDestroy"
                     | "onNewIntent"
+                    | "attachBaseContext"
             )
         {
             return Ok(Value::Void);
@@ -1060,7 +1487,11 @@ impl<'a> Vm<'a> {
             | ("Landroid/app/Activity;", "onSaveInstanceState")
             | ("Landroid/app/Activity;", "onRestoreInstanceState")
             | ("Landroid/app/Activity;", "onNewIntent")
-            | ("Landroid/app/Activity;", "onWindowFocusChanged") => FrameworkResult::Void,
+            | ("Landroid/app/Activity;", "onWindowFocusChanged")
+            | ("Landroid/app/Service;", "onCreate")
+            | ("Landroid/app/Service;", "onStartCommand")
+            | ("Landroid/app/Service;", "onDestroy")
+            | ("Landroid/app/Service;", "attachBaseContext") => FrameworkResult::Void,
             ("Landroid/app/Activity;", "getWindow") => {
                 object_arg(args, 0)?;
                 FrameworkResult::Object(self.alloc_instance("Landroid/view/Window;"))
@@ -1229,7 +1660,10 @@ impl<'a> Vm<'a> {
                     Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
                     Some(HeapObject::Class(class_name)) => class_name.clone(),
                     Some(HeapObject::String(_)) => "Ljava/lang/String;".to_owned(),
+                    Some(HeapObject::StringBuilder(_)) => "Ljava/lang/StringBuilder;".to_owned(),
                     Some(HeapObject::Array { component, .. }) => format!("[{}", component),
+                    Some(HeapObject::Collection(_)) => "Ljava/util/ArrayList;".to_owned(),
+                    Some(HeapObject::Boxed(_)) => "Ljava/lang/Float;".to_owned(),
                     _ => "Ljava/lang/Object;".to_owned(),
                 };
                 FrameworkResult::Object(self.alloc(HeapObject::Class(class_name)))
@@ -1245,6 +1679,22 @@ impl<'a> Vm<'a> {
                 FrameworkResult::Int(value)
             }
             ("Ljava/lang/Integer;", "valueOf") => FrameworkResult::Int(int_arg(args, 0)?),
+            ("Ljava/lang/Float;", "valueOf") => {
+                let value = float_arg(args, 0)?;
+                FrameworkResult::Object(self.alloc(HeapObject::Boxed(Value::Float(value))))
+            }
+            ("Ljava/lang/Float;", "floatValue") => {
+                let receiver = object_arg(args, 0)?;
+                match self.heap_object(receiver) {
+                    Some(HeapObject::Boxed(Value::Float(value))) => {
+                        FrameworkResult::Int(value.to_bits() as i32)
+                    }
+                    Some(HeapObject::Boxed(Value::Double(value))) => {
+                        FrameworkResult::Int((*value as f32).to_bits() as i32)
+                    }
+                    _ => FrameworkResult::Int(0),
+                }
+            }
             ("Ljava/lang/Boolean;", "parseBoolean") => {
                 FrameworkResult::Bool(self.string_arg(args, 0)?.eq_ignore_ascii_case("true"))
             }
@@ -1257,6 +1707,16 @@ impl<'a> Vm<'a> {
                     _ => return Err(self.error(0, 0, "Math.round argument is not numeric")),
                 };
                 FrameworkResult::Int(value)
+            }
+            ("Ljava/lang/Math;", "min") | ("Ljava/lang/Math;", "max") => {
+                let left = float_arg(args, 0)?;
+                let right = float_arg(args, 1)?;
+                let value = if method_name == "min" {
+                    left.min(right)
+                } else {
+                    left.max(right)
+                };
+                FrameworkResult::Int(value as i32)
             }
             ("Ljava/lang/Class;", "forName") => {
                 let name = self.string_arg(args, 0)?;
@@ -1319,9 +1779,20 @@ impl<'a> Vm<'a> {
                 FrameworkResult::String(String::new())
             }
             ("Landroid/app/Activity;", "startActivity")
-            | ("Landroid/app/Activity;", "startActivityForResult") => {
+            | ("Landroid/app/Activity;", "startActivityForResult")
+            | ("Landroid/app/Service;", "startActivity") => {
                 object_arg(args, 0)?;
                 object_arg(args, 1)?;
+                FrameworkResult::Void
+            }
+            ("Landroid/app/Service;", "bindService") => {
+                object_arg(args, 0)?;
+                object_arg(args, 1)?;
+                int_arg(args, 2).unwrap_or(0);
+                FrameworkResult::Bool(false)
+            }
+            ("Landroid/app/Service;", "unbindService") | ("Landroid/app/Service;", "stopSelf") => {
+                object_arg(args, 0)?;
                 FrameworkResult::Void
             }
             ("Landroid/app/Activity;", "startActivityIfNeeded") => {
@@ -1360,6 +1831,7 @@ impl<'a> Vm<'a> {
         args: &[Value],
     ) -> Result<Value, VmError> {
         let result = match (class_name, method_name) {
+            (_, "<clinit>") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "initializeForView") => {
                 let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
                 self.framework.gdx_view = Some(view);
@@ -1386,6 +1858,15 @@ impl<'a> Vm<'a> {
             }
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getWindow") => {
                 FrameworkResult::Object(self.alloc_instance("Landroid/view/Window;"))
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "requestWindowFeature") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Bool(true)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "setContentView") => {
+                let activity = object_arg(args, 0)?;
+                let view = object_arg(args, 1)?;
+                self.framework_call(FrameworkCall::SetContentView { activity, view })?
             }
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getInput") => {
                 let value = self.framework.gdx_input.unwrap_or_else(|| {
@@ -1421,6 +1902,9 @@ impl<'a> Vm<'a> {
             }
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getAssets") => {
                 FrameworkResult::Object(self.alloc_instance("Landroid/content/res/AssetManager;"))
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getPreferences") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Preferences;"))
             }
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "createWakeLock")
             | ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "onCreate")
@@ -1467,6 +1951,60 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/audio/Music;", "setVolume") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/audio/Music;", "isPlaying") => FrameworkResult::Bool(false),
             ("Lcom/badlogic/gdx/audio/Sound;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "findRegion") => {
+                FrameworkResult::Object(
+                    self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;"),
+                )
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "findRegions") => {
+                FrameworkResult::Object(self.alloc_collection())
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "createSprite")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "newSprite") => {
+                FrameworkResult::Object(
+                    self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/Sprite;"),
+                )
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionWidth")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionWidth")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionHeight")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionHeight")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionY")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionY") => {
+                FrameworkResult::Int(0)
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getTexture")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getTexture") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Texture;"))
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "setRegion")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "setRegion") => {
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setOrigin")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setPosition")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRotation")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setScale")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setSize")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setBounds")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setColor")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRegion")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setTexture")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "translate")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "rotate") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getY")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getWidth")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getHeight")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getRotation")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleY") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getColor") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Color;"))
+            }
             ("Lcom/badlogic/gdx/graphics/Texture;", "dispose")
             | ("Lcom/badlogic/gdx/graphics/Texture;", "setFilter")
             | ("Lcom/badlogic/gdx/graphics/Texture;", "setWrap") => FrameworkResult::Void,
@@ -1604,6 +2142,77 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glGenTextures")
             | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDeleteTextures")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glDeleteTextures") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/math/MathUtils;", "random") => {
+                let value = match args.len() {
+                    1 => float_arg(args, 0)?.mul_add(0.5, 0.5),
+                    2 => {
+                        let low = int_arg(args, 0)?;
+                        let high = int_arg(args, 1)?;
+                        if high < low {
+                            return Err(self.error(
+                                0,
+                                0,
+                                "MathUtils.random upper bound is below lower bound",
+                            ));
+                        }
+                        (low + (self.executed_steps as i32 % (high - low + 1))) as f32
+                    }
+                    _ => {
+                        ((self.executed_steps as i32)
+                            .wrapping_mul(1103515245)
+                            .wrapping_add(12345)
+                            & 0x7fff) as f32
+                    }
+                };
+                FrameworkResult::Int(value as i32)
+            }
+            ("Lcom/badlogic/gdx/math/MathUtils;", "randomBoolean") => {
+                FrameworkResult::Bool(self.executed_steps.is_multiple_of(2))
+            }
+            ("Lcom/badlogic/gdx/math/MathUtils;", "round") => {
+                FrameworkResult::Int(float_arg(args, 0)?.round() as i32)
+            }
+            ("Lcom/badlogic/gdx/math/MathUtils;", "sin") => {
+                FrameworkResult::Int(float_arg(args, 0)?.sin().to_bits() as i32)
+            }
+            ("Lcom/badlogic/gdx/graphics/Color;", "toFloatBits") => {
+                FrameworkResult::Int(int_arg(args, 0)?)
+            }
+            ("Lcom/badlogic/gdx/math/Vector3;", "set") => {
+                let receiver = match args.first() {
+                    Some(Value::Object(id)) => *id,
+                    _ => return Ok(Value::Void),
+                };
+                let _x = float_arg(args, 1)?;
+                let _y = float_arg(args, 2)?;
+                let _z = float_arg(args, 3)?;
+                FrameworkResult::Object(receiver)
+            }
+            ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "update")
+            | ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "apply")
+            | ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "translate")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "begin")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "end")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "dispose")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "enableBlending")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "disableBlending")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setProjectionMatrix")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setColor")
+            | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Input;", "setCatchBackKey")
+            | ("Lcom/badlogic/gdx/Input;", "setOnscreenKeyboardVisible")
+            | ("Lcom/badlogic/gdx/Input;", "getTextInput") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Input;", "isPeripheralAvailable") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Input;", "getCurrentEventTime") => FrameworkResult::Long(0),
+            ("Lcom/badlogic/gdx/Input;", "getRotation")
+            | ("Lcom/badlogic/gdx/Input;", "getFreePointerIndex")
+            | ("Lcom/badlogic/gdx/Input;", "lookUpPointerIndex") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/Input;", "getAccelerometerX")
+            | ("Lcom/badlogic/gdx/Input;", "getAccelerometerY")
+            | ("Lcom/badlogic/gdx/Input;", "getAccelerometerZ")
+            | ("Lcom/badlogic/gdx/Input;", "getAzimuth")
+            | ("Lcom/badlogic/gdx/Input;", "getPitch")
+            | ("Lcom/badlogic/gdx/Input;", "getRoll") => FrameworkResult::Int(0),
             _ => {
                 return Err(self.error(
                     0,
@@ -1758,7 +2367,11 @@ fn get_object(
     match get_register(registers, register, pc, opcode)? {
         Value::Object(id) => Ok(id),
         Value::Null => Err(vm.error(pc, opcode, "null object reference")),
-        _ => Err(vm.error(pc, opcode, "value is not an object")),
+        value => Err(vm.error(
+            pc,
+            opcode,
+            format!("value in v{register} is not an object: {value:?}"),
+        )),
     }
 }
 
@@ -1774,6 +2387,21 @@ fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
     }
 }
 
+fn as_long(value: Value, pc: usize, opcode: u8) -> Result<i64, VmError> {
+    match value {
+        Value::Long(value) => Ok(value),
+        Value::Int(value) => Ok(value as i64),
+        Value::Float(value) => Ok(value as i64),
+        Value::Double(value) => Ok(value as i64),
+        Value::Null => Ok(0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not a long".to_owned(),
+        }),
+    }
+}
+
 fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
     match value {
         Value::Float(value) => Ok(value),
@@ -1785,6 +2413,21 @@ fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
             pc,
             opcode,
             message: "value is not a float".to_owned(),
+        }),
+    }
+}
+
+fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> {
+    match value {
+        Value::Double(value) => Ok(value),
+        Value::Float(value) => Ok(value as f64),
+        Value::Int(value) => Ok(value as f64),
+        Value::Long(value) => Ok(value as f64),
+        Value::Null => Ok(0.0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not a double".to_owned(),
         }),
     }
 }
