@@ -479,6 +479,20 @@ impl<'a> Vm<'a> {
                     )?;
                     pc += 2;
                 }
+                0x82 => {
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
+                    let source = ((instruction >> 12) & 0x0f) as usize;
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_register(
+                        &mut registers,
+                        dest,
+                        Value::Float(value as f32),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 1;
+                }
                 0x16 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let value = code_word(code, pc + 1, pc, opcode)? as i16 as i64;
@@ -770,6 +784,20 @@ impl<'a> Vm<'a> {
                 0x2a => {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
+                }
+                0xc9 => {
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
+                    let source = ((instruction >> 12) & 0x0f) as usize;
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_register(
+                        &mut registers,
+                        dest,
+                        Value::Float(value as f32),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 1;
                 }
                 0x2d..=0x31 => {
                     let (dest, left_reg, right_reg) =
@@ -1116,7 +1144,7 @@ impl<'a> Vm<'a> {
         {
             return Ok(Value::Void);
         }
-        if class_name == "Landroid/view/Window;" {
+        if class_name == "Landroid/view/Window;" || class_name.starts_with("Landroid/app/") {
             return Ok(Value::Void);
         }
         if class_name == "Ljava/lang/String;" {
