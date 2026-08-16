@@ -840,13 +840,15 @@ impl<'a> Vm<'a> {
                         as_int(get_register(&registers, index_reg, pc, opcode)?, pc, opcode)?
                             as usize;
                     let value = get_register(&registers, value_reg, pc, opcode)?.clone();
+                    let array_len = match self.heap_object(array) {
+                        Some(HeapObject::Array { values, .. }) => values.len(),
+                        _ => 0,
+                    };
+                    if index >= array_len {
+                        return Err(self.error(pc, opcode, "array index out of bounds"));
+                    }
                     match self.heap.get_mut(array as usize) {
-                        Some(HeapObject::Array { values, .. }) => {
-                            let slot = values.get_mut(index).ok_or_else(|| {
-                                self.error(pc, opcode, "array index out of bounds")
-                            })?;
-                            *slot = value;
-                        }
+                        Some(HeapObject::Array { values, .. }) => values[index] = value,
                         _ => return Err(self.error(pc, opcode, "array target is not an array")),
                     }
                     pc += 2;
@@ -1185,6 +1187,439 @@ impl<'a> Vm<'a> {
                     0,
                     0,
                     format!("framework method {class_name}->{method_name} is not implemented"),
+                ))
+            }
+        };
+        Ok(match result {
+            FrameworkResult::Void => Value::Void,
+            FrameworkResult::Int(value) => Value::Int(value),
+            FrameworkResult::Long(value) => Value::Long(value),
+            FrameworkResult::Bool(value) => Value::Int(i32::from(value)),
+            FrameworkResult::Object(value) => {
+                if value == 0 {
+                    Value::Null
+                } else {
+                    Value::Object(value)
+                }
+            }
+            FrameworkResult::String(value) => Value::String(value),
+        })
+    }
+
+    fn dispatch_gdx(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        let result = match (class_name, method_name) {
+            (_, "<clinit>") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getType")
+            | ("Lcom/badlogic/gdx/Application;", "getType") => FrameworkResult::Object(0),
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "initializeForView") => {
+                let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
+                self.framework.gdx_view = Some(view);
+                self.framework.gdx_listener = args.first().and_then(|value| match value {
+                    Value::Object(id) => Some(*id),
+                    _ => None,
+                });
+                self.framework.surface_size = (320, 480);
+                self.framework
+                    .surface_events
+                    .push(format!("created:{view}"));
+                self.framework
+                    .surface_events
+                    .push(format!("changed:{view}:0:320x480"));
+                FrameworkResult::Object(view)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidGraphics;", "getView") => {
+                let view = self.framework.gdx_view.unwrap_or_else(|| {
+                    let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
+                    self.framework.gdx_view = Some(view);
+                    view
+                });
+                FrameworkResult::Object(view)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getWindow") => {
+                FrameworkResult::Object(self.alloc_instance("Landroid/view/Window;"))
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "requestWindowFeature") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Bool(true)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "setContentView") => {
+                let activity = object_arg(args, 0)?;
+                let view = object_arg(args, 1)?;
+                self.framework_call(FrameworkCall::SetContentView { activity, view })?
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getInput") => {
+                let value = self.framework.gdx_input.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Input;");
+                    self.framework.gdx_input = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getAudio") => {
+                let value = self.framework.gdx_audio.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Audio;");
+                    self.framework.gdx_audio = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getFiles") => {
+                let value = self.framework.gdx_files.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Files;");
+                    self.framework.gdx_files = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getGraphics") => {
+                let value = self.framework.gdx_graphics.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Graphics;");
+                    self.framework.gdx_graphics = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getAssets") => {
+                FrameworkResult::Object(self.alloc_instance("Landroid/content/res/AssetManager;"))
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "getPreferences") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Preferences;"))
+            }
+            ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "createWakeLock")
+            | ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "onCreate")
+            | ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "postRunnable")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "create")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "resize")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "render")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "pause")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "resume")
+            | ("Lcom/badlogic/gdx/ApplicationListener;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Graphics;", "getWidth") => {
+                FrameworkResult::Int(self.framework.surface_size.0)
+            }
+            ("Lcom/badlogic/gdx/Graphics;", "getHeight") => {
+                FrameworkResult::Int(self.framework.surface_size.1)
+            }
+            ("Lcom/badlogic/gdx/Graphics;", "getDeltaTime") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/Graphics;", "getFramesPerSecond") => FrameworkResult::Int(60),
+            ("Lcom/badlogic/gdx/Graphics;", "getGL10")
+            | ("Lcom/badlogic/gdx/Graphics;", "getGLCommon") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/GL10;"))
+            }
+            ("Lcom/badlogic/gdx/Input;", "isTouched") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Input;", "isKeyPressed") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Input;", "setInputProcessor") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Files;", "internal")
+            | ("Lcom/badlogic/gdx/Files;", "external")
+            | ("Lcom/badlogic/gdx/Files;", "local") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/files/FileHandle;"))
+            }
+            ("Lcom/badlogic/gdx/files/FileHandle;", "exists") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/files/FileHandle;", "length") => FrameworkResult::Long(0),
+            ("Lcom/badlogic/gdx/files/FileHandle;", "readBytes") => FrameworkResult::Object(0),
+            ("Lcom/badlogic/gdx/files/FileHandle;", "readString") => {
+                FrameworkResult::String(String::new())
+            }
+            ("Lcom/badlogic/gdx/audio/Sound;", "play")
+            | ("Lcom/badlogic/gdx/audio/Sound;", "loop")
+            | ("Lcom/badlogic/gdx/audio/Sound;", "stop") => FrameworkResult::Long(0),
+            ("Lcom/badlogic/gdx/audio/Music;", "play")
+            | ("Lcom/badlogic/gdx/audio/Music;", "stop")
+            | ("Lcom/badlogic/gdx/audio/Music;", "setLooping")
+            | ("Lcom/badlogic/gdx/audio/Music;", "dispose")
+            | ("Lcom/badlogic/gdx/audio/Music;", "setVolume") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/audio/Music;", "isPlaying") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/audio/Sound;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "findRegion") => {
+                FrameworkResult::Object(
+                    self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;"),
+                )
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "findRegions") => {
+                FrameworkResult::Object(self.alloc_collection())
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "createSprite")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "newSprite") => {
+                FrameworkResult::Object(
+                    self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/Sprite;"),
+                )
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionWidth")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionWidth")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionHeight")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionHeight")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionY")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionY") => {
+                FrameworkResult::Int(0)
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getTexture")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getTexture") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Texture;"))
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "setRegion")
+            | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "setRegion") => {
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setOrigin")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setPosition")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRotation")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setScale")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setSize")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setBounds")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setColor")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRegion")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setTexture")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "translate")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "rotate") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getY")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getWidth")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getHeight")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getRotation")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleX")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleY") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getColor") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Color;"))
+            }
+            ("Lcom/badlogic/gdx/graphics/Texture;", "dispose")
+            | ("Lcom/badlogic/gdx/graphics/Texture;", "setFilter")
+            | ("Lcom/badlogic/gdx/graphics/Texture;", "setWrap") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/Texture;", "getWidth")
+            | ("Lcom/badlogic/gdx/graphics/Texture;", "getHeight") => FrameworkResult::Int(256),
+            ("Lcom/badlogic/gdx/Application;", "getPreferences") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Preferences;"))
+            }
+            ("Lcom/badlogic/gdx/Preferences;", "getString") => {
+                FrameworkResult::String(String::new())
+            }
+            ("Lcom/badlogic/gdx/Preferences;", "getBoolean") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Preferences;", "getInteger") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/Preferences;", "putString")
+            | ("Lcom/badlogic/gdx/Preferences;", "putBoolean")
+            | ("Lcom/badlogic/gdx/Preferences;", "putInteger")
+            | ("Lcom/badlogic/gdx/Preferences;", "flush") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Application;", "getAudio") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Audio;"))
+            }
+            ("Lcom/badlogic/gdx/Application;", "getGraphics") => {
+                let value = self.framework.gdx_graphics.unwrap_or_else(|| {
+                    let value = self.alloc_instance("Lcom/badlogic/gdx/Graphics;");
+                    self.framework.gdx_graphics = Some(value);
+                    value
+                });
+                FrameworkResult::Object(value)
+            }
+            ("Lcom/badlogic/gdx/Application;", "log") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glClearColor")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glClearColor") => {
+                let color = Rgba8 {
+                    r: (float_arg(args, 1)? * 255.0).clamp(0.0, 255.0) as u8,
+                    g: (float_arg(args, 2)? * 255.0).clamp(0.0, 255.0) as u8,
+                    b: (float_arg(args, 3)? * 255.0).clamp(0.0, 255.0) as u8,
+                    a: (float_arg(args, 4)? * 255.0).clamp(0.0, 255.0) as u8,
+                };
+                self.framework.gles.clear_color(color);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glClear")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glClear") => {
+                self.framework.gles.clear_mask(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glEnable")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glEnable") => {
+                self.framework.gles.enable(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDisable")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDisable") => {
+                self.framework.gles.disable(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glBlendFunc")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glBlendFunc") => {
+                self.framework
+                    .gles
+                    .blend_func(int_arg(args, 1)? as u32, int_arg(args, 2)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glBindTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glBindTexture") => {
+                self.framework
+                    .gles
+                    .bind_texture(int_arg(args, 1)? as u32, int_arg(args, 2)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glViewport")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glViewport") => {
+                self.framework.gles.viewport(
+                    int_arg(args, 1)?,
+                    int_arg(args, 2)?,
+                    int_arg(args, 3)?.max(0) as u32,
+                    int_arg(args, 4)?.max(0) as u32,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDrawArrays")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDrawArrays") => {
+                self.framework.gles.draw_arrays(
+                    int_arg(args, 1)? as u32,
+                    int_arg(args, 2)?,
+                    int_arg(args, 3)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDrawElements")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDrawElements") => {
+                self.framework.gles.draw_elements(
+                    int_arg(args, 1)? as u32,
+                    int_arg(args, 2)?,
+                    int_arg(args, 3)? as u32,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glGetString")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glGetString") => {
+                FrameworkResult::String("DonutHLE GLES 1.0 software renderer".to_owned())
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadIdentity")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadIdentity")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadMatrixf")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadMatrixf")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glMatrixMode")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMatrixMode")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexParameterf")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexParameterf")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexSubImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexSubImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glCompressedTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glCompressedTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glPixelStorei")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPixelStorei")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDepthMask")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDepthMask")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glScissor")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glScissor")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glActiveTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glActiveTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glClientActiveTexture")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glEnableClientState")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDisableClientState")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glVertexPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glColorPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexCoordPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glNormalPointer")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMaterialfv")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPointSize") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glGenTextures")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glGenTextures")
+            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glDeleteTextures")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glDeleteTextures") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/math/MathUtils;", "random") => {
+                let value = match args.len() {
+                    1 => float_arg(args, 0)?.mul_add(0.5, 0.5),
+                    2 => {
+                        let low = int_arg(args, 0)?;
+                        let high = int_arg(args, 1)?;
+                        if high < low {
+                            return Err(self.error(
+                                0,
+                                0,
+                                "MathUtils.random upper bound is below lower bound",
+                            ));
+                        }
+                        (low + (self.executed_steps as i32 % (high - low + 1))) as f32
+                    }
+                    _ => {
+                        ((self.executed_steps as i32)
+                            .wrapping_mul(1103515245)
+                            .wrapping_add(12345)
+                            & 0x7fff) as f32
+                    }
+                };
+                FrameworkResult::Int(value as i32)
+            }
+            ("Lcom/badlogic/gdx/math/MathUtils;", "randomBoolean") => {
+                FrameworkResult::Bool(self.executed_steps.is_multiple_of(2))
+            }
+            ("Lcom/badlogic/gdx/math/MathUtils;", "round") => {
+                FrameworkResult::Int(float_arg(args, 0)?.round() as i32)
+            }
+            ("Lcom/badlogic/gdx/math/MathUtils;", "sin") => {
+                FrameworkResult::Int(float_arg(args, 0)?.sin().to_bits() as i32)
+            }
+            ("Lcom/badlogic/gdx/graphics/Color;", "toFloatBits") => {
+                FrameworkResult::Int(int_arg(args, 0)?)
+            }
+            ("Lcom/badlogic/gdx/math/Vector3;", "set") => {
+                let receiver = match args.first() {
+                    Some(Value::Object(id)) => *id,
+                    _ => return Ok(Value::Void),
+                };
+                let _x = float_arg(args, 1)?;
+                let _y = float_arg(args, 2)?;
+                let _z = float_arg(args, 3)?;
+                FrameworkResult::Object(receiver)
+            }
+            ("Lcom/badlogic/gdx/Graphics;", "setVSync")
+            | ("Lcom/badlogic/gdx/Graphics;", "setContinuousRendering")
+            | ("Lcom/badlogic/gdx/Graphics;", "setDisplayMode")
+            | ("Lcom/badlogic/gdx/Graphics;", "setTitle")
+            | ("Lcom/badlogic/gdx/Graphics;", "setResizable")
+            | ("Lcom/badlogic/gdx/Graphics;", "setFullscreenMode")
+            | ("Lcom/badlogic/gdx/Graphics;", "setWindowedMode")
+            | ("Lcom/badlogic/gdx/Graphics;", "setSystemCursor")
+            | ("Lcom/badlogic/gdx/Graphics;", "setUndecorated")
+            | ("Lcom/badlogic/gdx/Graphics;", "setBorderlessWindow")
+            | ("Lcom/badlogic/gdx/Graphics;", "setForegroundFPS")
+            | ("Lcom/badlogic/gdx/Graphics;", "setIdleFPS") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Graphics;", "isFullscreen")
+            | ("Lcom/badlogic/gdx/Graphics;", "isGL30Available")
+            | ("Lcom/badlogic/gdx/Graphics;", "isGL31Available")
+            | ("Lcom/badlogic/gdx/Graphics;", "isGL32Available") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Graphics;", "getDensity")
+            | ("Lcom/badlogic/gdx/Graphics;", "getPpcX")
+            | ("Lcom/badlogic/gdx/Graphics;", "getPpcY") => FrameworkResult::Int(1),
+            ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "update")
+            | ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "apply")
+            | ("Lcom/badlogic/gdx/graphics/OrthographicCamera;", "translate")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "begin")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "end")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "dispose")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "enableBlending")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "disableBlending")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setProjectionMatrix")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setColor")
+            | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Input;", "setCatchBackKey")
+            | ("Lcom/badlogic/gdx/Input;", "setOnscreenKeyboardVisible")
+            | ("Lcom/badlogic/gdx/Input;", "getTextInput") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/Input;", "isPeripheralAvailable") => FrameworkResult::Bool(false),
+            ("Lcom/badlogic/gdx/Input;", "getCurrentEventTime") => FrameworkResult::Long(0),
+            ("Lcom/badlogic/gdx/Input;", "getRotation")
+            | ("Lcom/badlogic/gdx/Input;", "getFreePointerIndex")
+            | ("Lcom/badlogic/gdx/Input;", "lookUpPointerIndex") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/Input;", "getAccelerometerX")
+            | ("Lcom/badlogic/gdx/Input;", "getAccelerometerY")
+            | ("Lcom/badlogic/gdx/Input;", "getAccelerometerZ")
+            | ("Lcom/badlogic/gdx/Input;", "getAzimuth")
+            | ("Lcom/badlogic/gdx/Input;", "getPitch")
+            | ("Lcom/badlogic/gdx/Input;", "getRoll") => FrameworkResult::Int(0),
+            _ => {
+                return Err(self.error(
+                    0,
+                    0,
+                    format!("GDX method {class_name}->{method_name} is not implemented"),
                 ))
             }
         };
