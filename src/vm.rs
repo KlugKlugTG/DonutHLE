@@ -831,8 +831,9 @@ impl<'a> Vm<'a> {
                 0xc8..=0xca => {
                     let (dest, source) = two_registers(instruction);
                     let left = as_long(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
-                    let right = as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
-                    let shift = (right as u32) & 0x3f;
+                    let shift = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?
+                        as u32
+                        & 0x3f;
                     let value = match opcode {
                         0xc8 => left.wrapping_shl(shift),
                         0xc9 => left >> shift,
