@@ -281,6 +281,10 @@ pub enum FrameworkCall {
         view: u32,
         text: String,
     },
+    AddLayerChild {
+        parent: u32,
+        child: u32,
+    },
     AddView {
         parent: u32,
         child: u32,
@@ -463,6 +467,14 @@ impl Framework {
                     .get_mut(&view)
                     .ok_or_else(|| format!("unknown view {view}"))?
                     .text = Some(text);
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::AddLayerChild { parent, child } => {
+                self.ensure_view(parent, "Lcom/hyperkani/common/Layer;");
+                self.ensure_view(child, "Lcom/hyperkani/common/Layer;");
+                if let Some(view) = self.views.get_mut(&parent) {
+                    view.children.push(child);
+                }
                 Ok(FrameworkResult::Void)
             }
             FrameworkCall::AddView { parent, child } => {

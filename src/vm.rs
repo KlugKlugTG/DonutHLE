@@ -260,7 +260,8 @@ impl<'a> Vm<'a> {
         let framework_class = method.class_name.starts_with("Landroid/")
             || method.class_name.starts_with("Ljava/")
             || method.class_name.starts_with("Ldalvik/")
-            || method.class_name.starts_with("Lcom/badlogic/gdx/");
+            || method.class_name.starts_with("Lcom/badlogic/gdx/")
+            || method.class_name.starts_with("Lcom/hyperkani/common/");
         if framework_class {
             if method.name == "<clinit>" {
                 return Ok(Value::Void);
@@ -1425,21 +1426,17 @@ impl<'a> Vm<'a> {
         if class_name.starts_with("Lcom/badlogic/gdx/") {
             return self.dispatch_gdx(class_name, method_name, args);
         }
-        if class_name == "Lcom/hyperkani/common/Layer;" && method_name == "addChild" {
-            let parent = args.first().and_then(|value| match value {
-                Value::Object(id) => Some(*id),
-                _ => None,
-            });
-            let child = args.get(1).and_then(|value| match value {
-                Value::Object(id) => Some(*id),
-                _ => None,
-            });
-            if parent.is_none() || child.is_none() {
-                return Err(self.error(
-                    0,
-                    0,
-                    format!("Layer.addChild received invalid arguments: {args:?}"),
-                ));
+        if class_name.starts_with("Lcom/hyperkani/common/")
+            && (method_name == "addChild" || method_name == "add" || method_name == "<init>")
+        {
+            if method_name == "addChild" || method_name == "add" {
+                let mut objects = args.iter().filter_map(|value| match value {
+                    Value::Object(id) => Some(*id),
+                    _ => None,
+                });
+                if let (Some(parent), Some(child)) = (objects.next(), objects.next()) {
+                    let _ = self.framework_call(FrameworkCall::AddLayerChild { parent, child });
+                }
             }
             return Ok(Value::Void);
         }

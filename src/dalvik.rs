@@ -311,6 +311,7 @@ impl DexFile {
                 || current.starts_with("Ljava/")
                 || current.starts_with("Ldalvik/")
                 || current.starts_with("Lcom/badlogic/gdx/")
+                || current.starts_with("Lcom/hyperkani/common/")
             {
                 return Some(current.to_owned());
             }
