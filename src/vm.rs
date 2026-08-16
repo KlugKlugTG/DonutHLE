@@ -1425,6 +1425,11 @@ impl<'a> Vm<'a> {
         if class_name.starts_with("Lcom/badlogic/gdx/") {
             return self.dispatch_gdx(class_name, method_name, args);
         }
+        if class_name == "Lcom/hyperkani/common/Layer;" && method_name == "addChild" {
+            object_arg(args, 0)?;
+            object_arg(args, 1)?;
+            return Ok(Value::Void);
+        }
         if class_name == "Ljava/lang/Object;" {
             return match method_name {
                 "<init>" => Ok(Value::Void),
