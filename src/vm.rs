@@ -1426,8 +1426,21 @@ impl<'a> Vm<'a> {
             return self.dispatch_gdx(class_name, method_name, args);
         }
         if class_name == "Lcom/hyperkani/common/Layer;" && method_name == "addChild" {
-            object_arg(args, 0)?;
-            object_arg(args, 1)?;
+            let parent = args.first().and_then(|value| match value {
+                Value::Object(id) => Some(*id),
+                _ => None,
+            });
+            let child = args.get(1).and_then(|value| match value {
+                Value::Object(id) => Some(*id),
+                _ => None,
+            });
+            if parent.is_none() || child.is_none() {
+                return Err(self.error(
+                    0,
+                    0,
+                    format!("Layer.addChild received invalid arguments: {args:?}"),
+                ));
+            }
             return Ok(Value::Void);
         }
         if class_name == "Ljava/lang/Object;" {
