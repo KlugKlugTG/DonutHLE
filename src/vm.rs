@@ -529,7 +529,7 @@ impl<'a> Vm<'a> {
                     let dest = ((instruction >> 8) & 0x0f) as usize;
                     let source = ((instruction >> 12) & 0x0f) as usize;
                     let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
-                    set_register(
+                    set_wide_register(
                         &mut registers,
                         dest,
                         Value::Double(value as f64),
