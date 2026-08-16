@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::dalvik::{CodeItem, DexFile};
-use crate::framework::{Framework, FrameworkCall, FrameworkResult, Value as FrameworkValue};
+use crate::framework::{Framework, FrameworkCall, FrameworkResult};
 use crate::Rgba8;
 
 pub type ObjectId = u32;
@@ -1181,29 +1181,11 @@ impl<'a> Vm<'a> {
             };
             return Ok(Value::Object(self.alloc(HeapObject::Class(descriptor))));
         }
-        let result = match (class_name, method_name) {
-            _ => {
-                return Err(self.error(
-                    0,
-                    0,
-                    format!("framework method {class_name}->{method_name} is not implemented"),
-                ))
-            }
-        };
-        Ok(match result {
-            FrameworkResult::Void => Value::Void,
-            FrameworkResult::Int(value) => Value::Int(value),
-            FrameworkResult::Long(value) => Value::Long(value),
-            FrameworkResult::Bool(value) => Value::Int(i32::from(value)),
-            FrameworkResult::Object(value) => {
-                if value == 0 {
-                    Value::Null
-                } else {
-                    Value::Object(value)
-                }
-            }
-            FrameworkResult::String(value) => Value::String(value),
-        })
+        Err(self.error(
+            0,
+            0,
+            format!("framework method {class_name}->{method_name} is not implemented"),
+        ))
     }
 
     fn dispatch_gdx(
@@ -1781,21 +1763,6 @@ fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
     }
 }
 
-fn as_long(value: Value, pc: usize, opcode: u8) -> Result<i64, VmError> {
-    match value {
-        Value::Long(value) => Ok(value),
-        Value::Int(value) => Ok(value as i64),
-        Value::Float(value) => Ok(value as i64),
-        Value::Double(value) => Ok(value as i64),
-        Value::Null => Ok(0),
-        _ => Err(VmError {
-            pc,
-            opcode,
-            message: "value is not a long".to_owned(),
-        }),
-    }
-}
-
 fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
     match value {
         Value::Float(value) => Ok(value),
@@ -1807,21 +1774,6 @@ fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
             pc,
             opcode,
             message: "value is not a float".to_owned(),
-        }),
-    }
-}
-
-fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> {
-    match value {
-        Value::Double(value) => Ok(value),
-        Value::Float(value) => Ok(value as f64),
-        Value::Int(value) => Ok(value as f64),
-        Value::Long(value) => Ok(value as f64),
-        Value::Null => Ok(0.0),
-        _ => Err(VmError {
-            pc,
-            opcode,
-            message: "value is not a double".to_owned(),
         }),
     }
 }
@@ -1861,24 +1813,6 @@ fn object_arg(args: &[Value], index: usize) -> Result<ObjectId, VmError> {
             pc: 0,
             opcode: 0,
             message: format!("framework argument {index} is not an object"),
-        }),
-    }
-}
-
-fn string_arg(args: &[Value], index: usize) -> Result<String, VmError> {
-    match args.get(index) {
-        Some(Value::String(value)) => Ok(value.clone()),
-        Some(Value::Object(id)) => Err(VmError {
-            pc: 0,
-            opcode: 0,
-            message: format!(
-                "framework argument {index} is object {id}, expected java.lang.String"
-            ),
-        }),
-        _ => Err(VmError {
-            pc: 0,
-            opcode: 0,
-            message: format!("framework argument {index} is not a string"),
         }),
     }
 }
