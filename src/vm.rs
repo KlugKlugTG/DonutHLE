@@ -1585,6 +1585,19 @@ impl<'a> Vm<'a> {
                 object_arg(args, 0)?;
                 FrameworkResult::Object(self.alloc_instance("Landroid/app/Application;"))
             }
+            ("Landroid/app/Activity;", "registerReceiver")
+            | ("Landroid/content/ContextWrapper;", "registerReceiver")
+            | ("Landroid/content/Context;", "registerReceiver") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Object(0)
+            }
+            ("Landroid/app/Activity;", "unregisterReceiver")
+            | ("Landroid/content/ContextWrapper;", "unregisterReceiver")
+            | ("Landroid/content/Context;", "unregisterReceiver") => {
+                object_arg(args, 0)?;
+                FrameworkResult::Void
+            }
+
             ("Landroid/app/Activity;", "getApplication")
             | ("Landroid/content/ContextWrapper;", "getApplication") => {
                 object_arg(args, 0)?;
