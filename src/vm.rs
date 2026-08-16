@@ -871,7 +871,7 @@ impl<'a> Vm<'a> {
                         0xc9 => left >> shift,
                         _ => ((left as u64) >> shift) as i64,
                     };
-                    set_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
                     pc += 1;
                 }
                 0xcb..=0xcf => {
@@ -886,7 +886,14 @@ impl<'a> Vm<'a> {
                         0xce => left / right,
                         _ => left % right,
                     };
-                    set_register(&mut registers, dest, Value::Double(value), self, pc, opcode)?;
+                    set_wide_register(
+                        &mut registers,
+                        dest,
+                        Value::Double(value),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
                     pc += 1;
                 }
                 0x2d..=0x31 => {
@@ -928,8 +935,18 @@ impl<'a> Vm<'a> {
                         0xd0 => value.wrapping_add(literal),
                         0xd1 => literal.wrapping_sub(value),
                         0xd2 => value.wrapping_mul(literal),
-                        0xd3 => value.wrapping_div(literal),
-                        0xd4 => value.wrapping_rem(literal),
+                        0xd3 => {
+                            if literal == 0 {
+                                return Err(self.error(pc, opcode, "integer division by zero"));
+                            }
+                            value.wrapping_div(literal)
+                        }
+                        0xd4 => {
+                            if literal == 0 {
+                                return Err(self.error(pc, opcode, "integer remainder by zero"));
+                            }
+                            value.wrapping_rem(literal)
+                        }
                         0xd5 => value & literal,
                         0xd6 => value | literal,
                         _ => value ^ literal,
@@ -946,8 +963,18 @@ impl<'a> Vm<'a> {
                         0xd8 => value.wrapping_add(literal),
                         0xd9 => literal.wrapping_sub(value),
                         0xda => value.wrapping_mul(literal),
-                        0xdb => value.wrapping_div(literal),
-                        0xdc => value.wrapping_rem(literal),
+                        0xdb => {
+                            if literal == 0 {
+                                return Err(self.error(pc, opcode, "integer division by zero"));
+                            }
+                            value.wrapping_div(literal)
+                        }
+                        0xdc => {
+                            if literal == 0 {
+                                return Err(self.error(pc, opcode, "integer remainder by zero"));
+                            }
+                            value.wrapping_rem(literal)
+                        }
                         0xdd => value & literal,
                         0xde => value | literal,
                         _ => value ^ literal,
