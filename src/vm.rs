@@ -479,7 +479,7 @@ impl<'a> Vm<'a> {
                     )?;
                     pc += 2;
                 }
-                0x82 => {
+                0x81 => {
                     let dest = ((instruction >> 8) & 0x0f) as usize;
                     let source = ((instruction >> 12) & 0x0f) as usize;
                     let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
@@ -487,6 +487,20 @@ impl<'a> Vm<'a> {
                         &mut registers,
                         dest,
                         Value::Float(value as f32),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 1;
+                }
+                0x82 => {
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
+                    let source = ((instruction >> 12) & 0x0f) as usize;
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_register(
+                        &mut registers,
+                        dest,
+                        Value::Double(value as f64),
                         self,
                         pc,
                         opcode,
@@ -785,18 +799,32 @@ impl<'a> Vm<'a> {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
                 }
-                0xc9 => {
-                    let dest = ((instruction >> 8) & 0x0f) as usize;
-                    let source = ((instruction >> 12) & 0x0f) as usize;
-                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
-                    set_register(
-                        &mut registers,
-                        dest,
-                        Value::Float(value as f32),
-                        self,
-                        pc,
-                        opcode,
-                    )?;
+                0xc8..=0xca => {
+                    let (dest, source) = two_registers(instruction);
+                    let left = as_float(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let right =
+                        as_float(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xc8 => left * right,
+                        0xc9 => left / right,
+                        _ => left % right,
+                    };
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0xcb..=0xcf => {
+                    let (dest, source) = two_registers(instruction);
+                    let left = as_double(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let right =
+                        as_double(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xcb => left + right,
+                        0xcc => left - right,
+                        0xcd => left * right,
+                        0xce => left / right,
+                        _ => left % right,
+                    };
+                    set_register(&mut registers, dest, Value::Double(value), self, pc, opcode)?;
                     pc += 1;
                 }
                 0x2d..=0x31 => {
@@ -828,6 +856,42 @@ impl<'a> Vm<'a> {
                     } else {
                         pc += 2;
                     }
+                }
+                0xd0..=0xd7 => {
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
+                    let source = ((instruction >> 12) & 0x0f) as usize;
+                    let literal = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let result = match opcode {
+                        0xd0 => value.wrapping_add(literal),
+                        0xd1 => literal.wrapping_sub(value),
+                        0xd2 => value.wrapping_mul(literal),
+                        0xd3 => value.wrapping_div(literal),
+                        0xd4 => value.wrapping_rem(literal),
+                        0xd5 => value & literal,
+                        0xd6 => value | literal,
+                        _ => value ^ literal,
+                    };
+                    set_register(&mut registers, dest, Value::Int(result), self, pc, opcode)?;
+                    pc += 2;
+                }
+                0xd8..=0xdf => {
+                    let dest = ((instruction >> 8) & 0x0f) as usize;
+                    let source = ((instruction >> 12) & 0x0f) as usize;
+                    let literal = ((instruction >> 8) & 0xff) as i8 as i32;
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let result = match opcode {
+                        0xd8 => value.wrapping_add(literal),
+                        0xd9 => literal.wrapping_sub(value),
+                        0xda => value.wrapping_mul(literal),
+                        0xdb => value.wrapping_div(literal),
+                        0xdc => value.wrapping_rem(literal),
+                        0xdd => value & literal,
+                        0xde => value | literal,
+                        _ => value ^ literal,
+                    };
+                    set_register(&mut registers, dest, Value::Int(result), self, pc, opcode)?;
+                    pc += 2;
                 }
                 0x38..=0x3d => {
                     let register = ((instruction >> 8) & 0xff) as usize;
@@ -1915,6 +1979,20 @@ fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
             pc,
             opcode,
             message: "value is not a float".to_owned(),
+        }),
+    }
+}
+fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> {
+    match value {
+        Value::Double(value) => Ok(value),
+        Value::Float(value) => Ok(value as f64),
+        Value::Int(value) => Ok(value as f64),
+        Value::Long(value) => Ok(value as f64),
+        Value::Null => Ok(0.0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: "value is not a double".to_owned(),
         }),
     }
 }
