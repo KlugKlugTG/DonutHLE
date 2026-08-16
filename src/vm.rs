@@ -373,29 +373,61 @@ impl<'a> Vm<'a> {
             let opcode = (instruction & 0xff) as u8;
             match opcode {
                 0x00 => pc += 1,
-                0x01 | 0x04 | 0x07 => {
+                0x01 | 0x07 => {
                     let (dest, source) = two_registers(instruction);
                     let value = get_register(&registers, source, pc, opcode)?;
                     set_register(&mut registers, dest, value, self, pc, opcode)?;
                     pc += 1;
                 }
-                0x02 | 0x05 | 0x08 => {
+                0x02 | 0x08 => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
                     let source = code_word(code, pc + 1, pc, opcode)? as usize;
                     let value = get_register(&registers, source, pc, opcode)?;
                     set_register(&mut registers, dest, value, self, pc, opcode)?;
                     pc += 2;
                 }
-                0x03 | 0x06 | 0x09 => {
+                0x03 | 0x09 => {
                     let dest = code_word(code, pc + 1, pc, opcode)? as usize;
                     let source = code_word(code, pc + 2, pc, opcode)? as usize;
                     let value = get_register(&registers, source, pc, opcode)?;
                     set_register(&mut registers, dest, value, self, pc, opcode)?;
                     pc += 3;
                 }
-                0x0a..=0x0c => {
+                0x04 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value = get_register(&registers, source, pc, opcode)?;
+                    set_wide_register(&mut registers, dest, value, self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x05 => {
+                    let dest = ((instruction >> 8) & 0xff) as usize;
+                    let source = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let value = get_register(&registers, source, pc, opcode)?;
+                    set_wide_register(&mut registers, dest, value, self, pc, opcode)?;
+                    pc += 2;
+                }
+                0x06 => {
+                    let dest = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let source = code_word(code, pc + 2, pc, opcode)? as usize;
+                    let value = get_register(&registers, source, pc, opcode)?;
+                    set_wide_register(&mut registers, dest, value, self, pc, opcode)?;
+                    pc += 3;
+                }
+                0x0a | 0x0c => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
                     set_register(
+                        &mut registers,
+                        dest,
+                        pending_result.clone(),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 1;
+                }
+                0x0b => {
+                    let dest = ((instruction >> 8) & 0xff) as usize;
+                    set_wide_register(
                         &mut registers,
                         dest,
                         pending_result.clone(),
@@ -553,7 +585,7 @@ impl<'a> Vm<'a> {
                 0x19 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let value = (code_word(code, pc + 1, pc, opcode)? as i16 as i64) << 48;
-                    set_register(
+                    set_wide_register(
                         &mut registers,
                         register,
                         Value::Long(value),
