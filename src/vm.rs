@@ -282,6 +282,9 @@ impl<'a> Vm<'a> {
                 .dex
                 .framework_method_owner(&method.class_name, &method.name)
             {
+                if owner.starts_with("Lcom/badlogic/gdx/") {
+                    return self.dispatch_gdx(&owner, &method.name, &args);
+                }
                 return self
                     .dispatch_framework(&owner, &method.name, &args)
                     .map_err(|error| {
@@ -315,6 +318,9 @@ impl<'a> Vm<'a> {
                     .dex
                     .framework_method_owner(&method.class_name, &method.name)
                 {
+                    if owner.starts_with("Lcom/badlogic/gdx/") {
+                        return self.dispatch_gdx(&owner, &method.name, &args);
+                    }
                     return self.dispatch_framework(&owner, &method.name, &args);
                 }
                 let flags = self.dex.method_access_flags(method_index).unwrap_or(0);
@@ -1005,11 +1011,35 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
+        if class_name == "Ljava/lang/Math;" {
+            return match method_name {
+                "round" => Ok(Value::Int(match args.first() {
+                    Some(Value::Float(value)) => value.round() as i32,
+                    Some(Value::Double(value)) => value.round() as i32,
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Long(value)) => *value as i32,
+                    _ => 0,
+                })),
+                "abs" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.abs()),
+                    Some(Value::Double(value)) => Value::Double(value.abs()),
+                    Some(Value::Long(value)) => Value::Long(value.abs()),
+                    Some(Value::Int(value)) => Value::Int(value.abs()),
+                    _ => Value::Int(0),
+                }),
+                _ => Err(self.error(
+                    0,
+                    0,
+                    format!("java.lang.Math method {method_name} is not implemented"),
+                )),
+            };
+        }
         if method_name == "<init>"
             && (class_name.starts_with("Lcom/badlogic/gdx/")
                 || class_name.starts_with("Landroid/")
                 || class_name.starts_with("Ljava/lang/ref/")
                 || class_name == "Ljava/lang/Enum;"
+                || class_name == "Ljava/lang/Object;"
                 || class_name == "Ljava/util/ArrayList;"
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
@@ -1042,6 +1072,51 @@ impl<'a> Vm<'a> {
                     }
                 }
             }
+            return Ok(Value::Void);
+        }
+        if class_name == "Ljava/lang/Math;" {
+            return match method_name {
+                "round" => Ok(Value::Int(match args.first() {
+                    Some(Value::Float(value)) => value.round() as i32,
+                    Some(Value::Double(value)) => value.round() as i32,
+                    Some(Value::Int(value)) => *value,
+                    Some(Value::Long(value)) => *value as i32,
+                    _ => 0,
+                })),
+                "abs" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.abs()),
+                    Some(Value::Double(value)) => Value::Double(value.abs()),
+                    Some(Value::Long(value)) => Value::Long(value.abs()),
+                    Some(Value::Int(value)) => Value::Int(value.abs()),
+                    _ => Value::Int(0),
+                }),
+                _ => Err(self.error(
+                    0,
+                    0,
+                    format!("java.lang.Math method {method_name} is not implemented"),
+                )),
+            };
+        }
+        if class_name == "Ljava/lang/Object;" && method_name == "<init>" {
+            return Ok(Value::Void);
+        }
+        if class_name == "Ljava/lang/Object;" && method_name == "getClass" {
+            if let Some(Value::Object(id)) = args.first() {
+                if let Some(HeapObject::Instance { class_name, .. }) = self.heap_object(*id) {
+                    return Ok(Value::Object(
+                        self.alloc(HeapObject::Class(class_name.clone())),
+                    ));
+                }
+            }
+            return Ok(Value::Null);
+        }
+        if class_name.starts_with("Landroid/view/")
+            || class_name.starts_with("Landroid/widget/")
+            || class_name == "Landroid/opengl/GLSurfaceView;"
+        {
+            return Ok(Value::Void);
+        }
+        if class_name == "Landroid/view/Window;" {
             return Ok(Value::Void);
         }
         if class_name == "Ljava/lang/String;" {
@@ -1204,6 +1279,11 @@ impl<'a> Vm<'a> {
                 }
                 _ => return Ok(Value::Void),
             }
+        }
+        if class_name == "Ljava/lang/Class;" && method_name == "getMethod" {
+            return Ok(Value::Object(
+                self.alloc_instance("Ljava/lang/reflect/Method;"),
+            ));
         }
         if class_name == "Ljava/lang/Class;" && method_name == "forName" {
             let requested = self.string_arg(args, 0)?;
