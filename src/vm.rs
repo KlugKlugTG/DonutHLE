@@ -1025,7 +1025,7 @@ impl<'a> Vm<'a> {
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
                 }
                 0x29 => {
-                    let offset = code_word(code, pc + 1, pc, opcode)? as i8 as i32;
+                    let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
                 }
                 0x2a => {
@@ -2932,10 +2932,7 @@ fn branch_target(
     opcode: u8,
 ) -> Result<usize, VmError> {
     let target = pc as i64 + offset as i64;
-    if target < 0 || target as usize >= len {
-        if offset > 0 {
-            return Ok(pc.saturating_add(1).min(len.saturating_sub(1)));
-        }
+    if target < 0 || target > len as i64 {
         return Err(VmError {
             pc: at,
             opcode,
