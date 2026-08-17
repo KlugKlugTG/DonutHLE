@@ -220,8 +220,9 @@ impl Runtime {
                 vm.run_instance_method(listener, "render", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 frame_status = format!(
-                    "application create/render completed; GLES commands: {}",
-                    vm.framework.gles.command_count()
+                    "application create/render completed; GLES commands: {}, rendered pixels: {}",
+                    vm.framework.gles.command_count(),
+                    vm.framework.gles.rendered_pixels()
                 );
             }
             self.framework = vm.framework;

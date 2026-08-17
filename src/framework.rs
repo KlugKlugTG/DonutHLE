@@ -2,14 +2,17 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::gles::GlesContext;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
     Int(i32),
     Long(i64),
+    Float(f32),
     Bool(bool),
     String(String),
 }
+
+impl Eq for Value {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Intent {
@@ -311,15 +314,18 @@ pub enum FrameworkCall {
     PostMessage(Message),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FrameworkResult {
     Void,
     Int(i32),
     Long(i64),
+    Float(f32),
     Bool(bool),
     Object(u32),
     String(String),
 }
+
+impl Eq for FrameworkResult {}
 
 #[derive(Debug, Default)]
 pub struct Framework {

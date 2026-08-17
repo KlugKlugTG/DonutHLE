@@ -22,11 +22,11 @@ impl CompatibilityReport {
 }
 
 const FEATURES: &[(&str, &str, bool)] = &[
-    ("android/opengl", "GLES 1.x graphics backend", false),
+    ("android/opengl", "GLES 1.x graphics backend", true),
     (
         "javax/microedition/khronos",
         "OpenGL ES EGL/Khronos bridge",
-        false,
+        true,
     ),
     ("android/media/AudioTrack", "AudioTrack PCM mixer", true),
     ("android/media/MediaPlayer", "MediaPlayer backend", false),

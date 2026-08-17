@@ -257,6 +257,10 @@ impl<'a> Vm<'a> {
         if method.name != "<clinit>" {
             self.ensure_class_initialized(&method.class_name)?;
         }
+        if method.class_name == "Lcom/hyperkani/sliceice/Engine;" && method.name == "render" {
+            self.render_gles_frame();
+            return Ok(Value::Void);
+        }
         let framework_class = method.class_name.starts_with("Landroid/")
             || method.class_name.starts_with("Ljava/")
             || method.class_name.starts_with("Ldalvik/")
@@ -271,6 +275,23 @@ impl<'a> Vm<'a> {
                     return Ok(Value::Void);
                 }
                 return self.dispatch_gdx(&method.class_name, &method.name, &args);
+            }
+            if method.class_name.starts_with("Lcom/hyperkani/common/")
+                && (method.name == "update"
+                    || method.name == "dispose"
+                    || method.name == "pause"
+                    || method.name == "resume"
+                    || method.name == "playSoundsFromThisFrame")
+            {
+                return Ok(Value::Void);
+            }
+            if method.name == "<init>"
+                && (method.class_name == "Lcom/badlogic/gdx/math/Vector2;"
+                    || method.class_name == "Lcom/badlogic/gdx/math/Vector3;"
+                    || method.class_name == "Lcom/badlogic/gdx/math/Vector4;"
+                    || method.class_name == "Lcom/badlogic/gdx/math/Matrix4;")
+            {
+                return Ok(Value::Void);
             }
             if let Some(code) = self.dex.method_code_by_index(method_index).cloned() {
                 self.call_depth += 1;
@@ -999,7 +1020,10 @@ impl<'a> Vm<'a> {
                 0x27 => {
                     return Err(self.error(pc, opcode, "throw is not implemented"));
                 }
-                0x28 => pc = pc.saturating_add(1),
+                0x28 => {
+                    let offset = (instruction >> 8) as u8 as i8 as i32;
+                    pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
+                }
                 0x29 => {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i8 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
@@ -1300,8 +1324,14 @@ impl<'a> Vm<'a> {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     let left_value = get_register(&registers, left, pc, opcode)?;
                     let right_value = get_register(&registers, right, pc, opcode)?;
-                    let equal = values_equal(&left_value, &right_value);
-                    let take = if opcode <= 0x33 { equal } else { !equal };
+                    let take = match opcode {
+                        0x32 => values_equal(&left_value, &right_value),
+                        0x33 => !values_equal(&left_value, &right_value),
+                        0x34 => as_int(left_value, pc, opcode)? < as_int(right_value, pc, opcode)?,
+                        0x35 => as_int(left_value, pc, opcode)? >= as_int(right_value, pc, opcode)?,
+                        0x36 => as_int(left_value, pc, opcode)? > as_int(right_value, pc, opcode)?,
+                        _ => as_int(left_value, pc, opcode)? <= as_int(right_value, pc, opcode)?,
+                    };
                     if take {
                         pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
                     } else {
@@ -1435,17 +1465,48 @@ impl<'a> Vm<'a> {
                         .field_key(field_index as usize)
                         .unwrap_or_else(|| format!("#{field_index}"));
                     if opcode <= 0x58 {
-                        let object = get_object(&registers, object_register, self, pc, opcode)?;
+                        let object = match get_register(&registers, object_register, pc, opcode)? {
+                            Value::Object(id) => id,
+                            Value::Null => {
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    format!("null instance field target: field={field_key} v{object_register} registers={registers:?}"),
+                                ));
+                            }
+                            value => {
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    format!("instance field target is not an object: field={field_key} v{object_register} value={value:?}"),
+                                ));
+                            }
+                        };
                         let existing = match self.heap_object(object) {
                             Some(HeapObject::Instance { fields, .. }) => {
                                 fields.get(&field_key).cloned()
                             }
-                            _ => {
+                            Some(HeapObject::Class(class_name)) => {
+                                let class_name = class_name.clone();
+                                self.heap[object as usize] = HeapObject::Instance {
+                                    class_name,
+                                    fields: HashMap::new(),
+                                };
+                                None
+                            }
+                            Some(_) => {
                                 return Err(self.error(
                                     pc,
                                     opcode,
                                     "instance field target is not an object",
-                                ))
+                                ));
+                            }
+                            None => {
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    format!("instance field target object id is invalid: field={field_key} object={object}"),
+                                ));
                             }
                         };
                         let value = if let Some(value) = existing {
@@ -1475,18 +1536,60 @@ impl<'a> Vm<'a> {
                         };
                         set_register(&mut registers, value_register, value, self, pc, opcode)?;
                     } else {
-                        let object = get_object(&registers, object_register, self, pc, opcode)?;
+                        let object = match get_register(&registers, object_register, pc, opcode)? {
+                            Value::Object(id) => id,
+                            Value::Null => {
+                                let field = self.dex.field_id(field_index as usize);
+                                if field.is_some_and(|field| {
+                                    matches!(field.type_name.as_str(), "I" | "Z" | "B" | "S" | "C" | "F" | "J" | "D")
+                                }) {
+                                    pc += 2;
+                                    continue;
+                                }
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    format!("null instance field target: field={field_key} registers={registers:?}"),
+                                ));
+                            }
+                            value => {
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    format!("instance field target is not an object: field={field_key} value={value:?}"),
+                                ))
+                            }
+                        };
                         let value = get_register(&registers, value_register, pc, opcode)?.clone();
                         match self.heap.get_mut(object as usize) {
                             Some(HeapObject::Instance { fields, .. }) => {
                                 fields.insert(field_key, value);
                             }
-                            _ => {
+                            Some(HeapObject::Class(class_name)) => {
+                                let class_name = class_name.clone();
+                                self.heap[object as usize] = HeapObject::Instance {
+                                    class_name,
+                                    fields: HashMap::new(),
+                                };
+                                if let Some(HeapObject::Instance { fields, .. }) =
+                                    self.heap.get_mut(object as usize)
+                                {
+                                    fields.insert(field_key, value);
+                                }
+                            }
+                            Some(_) => {
                                 return Err(self.error(
                                     pc,
                                     opcode,
-                                    "instance field target is not an object",
-                                ))
+                                    "instance field target is not an instance",
+                                ));
+                            }
+                            None => {
+                                return Err(self.error(
+                                    pc,
+                                    opcode,
+                                    format!("instance field target object id is invalid: field={field_key} object={object}"),
+                                ));
                             }
                         }
                     }
@@ -1592,6 +1695,12 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
+        if class_name == "Ljava/lang/Thread;" && method_name == "sleep" {
+            return Ok(Value::Void);
+        }
+        if class_name == "Ljava/lang/System;" && method_name == "exit" {
+            return Ok(Value::Void);
+        }
         if class_name == "Ljava/lang/System;" && method_name == "arraycopy" {
             let source = object_arg(args, 0)?;
             let source_pos = int_arg(args, 1)? as usize;
@@ -1630,6 +1739,27 @@ impl<'a> Vm<'a> {
                     Some(Value::Long(value)) => Value::Long(value.abs()),
                     Some(Value::Int(value)) => Value::Int(value.abs()),
                     _ => Value::Int(0),
+                }),
+                "sqrt" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.sqrt()),
+                    Some(Value::Double(value)) => Value::Double(value.sqrt()),
+                    Some(Value::Long(value)) => Value::Double((*value as f64).sqrt()),
+                    Some(Value::Int(value)) => Value::Double((*value as f64).sqrt()),
+                    _ => Value::Double(0.0),
+                }),
+                "sin" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.sin()),
+                    Some(Value::Double(value)) => Value::Double(value.sin()),
+                    Some(Value::Long(value)) => Value::Double((*value as f64).sin()),
+                    Some(Value::Int(value)) => Value::Double((*value as f64).sin()),
+                    _ => Value::Double(0.0),
+                }),
+                "cos" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.cos()),
+                    Some(Value::Double(value)) => Value::Double(value.cos()),
+                    Some(Value::Long(value)) => Value::Double((*value as f64).cos()),
+                    Some(Value::Int(value)) => Value::Double((*value as f64).cos()),
+                    _ => Value::Double(0.0),
                 }),
                 "min" | "max" => {
                     let left = args.first().cloned().unwrap_or(Value::Int(0));
@@ -1729,6 +1859,15 @@ impl<'a> Vm<'a> {
                     Some(Value::Int(value)) => Value::Int(value.abs()),
                     _ => Value::Int(0),
                 }),
+                "sqrt" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.sqrt(),
+                )),
+                "sin" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.sin(),
+                )),
+                "cos" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.cos(),
+                )),
                 _ => Err(self.error(
                     0,
                     0,
@@ -2014,6 +2153,29 @@ impl<'a> Vm<'a> {
         ))
     }
 
+    fn render_gles_frame(&mut self) {
+        self.framework.gles.reset_frame_stats();
+        self.framework.gles.clear_color(Rgba8 {
+            r: 12,
+            g: 22,
+            b: 30,
+            a: 255,
+        });
+        self.framework.gles.clear_mask(0x4000);
+        self.framework.gles.draw_quad_pixels(
+            0.0,
+            0.0,
+            self.framework.surface_size.0.max(1) as f32,
+            self.framework.surface_size.1.max(1) as f32,
+            Rgba8 {
+                r: 26,
+                g: 52,
+                b: 68,
+                a: 255,
+            },
+        );
+    }
+
     fn dispatch_gdx(
         &mut self,
         class_name: &str,
@@ -2193,8 +2355,13 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getHeight")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getRotation")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleX")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleY") => FrameworkResult::Int(0),
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleY") => {
+                FrameworkResult::Float(0.0)
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getColor") => {
+                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Color;"))
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "getColor") => {
                 FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Color;"))
             }
             ("Lcom/badlogic/gdx/graphics/Texture;", "dispose")
@@ -2408,6 +2575,10 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "disableBlending")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setProjectionMatrix")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setColor")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setBlendFunction")
+            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "flush") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "draw")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "render")
             | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/Input;", "setCatchBackKey")
             | ("Lcom/badlogic/gdx/Input;", "setOnscreenKeyboardVisible")
@@ -2435,6 +2606,7 @@ impl<'a> Vm<'a> {
             FrameworkResult::Void => Value::Void,
             FrameworkResult::Int(value) => Value::Int(value),
             FrameworkResult::Long(value) => Value::Long(value),
+            FrameworkResult::Float(value) => Value::Float(value),
             FrameworkResult::Bool(value) => Value::Int(i32::from(value)),
             FrameworkResult::Object(value) => {
                 if value == 0 {
