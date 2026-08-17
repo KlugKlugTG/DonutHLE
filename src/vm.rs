@@ -142,7 +142,7 @@ impl<'a> Vm<'a> {
             .position(|method| {
                 method.class_name == class_name
                     && method.name == method_name
-                    && prototype.is_none_or(|expected| method.prototype == expected)
+                    && prototype.map_or(true, |expected| method.prototype == expected)
             })
             .ok_or_else(|| {
                 self.error(
@@ -951,7 +951,7 @@ impl<'a> Vm<'a> {
                     let size = (code.instructions[payload + 2] as u32)
                         | ((code.instructions[payload + 3] as u32) << 16);
                     let size = size as usize;
-                    let words = (element_width * size).div_ceil(2);
+                    let words = (element_width * size + 1) / 2;
                     if payload + 4 + words > code.instructions.len() {
                         return Err(self.error(pc, opcode, "truncated fill-array-data payload"));
                     }
@@ -971,7 +971,7 @@ impl<'a> Vm<'a> {
                         let mut raw = 0u32;
                         for byte in 0..element_width {
                             let unit = code.instructions[payload + 4 + (bit_offset + byte) / 2];
-                            let value = if (bit_offset + byte).is_multiple_of(2) {
+                            let value = if (bit_offset + byte) % 2 == 0 {
                                 (unit & 0xff) as u32
                             } else {
                                 (unit >> 8) as u32
@@ -1765,7 +1765,7 @@ impl<'a> Vm<'a> {
                     };
                     if source_pos
                         .checked_add(length)
-                        .is_none_or(|end| end > values.len())
+                        .map_or(true, |end| end > values.len())
                     {
                         return Err(self.error(0, 0, "System.arraycopy source range is invalid"));
                     }
@@ -1774,7 +1774,7 @@ impl<'a> Vm<'a> {
                         Some(HeapObject::Array { values, .. }) => {
                             if target_pos
                                 .checked_add(length)
-                                .is_none_or(|end| end > values.len())
+                                .map_or(true, |end| end > values.len())
                             {
                                 return Err(self.error(
                                     0,
@@ -2358,7 +2358,7 @@ impl<'a> Vm<'a> {
                 FrameworkResult::Int(value as i32)
             }
             ("Lcom/badlogic/gdx/math/MathUtils;", "randomBoolean") => {
-                FrameworkResult::Bool(self.executed_steps.is_multiple_of(2))
+                FrameworkResult::Bool(self.executed_steps % 2 == 0)
             }
             ("Lcom/badlogic/gdx/math/MathUtils;", "round") => {
                 FrameworkResult::Int(float_arg(args, 0)?.round() as i32)
@@ -2671,10 +2671,10 @@ fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
         Value::Int(value) => Ok(value as f32),
         Value::Long(value) => Ok(value as f32),
         Value::Void | Value::Null => Ok(0.0),
-        value => Err(VmError {
+        Value::Object(_) | Value::String(_) => Err(VmError {
             pc,
             opcode,
-            message: format!("value is not a float: {value:?}"),
+            message: "value is not a float".to_owned(),
         }),
     }
 }
@@ -2698,8 +2698,8 @@ fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> {
         Value::Float(value) => Ok(value as f64),
         Value::Int(value) => Ok(value as f64),
         Value::Long(value) => Ok(value as f64),
-        Value::Null => Ok(0.0),
-        _ => Err(VmError {
+        Value::Void | Value::Null => Ok(0.0),
+        Value::Object(_) | Value::String(_) => Err(VmError {
             pc,
             opcode,
             message: "value is not a double".to_owned(),
@@ -2713,6 +2713,7 @@ fn float_arg(args: &[Value], index: usize) -> Result<f32, VmError> {
         Some(Value::Double(value)) => Ok(*value as f32),
         Some(Value::Int(value)) => Ok(*value as f32),
         Some(Value::Long(value)) => Ok(*value as f32),
+        Some(Value::Void) | Some(Value::Null) => Ok(0.0),
         _ => Err(VmError {
             pc: 0,
             opcode: 0,
@@ -2727,6 +2728,7 @@ fn int_arg(args: &[Value], index: usize) -> Result<i32, VmError> {
         Some(Value::Long(value)) => Ok(*value as i32),
         Some(Value::Float(value)) => Ok(*value as i32),
         Some(Value::Double(value)) => Ok(*value as i32),
+        Some(Value::Void) | Some(Value::Null) => Ok(0),
         _ => Err(VmError {
             pc: 0,
             opcode: 0,
