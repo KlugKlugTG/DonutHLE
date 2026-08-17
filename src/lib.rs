@@ -123,6 +123,9 @@ pub extern "C" fn donuthle_framebuffer_height() -> u32 {
         .unwrap_or(0)
 }
 
+/// # Safety
+///
+/// `output` must point to a writable buffer of at least `output_len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn donuthle_framebuffer_copy(output: *mut u8, output_len: usize) -> usize {
     if output.is_null() || output_len == 0 {
