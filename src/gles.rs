@@ -284,6 +284,89 @@ impl GlesContext {
             .push(GlesCommand::TexImage2D { width, height });
     }
 
+    pub fn upload_texture(&mut self, width: u32, height: u32, pixels: &[Rgba8]) -> u32 {
+        let texture = self.gen_texture();
+        self.bind_texture(TEXTURE_2D, texture);
+        self.tex_image_2d(width, height, pixels);
+        texture
+    }
+
+    pub fn draw_textured_quad_pixels(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        texture: u32,
+        color: Rgba8,
+    ) {
+        self.draw_textured_region_pixels(x, y, width, height, texture, 0.0, 0.0, 1.0, 1.0, color);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_textured_region_pixels(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        texture: u32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        color: Rgba8,
+    ) {
+        let previous = self.bound_texture;
+        self.bind_texture(TEXTURE_2D, texture);
+        self.enable(TEXTURE_2D);
+        let (_, _, viewport_width, viewport_height) = self.viewport;
+        if viewport_width != 0 && viewport_height != 0 {
+            let left = (x / viewport_width as f32) * 2.0 - 1.0;
+            let right = ((x + width) / viewport_width as f32) * 2.0 - 1.0;
+            let top = 1.0 - (y / viewport_height as f32) * 2.0;
+            let bottom = 1.0 - ((y + height) / viewport_height as f32) * 2.0;
+            self.draw(
+                Primitive::TriangleStrip,
+                &[
+                    Vertex {
+                        x: left,
+                        y: top,
+                        z: 0.0,
+                        u: u0,
+                        v: v0,
+                        color,
+                    },
+                    Vertex {
+                        x: right,
+                        y: top,
+                        z: 0.0,
+                        u: u1,
+                        v: v0,
+                        color,
+                    },
+                    Vertex {
+                        x: right,
+                        y: bottom,
+                        z: 0.0,
+                        u: u1,
+                        v: v1,
+                        color,
+                    },
+                    Vertex {
+                        x: left,
+                        y: bottom,
+                        z: 0.0,
+                        u: u0,
+                        v: v1,
+                        color,
+                    },
+                ],
+            );
+        }
+        self.bind_texture(TEXTURE_2D, previous);
+    }
+
     pub fn set_current_color(&mut self, color: Rgba8) {
         self.current_color = color;
     }

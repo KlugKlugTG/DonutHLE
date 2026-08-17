@@ -149,6 +149,7 @@ impl Runtime {
         let mut archive = zip::ZipArchive::new(file)?;
         let manifest = read_manifest(&mut archive)?;
         let dex = read_dex(&mut archive)?;
+        let assets = crate::assets::AssetStore::from_archive(&mut archive)?;
         let activity = manifest
             .launcher_activity
             .clone()
@@ -160,6 +161,7 @@ impl Runtime {
             activity,
             class_name,
             resources: read_resources(&mut archive)?,
+            assets,
             dex,
             entry_method,
         })
@@ -179,6 +181,7 @@ impl Runtime {
         let result = if plan.entry_method {
             let mut framework = std::mem::take(&mut self.framework);
             framework.activities = activities;
+            framework.assets = Some(plan.assets.clone());
             if let Some(resources) = &plan.resources {
                 for value in &resources.values {
                     framework
@@ -288,6 +291,7 @@ pub struct LaunchPlan {
     pub dex: DexFile,
     pub entry_method: bool,
     pub resources: Option<ResourceTable>,
+    pub assets: crate::assets::AssetStore,
 }
 
 #[derive(Debug)]

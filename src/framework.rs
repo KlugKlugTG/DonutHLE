@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
+use crate::assets::AssetStore;
 use crate::gles::GlesContext;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -347,6 +348,7 @@ pub struct Framework {
     pub gdx_audio: Option<u32>,
     pub gdx_files: Option<u32>,
     pub gdx_input: Option<u32>,
+    pub assets: Option<AssetStore>,
     pub surface_size: (i32, i32),
     next_handle: u32,
 }
@@ -356,6 +358,7 @@ impl Framework {
         Self {
             next_handle: 1,
             gles: GlesContext::default(),
+            assets: Some(AssetStore::default()),
             ..Self::default()
         }
     }

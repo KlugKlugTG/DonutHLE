@@ -2335,13 +2335,60 @@ impl<'a> Vm<'a> {
             ("Lcom/badlogic/gdx/Files;", "internal")
             | ("Lcom/badlogic/gdx/Files;", "external")
             | ("Lcom/badlogic/gdx/Files;", "local") => {
-                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/files/FileHandle;"))
+                let path = args
+                    .get(1)
+                    .map(|value| self.string_arg(std::slice::from_ref(value), 0))
+                    .transpose()?
+                    .unwrap_or_default();
+                let handle = self.alloc_instance("Lcom/badlogic/gdx/files/FileHandle;");
+                if let Some(HeapObject::Instance { fields, .. }) =
+                    self.heap.get_mut(handle as usize)
+                {
+                    fields.insert("path".to_owned(), Value::String(path));
+                }
+                FrameworkResult::Object(handle)
             }
-            ("Lcom/badlogic/gdx/files/FileHandle;", "exists") => FrameworkResult::Bool(false),
-            ("Lcom/badlogic/gdx/files/FileHandle;", "length") => FrameworkResult::Long(0),
-            ("Lcom/badlogic/gdx/files/FileHandle;", "readBytes") => FrameworkResult::Object(0),
-            ("Lcom/badlogic/gdx/files/FileHandle;", "readString") => {
-                FrameworkResult::String(String::new())
+            ("Lcom/badlogic/gdx/files/FileHandle;", "exists")
+            | ("Lcom/badlogic/gdx/files/FileHandle;", "length")
+            | ("Lcom/badlogic/gdx/files/FileHandle;", "readBytes")
+            | ("Lcom/badlogic/gdx/files/FileHandle;", "readString") => {
+                let handle = args.first().and_then(|value| match value {
+                    Value::Object(id) => Some(*id),
+                    _ => None,
+                });
+                let path =
+                    handle
+                        .and_then(|id| self.heap_object(id))
+                        .and_then(|value| match value {
+                            HeapObject::Instance { fields, .. } => fields.get("path"),
+                            _ => None,
+                        });
+                let result = self.framework.assets.as_ref().and_then(|assets| {
+                    path.and_then(|value| match value {
+                        Value::String(path) => assets.read(path),
+                        _ => None,
+                    })
+                });
+                match method_name {
+                    "exists" => FrameworkResult::Bool(result.is_some()),
+                    "length" => {
+                        FrameworkResult::Long(result.as_ref().map_or(0, |bytes| bytes.len() as i64))
+                    }
+                    "readBytes" => result.map_or(FrameworkResult::Object(0), |bytes| {
+                        FrameworkResult::Object(
+                            self.alloc(HeapObject::Array {
+                                component: "B".to_owned(),
+                                values: bytes
+                                    .into_iter()
+                                    .map(|byte| Value::Int(i32::from(byte)))
+                                    .collect(),
+                            }),
+                        )
+                    }),
+                    _ => FrameworkResult::String(result.map_or_else(String::new, |bytes| {
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    })),
+                }
             }
             ("Lcom/badlogic/gdx/audio/Sound;", "play")
             | ("Lcom/badlogic/gdx/audio/Sound;", "loop")
@@ -2353,10 +2400,65 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/audio/Music;", "setVolume") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/audio/Music;", "isPlaying") => FrameworkResult::Bool(false),
             ("Lcom/badlogic/gdx/audio/Sound;", "dispose") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "<init>") => {
+                let receiver = object_arg(args, 0)?;
+                if let Some(path) = args
+                    .get(1)
+                    .map(|value| self.string_arg(std::slice::from_ref(value), 0))
+                    .transpose()?
+                {
+                    self.set_object_field(receiver, "path", Value::String(path));
+                }
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/Texture;", "<init>") => {
+                let receiver = object_arg(args, 0)?;
+                if let Some(path) = args
+                    .get(1)
+                    .map(|value| self.string_arg(std::slice::from_ref(value), 0))
+                    .transpose()?
+                {
+                    self.set_object_field(receiver, "path", Value::String(path));
+                }
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "findRegion") => {
-                FrameworkResult::Object(
-                    self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;"),
-                )
+                let region =
+                    self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;");
+                if let (Some(Value::Object(atlas)), Some(name)) = (
+                    args.first(),
+                    args.get(1).and_then(|value| match value {
+                        Value::String(name) => Some(name.clone()),
+                        Value::Object(id) => match self.heap_object(*id) {
+                            Some(HeapObject::String(name)) => Some(name.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }),
+                ) {
+                    let atlas_path = self.object_field_string(*atlas, "path").unwrap_or_default();
+                    if let Some(asset) = self
+                        .framework
+                        .assets
+                        .as_ref()
+                        .and_then(|assets| assets.atlas_region(&atlas_path, &name))
+                    {
+                        self.set_object_field(region, "asset_path", Value::String(asset.page));
+                        self.set_object_field(region, "region_x", Value::Int(asset.x as i32));
+                        self.set_object_field(region, "region_y", Value::Int(asset.y as i32));
+                        self.set_object_field(
+                            region,
+                            "region_width",
+                            Value::Int(asset.width as i32),
+                        );
+                        self.set_object_field(
+                            region,
+                            "region_height",
+                            Value::Int(asset.height as i32),
+                        );
+                    }
+                }
+                FrameworkResult::Object(region)
             }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "findRegions") => {
                 FrameworkResult::Object(self.alloc_collection())
@@ -2376,11 +2478,23 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionX")
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionY")
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getRegionY") => {
-                FrameworkResult::Int(0)
+                let receiver = object_arg(args, 0)?;
+                let field = match method_name {
+                    "getRegionWidth" => "region_width",
+                    "getRegionHeight" => "region_height",
+                    "getRegionX" => "region_x",
+                    _ => "region_y",
+                };
+                FrameworkResult::Int(self.object_field_float(receiver, field).unwrap_or(0.0) as i32)
             }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getTexture")
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getTexture") => {
-                FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Texture;"))
+                let receiver = object_arg(args, 0)?;
+                let texture = self.alloc_instance("Lcom/badlogic/gdx/graphics/Texture;");
+                if let Some(path) = self.object_field_string(receiver, "asset_path") {
+                    self.set_object_field(texture, "path", Value::String(path));
+                }
+                FrameworkResult::Object(texture)
             }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "setRegion")
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "setRegion") => {
@@ -2416,7 +2530,24 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/Texture;", "setFilter")
             | ("Lcom/badlogic/gdx/graphics/Texture;", "setWrap") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/graphics/Texture;", "getWidth")
-            | ("Lcom/badlogic/gdx/graphics/Texture;", "getHeight") => FrameworkResult::Int(256),
+            | ("Lcom/badlogic/gdx/graphics/Texture;", "getHeight") => {
+                let handle = args.first().and_then(|value| match value {
+                    Value::Object(id) => Some(*id),
+                    _ => None,
+                });
+                let path = handle.and_then(|id| self.object_field_string(id, "path"));
+                let size = self
+                    .framework
+                    .assets
+                    .as_ref()
+                    .and_then(|assets| path.and_then(|path| assets.image_size(&path)))
+                    .unwrap_or((256, 256));
+                FrameworkResult::Int(if method_name == "getWidth" {
+                    size.0 as i32
+                } else {
+                    size.1 as i32
+                })
+            }
             ("Lcom/badlogic/gdx/Application;", "getPreferences") => {
                 FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/Preferences;"))
             }
@@ -2628,18 +2759,49 @@ impl<'a> Vm<'a> {
             ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "draw")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "render")
             | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => {
-                self.framework.gles.draw_quad_pixels(
-                    0.0,
-                    0.0,
-                    self.framework.surface_size.0.max(1) as f32,
-                    self.framework.surface_size.1.max(1) as f32,
-                    Rgba8 {
-                        r: 220,
-                        g: 235,
-                        b: 240,
-                        a: 255,
-                    },
-                );
+                let (x, y, width, height) = self.draw_bounds(args);
+                let texture_path = args.get(1).and_then(|value| match value {
+                    Value::Object(id) => self
+                        .object_field_string(*id, "path")
+                        .or_else(|| self.object_field_string(*id, "asset_path")),
+                    _ => None,
+                });
+                let rendered = texture_path.and_then(|path| {
+                    let image = self.framework.assets.as_ref()?.image(&path).ok()?;
+                    let texture = self.framework.gles.upload_texture(
+                        image.width,
+                        image.height,
+                        &image.pixels,
+                    );
+                    self.framework.gles.draw_textured_quad_pixels(
+                        x,
+                        y,
+                        width,
+                        height,
+                        texture,
+                        Rgba8 {
+                            r: 220,
+                            g: 235,
+                            b: 240,
+                            a: 255,
+                        },
+                    );
+                    Some(())
+                });
+                if rendered.is_none() {
+                    self.framework.gles.draw_quad_pixels(
+                        x,
+                        y,
+                        width,
+                        height,
+                        Rgba8 {
+                            r: 220,
+                            g: 235,
+                            b: 240,
+                            a: 255,
+                        },
+                    );
+                }
                 FrameworkResult::Void
             }
             ("Lcom/badlogic/gdx/Input;", "setCatchBackKey")
@@ -2699,6 +2861,58 @@ impl<'a> Vm<'a> {
                 )),
             },
             _ => Err(self.error(0, 0, format!("framework argument {index} is not a string"))),
+        }
+    }
+
+    fn object_field_string(&self, object: ObjectId, name: &str) -> Option<String> {
+        match self.heap_object(object) {
+            Some(HeapObject::Instance { fields, .. }) => match fields.get(name) {
+                Some(Value::String(value)) => Some(value.clone()),
+                Some(Value::Object(id)) => match self.heap_object(*id) {
+                    Some(HeapObject::String(value)) => Some(value.clone()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn set_object_field(&mut self, object: ObjectId, name: &str, value: Value) {
+        if let Some(HeapObject::Instance { fields, .. }) = self.heap.get_mut(object as usize) {
+            fields.insert(name.to_owned(), value);
+        }
+    }
+
+    fn draw_bounds(&self, args: &[Value]) -> (f32, f32, f32, f32) {
+        let receiver = args.first().and_then(|value| match value {
+            Value::Object(id) => Some(*id),
+            _ => None,
+        });
+        let x = receiver
+            .and_then(|id| self.object_field_float(id, "x"))
+            .unwrap_or(0.0);
+        let y = receiver
+            .and_then(|id| self.object_field_float(id, "y"))
+            .unwrap_or(0.0);
+        let width = receiver
+            .and_then(|id| self.object_field_float(id, "width"))
+            .unwrap_or(self.framework.surface_size.0.max(1) as f32);
+        let height = receiver
+            .and_then(|id| self.object_field_float(id, "height"))
+            .unwrap_or(self.framework.surface_size.1.max(1) as f32);
+        (x, y, width.max(1.0), height.max(1.0))
+    }
+
+    fn object_field_float(&self, object: ObjectId, name: &str) -> Option<f32> {
+        match self.heap_object(object).and_then(|value| match value {
+            HeapObject::Instance { fields, .. } => fields.get(name),
+            _ => None,
+        }) {
+            Some(Value::Float(value)) => Some(*value),
+            Some(Value::Double(value)) => Some(*value as f32),
+            Some(Value::Int(value)) => Some(*value as f32),
+            _ => None,
         }
     }
 

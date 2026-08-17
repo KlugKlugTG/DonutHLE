@@ -1,6 +1,7 @@
 //! DonutHLE core: a small, explicit foundation for Android 1.6 (Donut) HLE work.
 
 pub mod apk;
+pub mod assets;
 pub mod audio;
 pub mod compat;
 pub mod dalvik;
