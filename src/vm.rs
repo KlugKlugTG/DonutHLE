@@ -448,16 +448,18 @@ impl<'a> Vm<'a> {
                     pc += 1;
                 }
                 0x0e => return Ok(Value::Void),
-                0x0f => return Ok(pending_result.clone()),
-                0x10 => {
-                    let value = match pending_result.clone() {
-                        Value::Long(value) => Value::Int(value as i32),
-                        Value::Double(value) => Value::Int((value.to_bits() >> 32) as i32),
-                        value => value,
-                    };
-                    return Ok(value);
+                0x0f => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    return Ok(get_register(&registers, register, pc, opcode)?);
                 }
-                0x11 => return Ok(pending_result.clone()),
+                0x10 => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    return Ok(read_wide_register(&registers, register, pc, opcode)?);
+                }
+                0x11 => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    return Ok(get_register(&registers, register, pc, opcode)?);
+                }
                 0x12 => {
                     let register = ((instruction >> 8) & 0x0f) as usize;
                     let literal = ((instruction >> 12) & 0x0f) as i8 as i32;
@@ -511,32 +513,180 @@ impl<'a> Vm<'a> {
                     )?;
                     pc += 2;
                 }
-                0x81 => {
-                    let dest = ((instruction >> 8) & 0x0f) as usize;
-                    let source = ((instruction >> 12) & 0x0f) as usize;
-                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
-                    set_register(
+                0x7b => {
+                    let (dest, source) = two_registers(instruction);
+                    let value = -as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x7c => {
+                    let (dest, source) = two_registers(instruction);
+                    let value = !as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x7d => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        -as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x7e => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        !as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x7f => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        -as_float(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x80 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        -as_double(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    set_wide_register(
                         &mut registers,
                         dest,
-                        Value::Float(value as f32),
+                        Value::Double(value),
                         self,
                         pc,
                         opcode,
                     )?;
                     pc += 1;
                 }
+                0x81 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)? as i64;
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
                 0x82 => {
-                    let dest = ((instruction >> 8) & 0x0f) as usize;
-                    let source = ((instruction >> 12) & 0x0f) as usize;
-                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)? as f32;
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x83 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)? as f64;
                     set_wide_register(
                         &mut registers,
                         dest,
-                        Value::Double(value as f64),
+                        Value::Double(value),
                         self,
                         pc,
                         opcode,
                     )?;
+                    pc += 1;
+                }
+                0x84 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)? as i32;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x85 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)? as f32;
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x86 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)? as f64;
+                    set_wide_register(
+                        &mut registers,
+                        dest,
+                        Value::Double(value),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 1;
+                }
+                0x87 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_float(get_register(&registers, source, pc, opcode)?, pc, opcode)? as i32;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x88 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_float(get_register(&registers, source, pc, opcode)?, pc, opcode)? as i64;
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x89 => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_float(get_register(&registers, source, pc, opcode)?, pc, opcode)? as f64;
+                    set_wide_register(
+                        &mut registers,
+                        dest,
+                        Value::Double(value),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 1;
+                }
+                0x8a => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_double(get_register(&registers, source, pc, opcode)?, pc, opcode)?
+                            as i32;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x8b => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_double(get_register(&registers, source, pc, opcode)?, pc, opcode)?
+                            as i64;
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x8c => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_double(get_register(&registers, source, pc, opcode)?, pc, opcode)?
+                            as f32;
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x8d => {
+                    let (dest, source) = two_registers(instruction);
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?
+                        as i8 as i32;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x8e => {
+                    let (dest, source) = two_registers(instruction);
+                    let value =
+                        as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)? & 0xffff;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0x8f => {
+                    let (dest, source) = two_registers(instruction);
+                    let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?
+                        as i16 as i32;
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
                     pc += 1;
                 }
                 0x16 => {
@@ -760,6 +910,33 @@ impl<'a> Vm<'a> {
                     )?;
                     pc += 2;
                 }
+                0x24 | 0x25 => {
+                    let type_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let component = self.dex.types.get(type_index).cloned().ok_or_else(|| {
+                        self.error(pc, opcode, "filled-new-array type index is invalid")
+                    })?;
+                    let args = if opcode == 0x24 {
+                        invoke_args(
+                            &registers,
+                            instruction,
+                            code_word(code, pc + 2, pc, opcode)?,
+                            pc,
+                            opcode,
+                        )?
+                    } else {
+                        let count = ((instruction >> 8) & 0xff) as usize;
+                        let first = code_word(code, pc + 2, pc, opcode)? as usize;
+                        (0..count)
+                            .map(|offset| get_register(&registers, first + offset, pc, opcode))
+                            .collect::<Result<Vec<_>, _>>()?
+                    };
+                    let array = self.alloc(HeapObject::Array {
+                        component,
+                        values: args,
+                    });
+                    pending_result = Value::Object(array);
+                    pc += 3;
+                }
                 0x26 => {
                     let array_register = ((instruction >> 8) & 0xff) as usize;
                     let array = get_object(&registers, array_register, self, pc, opcode)?;
@@ -831,54 +1008,276 @@ impl<'a> Vm<'a> {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
                 }
-                0xc0..=0xc7 => {
-                    let (dest, source) = two_registers(instruction);
-                    let left = as_long(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
-                    let right = get_register(&registers, source, pc, opcode)?;
+                0x2d..=0x31 => {
+                    let (dest, left_reg, right_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let left = get_register(&registers, left_reg, pc, opcode)?;
+                    let right = get_register(&registers, right_reg, pc, opcode)?;
                     let value = match opcode {
-                        0xc0 => left.wrapping_add(as_long(right, pc, opcode)?),
-                        0xc1 => left.wrapping_sub(as_long(right, pc, opcode)?),
-                        0xc2 => left.wrapping_mul(as_long(right, pc, opcode)?),
-                        0xc3 => {
-                            let divisor = as_long(right, pc, opcode)?;
-                            if divisor == 0 {
+                        0x2d => compare_float(
+                            as_float(left, pc, opcode)?,
+                            as_float(right, pc, opcode)?,
+                            false,
+                        ),
+                        0x2e => compare_float(
+                            as_float(left, pc, opcode)?,
+                            as_float(right, pc, opcode)?,
+                            true,
+                        ),
+                        0x2f => compare_double(
+                            as_double(left, pc, opcode)?,
+                            as_double(right, pc, opcode)?,
+                            false,
+                        ),
+                        0x30 => compare_double(
+                            as_double(left, pc, opcode)?,
+                            as_double(right, pc, opcode)?,
+                            true,
+                        ),
+                        _ => compare_long(as_long(left, pc, opcode)?, as_long(right, pc, opcode)?),
+                    };
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 2;
+                }
+                0x90..=0x9a => {
+                    let (dest, left_reg, right_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let left = as_int(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
+                    let right = get_register(&registers, right_reg, pc, opcode)?;
+                    let right_int = as_int(right, pc, opcode)?;
+                    let value = match opcode {
+                        0x90 => left.wrapping_add(right_int),
+                        0x91 => left.wrapping_sub(right_int),
+                        0x92 => left.wrapping_mul(right_int),
+                        0x93 => {
+                            if right_int == 0 {
+                                return Err(self.error(pc, opcode, "integer division by zero"));
+                            }
+                            left.wrapping_div(right_int)
+                        }
+                        0x94 => {
+                            if right_int == 0 {
+                                return Err(self.error(pc, opcode, "integer remainder by zero"));
+                            }
+                            left.wrapping_rem(right_int)
+                        }
+                        0x95 => left & right_int,
+                        0x96 => left | right_int,
+                        0x97 => left ^ right_int,
+                        0x98 => left.wrapping_shl((right_int & 0x1f) as u32),
+                        0x99 => left >> (right_int & 0x1f),
+                        _ => ((left as u32) >> (right_int & 0x1f)) as i32,
+                    };
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 2;
+                }
+                0x9b..=0xa5 => {
+                    let (dest, left_reg, right_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let left =
+                        as_long(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
+                    let right_value = get_register(&registers, right_reg, pc, opcode)?;
+                    let value = match opcode {
+                        0x9b => left.wrapping_add(as_long(right_value, pc, opcode)?),
+                        0x9c => left.wrapping_sub(as_long(right_value, pc, opcode)?),
+                        0x9d => left.wrapping_mul(as_long(right_value, pc, opcode)?),
+                        0x9e => {
+                            let right = as_long(right_value, pc, opcode)?;
+                            if right == 0 {
                                 return Err(self.error(pc, opcode, "long division by zero"));
                             }
-                            left.wrapping_div(divisor)
+                            left.wrapping_div(right)
                         }
-                        0xc4 => {
-                            let divisor = as_long(right, pc, opcode)?;
-                            if divisor == 0 {
+                        0x9f => {
+                            let right = as_long(right_value, pc, opcode)?;
+                            if right == 0 {
                                 return Err(self.error(pc, opcode, "long remainder by zero"));
                             }
-                            left.wrapping_rem(divisor)
+                            left.wrapping_rem(right)
                         }
-                        0xc5 => left & as_long(right, pc, opcode)?,
-                        0xc6 => left | as_long(right, pc, opcode)?,
-                        _ => left ^ as_long(right, pc, opcode)?,
+                        0xa0 => left & as_long(right_value, pc, opcode)?,
+                        0xa1 => left | as_long(right_value, pc, opcode)?,
+                        0xa2 => left ^ as_long(right_value, pc, opcode)?,
+                        0xa3 => left.wrapping_shl((as_int(right_value, pc, opcode)? & 0x3f) as u32),
+                        0xa4 => left >> (as_int(right_value, pc, opcode)? & 0x3f),
+                        _ => ((left as u64) >> (as_int(right_value, pc, opcode)? & 0x3f)) as i64,
                     };
-                    set_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 2;
+                }
+                0xa6..=0xaa => {
+                    let (dest, left_reg, right_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let left =
+                        as_float(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
+                    let right =
+                        as_float(get_register(&registers, right_reg, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xa6 => left + right,
+                        0xa7 => left - right,
+                        0xa8 => left * right,
+                        0xa9 => left / right,
+                        _ => left % right,
+                    };
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 2;
+                }
+                0xab..=0xaf => {
+                    let (dest, left_reg, right_reg) =
+                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
+                    let left =
+                        as_double(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
+                    let right =
+                        as_double(get_register(&registers, right_reg, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xab => left + right,
+                        0xac => left - right,
+                        0xad => left * right,
+                        0xae => left / right,
+                        _ => left % right,
+                    };
+                    set_wide_register(
+                        &mut registers,
+                        dest,
+                        Value::Double(value),
+                        self,
+                        pc,
+                        opcode,
+                    )?;
+                    pc += 2;
+                }
+                0xb0..=0xb7 => {
+                    let (dest, source) = two_registers(instruction);
+                    let left = as_int(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let right = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xb0 => left.wrapping_add(right),
+                        0xb1 => left.wrapping_sub(right),
+                        0xb2 => left.wrapping_mul(right),
+                        0xb3 => {
+                            if right == 0 {
+                                return Err(self.error(pc, opcode, "integer division by zero"));
+                            }
+                            left.wrapping_div(right)
+                        }
+                        0xb4 => {
+                            if right == 0 {
+                                return Err(self.error(pc, opcode, "integer remainder by zero"));
+                            }
+                            left.wrapping_rem(right)
+                        }
+                        0xb5 => left & right,
+                        0xb6 => left | right,
+                        _ => left ^ right,
+                    };
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
                     pc += 1;
                 }
-                0xc8..=0xca => {
+                0xb8..=0xba => {
+                    let (dest, source) = two_registers(instruction);
+                    let left = as_int(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let right = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let shift = (right & 0x1f) as u32;
+                    let value = match opcode {
+                        0xb8 => left.wrapping_shl(shift),
+                        0xb9 => left >> shift,
+                        _ => ((left as u32) >> shift) as i32,
+                    };
+                    set_register(&mut registers, dest, Value::Int(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0xbb..=0xbf => {
                     let (dest, source) = two_registers(instruction);
                     let left = as_long(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
-                    let shift = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?
-                        as u32
-                        & 0x3f;
+                    let right = as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
                     let value = match opcode {
-                        0xc8 => left.wrapping_shl(shift),
-                        0xc9 => left >> shift,
+                        0xbb => left.wrapping_add(right),
+                        0xbc => left.wrapping_sub(right),
+                        0xbd => left.wrapping_mul(right),
+                        0xbe => {
+                            if right == 0 {
+                                return Err(self.error(pc, opcode, "long division by zero"));
+                            }
+                            left.wrapping_div(right)
+                        }
+                        _ => {
+                            if right == 0 {
+                                return Err(self.error(pc, opcode, "long remainder by zero"));
+                            }
+                            left.wrapping_rem(right)
+                        }
+                    };
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0xc0..=0xc2 => {
+                    let (dest, source) = two_registers(instruction);
+                    let left = as_long(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let right = as_long(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let value = match opcode {
+                        0xc0 => left & right,
+                        0xc1 => left | right,
+                        _ => left ^ right,
+                    };
+                    set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
+                    pc += 1;
+                }
+                0xc3..=0xc5 => {
+                    let (dest, source) = two_registers(instruction);
+                    let left = as_long(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
+                    let shift = (as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?
+                        & 0x3f) as u32;
+                    let value = match opcode {
+                        0xc3 => left.wrapping_shl(shift),
+                        0xc4 => left >> shift,
                         _ => ((left as u64) >> shift) as i64,
                     };
                     set_wide_register(&mut registers, dest, Value::Long(value), self, pc, opcode)?;
                     pc += 1;
                 }
+                0xc6..=0xca => {
+                    let (dest, source) = two_registers(instruction);
+                    let left_value = get_register(&registers, dest, pc, opcode)?;
+                    let right_value = get_register(&registers, source, pc, opcode)?;
+                    let left = as_float(left_value.clone(), pc, opcode).map_err(|error| {
+                        self.error(
+                            error.pc,
+                            error.opcode,
+                            format!("float 2addr left v{dest}={left_value:?}: {}", error.message),
+                        )
+                    })?;
+                    let right = as_float(right_value.clone(), pc, opcode).map_err(|error| {
+                        self.error(
+                            error.pc,
+                            error.opcode,
+                            format!(
+                                "float 2addr right v{source}={right_value:?}: {}",
+                                error.message
+                            ),
+                        )
+                    })?;
+                    let value = match opcode {
+                        0xc6 => left + right,
+                        0xc7 => left - right,
+                        0xc8 => left * right,
+                        0xc9 => left / right,
+                        _ => left % right,
+                    };
+                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
+                    pc += 1;
+                }
                 0xcb..=0xcf => {
                     let (dest, source) = two_registers(instruction);
-                    let left = as_double(get_register(&registers, dest, pc, opcode)?, pc, opcode)?;
-                    let right =
-                        as_double(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
+                    let left = as_double(
+                        read_wide_register(&registers, dest, pc, opcode)?,
+                        pc,
+                        opcode,
+                    )?;
+                    let right = as_double(
+                        read_wide_register(&registers, source, pc, opcode)?,
+                        pc,
+                        opcode,
+                    )?;
                     let value = match opcode {
                         0xcb => left + right,
                         0xcc => left - right,
@@ -895,23 +1294,6 @@ impl<'a> Vm<'a> {
                         opcode,
                     )?;
                     pc += 1;
-                }
-                0x2d..=0x31 => {
-                    let (dest, left_reg, right_reg) =
-                        three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
-                    let left =
-                        as_float(get_register(&registers, left_reg, pc, opcode)?, pc, opcode)?;
-                    let right =
-                        as_float(get_register(&registers, right_reg, pc, opcode)?, pc, opcode)?;
-                    let value = match opcode {
-                        0x2d => left + right,
-                        0x2e => left - right,
-                        0x2f => left * right,
-                        0x30 => left / right,
-                        _ => left % right,
-                    };
-                    set_register(&mut registers, dest, Value::Float(value), self, pc, opcode)?;
-                    pc += 2;
                 }
                 0x32..=0x37 => {
                     let (left, right) = two_registers(instruction);
@@ -955,9 +1337,10 @@ impl<'a> Vm<'a> {
                     pc += 2;
                 }
                 0xd8..=0xdf => {
-                    let dest = ((instruction >> 8) & 0x0f) as usize;
-                    let source = ((instruction >> 12) & 0x0f) as usize;
-                    let literal = ((instruction >> 8) & 0xff) as i8 as i32;
+                    let dest = ((instruction >> 8) & 0xff) as usize;
+                    let literal_word = code_word(code, pc + 1, pc, opcode)?;
+                    let source = (literal_word & 0xff) as usize;
+                    let literal = (literal_word >> 8) as u8 as i8 as i32;
                     let value = as_int(get_register(&registers, source, pc, opcode)?, pc, opcode)?;
                     let result = match opcode {
                         0xd8 => value.wrapping_add(literal),
@@ -1016,7 +1399,11 @@ impl<'a> Vm<'a> {
                             .ok_or_else(|| self.error(pc, opcode, "array index out of bounds"))?,
                         _ => return Err(self.error(pc, opcode, "array target is not an array")),
                     };
-                    set_register(&mut registers, dest, value, self, pc, opcode)?;
+                    if opcode == 0x45 {
+                        set_wide_register(&mut registers, dest, value, self, pc, opcode)?;
+                    } else {
+                        set_register(&mut registers, dest, value, self, pc, opcode)?;
+                    }
                     pc += 2;
                 }
                 0x4c..=0x51 => {
@@ -1112,26 +1499,39 @@ impl<'a> Vm<'a> {
                         .dex
                         .field_key(field_index as usize)
                         .unwrap_or_else(|| format!("#{field_index}"));
+                    let field = self.dex.field_id(field_index as usize).cloned();
                     if opcode <= 0x66 {
-                        if let Some(field) = self.dex.field_id(field_index as usize) {
+                        if let Some(field) = &field {
                             self.ensure_class_initialized(&field.class_name)?;
                         }
-                        set_register(
-                            &mut registers,
-                            register,
-                            self.static_fields
-                                .get(&field_key)
-                                .cloned()
-                                .unwrap_or(Value::Null),
-                            self,
-                            pc,
-                            opcode,
-                        )?;
+                        let value = self
+                            .static_fields
+                            .get(&field_key)
+                            .cloned()
+                            .or_else(|| {
+                                field.as_ref().map(|field| match field.name.as_str() {
+                                    "width" => {
+                                        Value::Float(self.framework.surface_size.0.max(320) as f32)
+                                    }
+                                    "height" => {
+                                        Value::Float(self.framework.surface_size.1.max(480) as f32)
+                                    }
+                                    _ => default_value_for_type(&field.type_name),
+                                })
+                            })
+                            .unwrap_or(Value::Null);
+                        if opcode == 0x61 || opcode == 0x65 {
+                            set_wide_register(&mut registers, register, value, self, pc, opcode)?;
+                        } else {
+                            set_register(&mut registers, register, value, self, pc, opcode)?;
+                        }
                     } else {
-                        self.static_fields.insert(
-                            field_key,
-                            get_register(&registers, register, pc, opcode)?.clone(),
-                        );
+                        let value = if opcode == 0x68 || opcode == 0x6c {
+                            read_wide_register(&registers, register, pc, opcode)?
+                        } else {
+                            get_register(&registers, register, pc, opcode)?
+                        };
+                        self.static_fields.insert(field_key, value);
                     }
                     pc += 2;
                 }
@@ -1192,6 +1592,29 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
+        if class_name == "Ljava/lang/System;" && method_name == "arraycopy" {
+            let source = object_arg(args, 0)?;
+            let source_pos = int_arg(args, 1)? as usize;
+            let destination = object_arg(args, 2)?;
+            let destination_pos = int_arg(args, 3)? as usize;
+            let length = int_arg(args, 4)?.max(0) as usize;
+            let values = match self.heap_object(source) {
+                Some(HeapObject::Array { values, .. }) => values.clone(),
+                _ => return Err(self.error(0, 0, "System.arraycopy source is not an array")),
+            };
+            let destination_values = match self.heap.get_mut(destination as usize) {
+                Some(HeapObject::Array { values, .. }) => values,
+                _ => return Err(self.error(0, 0, "System.arraycopy destination is not an array")),
+            };
+            if source_pos.saturating_add(length) > values.len()
+                || destination_pos.saturating_add(length) > destination_values.len()
+            {
+                return Err(self.error(0, 0, "System.arraycopy range is outside an array"));
+            }
+            destination_values[destination_pos..destination_pos + length]
+                .clone_from_slice(&values[source_pos..source_pos + length]);
+            return Ok(Value::Void);
+        }
         if class_name == "Ljava/lang/Math;" {
             return match method_name {
                 "round" => Ok(Value::Int(match args.first() {
@@ -1208,6 +1631,41 @@ impl<'a> Vm<'a> {
                     Some(Value::Int(value)) => Value::Int(value.abs()),
                     _ => Value::Int(0),
                 }),
+                "min" | "max" => {
+                    let left = args.first().cloned().unwrap_or(Value::Int(0));
+                    let right = args.get(1).cloned().unwrap_or(Value::Int(0));
+                    Ok(match (left, right) {
+                        (Value::Float(left), Value::Float(right)) => {
+                            if method_name == "min" {
+                                Value::Float(left.min(right))
+                            } else {
+                                Value::Float(left.max(right))
+                            }
+                        }
+                        (Value::Double(left), Value::Double(right)) => {
+                            if method_name == "min" {
+                                Value::Double(left.min(right))
+                            } else {
+                                Value::Double(left.max(right))
+                            }
+                        }
+                        (Value::Long(left), Value::Long(right)) => {
+                            if method_name == "min" {
+                                Value::Long(left.min(right))
+                            } else {
+                                Value::Long(left.max(right))
+                            }
+                        }
+                        (Value::Int(left), Value::Int(right)) => {
+                            if method_name == "min" {
+                                Value::Int(left.min(right))
+                            } else {
+                                Value::Int(left.max(right))
+                            }
+                        }
+                        _ => Value::Int(0),
+                    })
+                }
                 _ => Err(self.error(
                     0,
                     0,
@@ -1291,6 +1749,52 @@ impl<'a> Vm<'a> {
             }
             return Ok(Value::Null);
         }
+        if class_name == "Ljava/lang/System;" {
+            match method_name {
+                "arraycopy" => {
+                    let source = object_arg(args, 0)?;
+                    let source_pos = int_arg(args, 1)? as usize;
+                    let target = object_arg(args, 2)?;
+                    let target_pos = int_arg(args, 3)? as usize;
+                    let length = int_arg(args, 4)? as usize;
+                    let values = match self.heap_object(source) {
+                        Some(HeapObject::Array { values, .. }) => values.clone(),
+                        _ => {
+                            return Err(self.error(0, 0, "System.arraycopy source is not an array"))
+                        }
+                    };
+                    if source_pos
+                        .checked_add(length)
+                        .is_none_or(|end| end > values.len())
+                    {
+                        return Err(self.error(0, 0, "System.arraycopy source range is invalid"));
+                    }
+                    let copied = values[source_pos..source_pos + length].to_vec();
+                    match self.heap.get_mut(target as usize) {
+                        Some(HeapObject::Array { values, .. }) => {
+                            if target_pos
+                                .checked_add(length)
+                                .is_none_or(|end| end > values.len())
+                            {
+                                return Err(self.error(
+                                    0,
+                                    0,
+                                    "System.arraycopy target range is invalid",
+                                ));
+                            }
+                            values[target_pos..target_pos + length].clone_from_slice(&copied);
+                        }
+                        _ => {
+                            return Err(self.error(0, 0, "System.arraycopy target is not an array"))
+                        }
+                    }
+                    return Ok(Value::Void);
+                }
+                "currentTimeMillis" | "nanoTime" => return Ok(Value::Long(0)),
+                "identityHashCode" => return Ok(Value::Int(0)),
+                _ => {}
+            }
+        }
         if class_name.starts_with("Landroid/view/")
             || class_name.starts_with("Landroid/widget/")
             || class_name == "Landroid/opengl/GLSurfaceView;"
@@ -1299,6 +1803,31 @@ impl<'a> Vm<'a> {
         }
         if class_name == "Landroid/view/Window;" || class_name.starts_with("Landroid/app/") {
             return Ok(Value::Void);
+        }
+        if class_name == "Ljava/lang/Integer;"
+            || class_name == "Ljava/lang/Long;"
+            || class_name == "Ljava/lang/Float;"
+            || class_name == "Ljava/lang/Double;"
+            || class_name == "Ljava/lang/Boolean;"
+        {
+            match method_name {
+                "valueOf" => {
+                    let value = args.first().cloned().unwrap_or(Value::Int(0));
+                    return Ok(Value::Object(self.alloc(HeapObject::Boxed(value))));
+                }
+                "intValue" => return Ok(Value::Int(int_arg(args, 0)?)),
+                "longValue" => return Ok(Value::Long(int_arg(args, 0)? as i64)),
+                "floatValue" => return Ok(Value::Float(float_arg(args, 0)?)),
+                "doubleValue" => return Ok(Value::Double(float_arg(args, 0)? as f64)),
+                "booleanValue" => return Ok(Value::Int(int_arg(args, 0)?)),
+                "toString" => {
+                    return Ok(Value::Object(self.alloc_string(format!(
+                        "{:?}",
+                        args.first().unwrap_or(&Value::Int(0))
+                    ))))
+                }
+                _ => {}
+            }
         }
         if class_name == "Ljava/lang/String;" {
             let value_of = |value: Option<&Value>| match value {
@@ -1427,7 +1956,10 @@ impl<'a> Vm<'a> {
             || class_name == "Ljava/util/AbstractList;"
             || class_name == "Ljava/util/AbstractCollection;"
         {
-            let receiver = object_arg(args, 0)?;
+            let receiver = match args.first() {
+                Some(Value::Object(receiver)) => *receiver,
+                _ => self.alloc(HeapObject::Collection(Vec::new())),
+            };
             match method_name {
                 "size" => {
                     return Ok(Value::Int(match self.heap_object(receiver) {
@@ -1495,7 +2027,7 @@ impl<'a> Vm<'a> {
             ("Lcom/badlogic/gdx/backends/android/AndroidApplication;", "initializeForView") => {
                 let view = self.framework.alloc_view("Landroid/opengl/GLSurfaceView;");
                 self.framework.gdx_view = Some(view);
-                self.framework.gdx_listener = args.first().and_then(|value| match value {
+                self.framework.gdx_listener = args.get(1).and_then(|value| match value {
                     Value::Object(id) => Some(*id),
                     _ => None,
                 });
@@ -1991,6 +2523,27 @@ fn set_register(
     Ok(())
 }
 
+fn read_wide_register(
+    registers: &[Value],
+    index: usize,
+    pc: usize,
+    opcode: u8,
+) -> Result<Value, VmError> {
+    let value = registers.get(index).cloned().ok_or_else(|| VmError {
+        pc,
+        opcode,
+        message: format!("wide register v{index} is outside the frame"),
+    })?;
+    if index + 1 >= registers.len() {
+        return Err(VmError {
+            pc,
+            opcode,
+            message: format!("wide register v{index} is outside the frame"),
+        });
+    }
+    Ok(value)
+}
+
 fn set_wide_register(
     registers: &mut [Value],
     index: usize,
@@ -2065,6 +2618,40 @@ fn get_object(
     }
 }
 
+fn compare_float(left: f32, right: f32, nan_is_greater: bool) -> i32 {
+    if left.is_nan() || right.is_nan() {
+        return if nan_is_greater { 1 } else { -1 };
+    }
+    left.partial_cmp(&right)
+        .map_or(0, |ordering| ordering as i32)
+}
+
+fn compare_long(left: i64, right: i64) -> i32 {
+    match left.cmp(&right) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+fn compare_double(left: f64, right: f64, nan_is_greater: bool) -> i32 {
+    if left.is_nan() || right.is_nan() {
+        return if nan_is_greater { 1 } else { -1 };
+    }
+    left.partial_cmp(&right)
+        .map_or(0, |ordering| ordering as i32)
+}
+
+fn default_value_for_type(type_name: &str) -> Value {
+    match type_name {
+        "I" | "Z" | "B" | "S" | "C" => Value::Int(0),
+        "F" => Value::Float(0.0),
+        "J" => Value::Long(0),
+        "D" => Value::Double(0.0),
+        _ => Value::Null,
+    }
+}
+
 fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
     match value {
         Value::Int(value) => Ok(value),
@@ -2083,11 +2670,11 @@ fn as_float(value: Value, pc: usize, opcode: u8) -> Result<f32, VmError> {
         Value::Double(value) => Ok(value as f32),
         Value::Int(value) => Ok(value as f32),
         Value::Long(value) => Ok(value as f32),
-        Value::Null => Ok(0.0),
-        _ => Err(VmError {
+        Value::Void | Value::Null => Ok(0.0),
+        value => Err(VmError {
             pc,
             opcode,
-            message: "value is not a float".to_owned(),
+            message: format!("value is not a float: {value:?}"),
         }),
     }
 }
