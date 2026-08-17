@@ -217,7 +217,7 @@ impl Runtime {
             if let Some(listener) = listener {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                vm.run_instance_method(listener, "render", Vec::new())
+                vm.render_frame(listener, "render")
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 frame_status = format!(
                     "application create/render completed; GLES commands: {}, rendered pixels: {}",

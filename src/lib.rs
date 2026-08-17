@@ -31,6 +31,7 @@ impl Default for VirtualScreen {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgba8 {
     pub r: u8,
@@ -81,6 +82,8 @@ impl Framebuffer {
     }
 }
 
+static LIVE_RUNTIME: std::sync::Mutex<Option<runtime::Runtime>> = std::sync::Mutex::new(None);
+
 #[no_mangle]
 pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
     c"Rust DonutHLE core: APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
@@ -98,12 +101,22 @@ pub unsafe extern "C" fn donuthle_launch_report(
     } else {
         let path = unsafe { std::ffi::CStr::from_ptr(path) };
         match path.to_str() {
-            Ok(path) => runtime::Runtime::default().launch(path).map(|report| {
-                format!(
-                    "{}\nLauncher: {}\n{}",
-                    report.message, report.launcher_activity, report.dex
-                )
-            }),
+            Ok(path) => {
+                let mut runtime = runtime::Runtime::default();
+                match runtime.launch(path) {
+                    Ok(report) => {
+                        let message = format!(
+                            "{}\nLauncher: {}\n{}",
+                            report.message, report.launcher_activity, report.dex
+                        );
+                        if let Ok(mut live) = LIVE_RUNTIME.lock() {
+                            *live = Some(runtime);
+                        }
+                        Ok(message)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             Err(error) => Err(anyhow::anyhow!("APK path is not UTF-8: {error}")),
         }
     };
@@ -114,6 +127,42 @@ pub unsafe extern "C" fn donuthle_launch_report(
     std::ffi::CString::new(message)
         .unwrap_or_else(|_| std::ffi::CString::new("Runtime returned an invalid message").unwrap())
         .into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn donuthle_framebuffer_pixels() -> *const u8 {
+    LIVE_RUNTIME
+        .lock()
+        .ok()
+        .and_then(|live| {
+            live.as_ref()
+                .map(|runtime| runtime.framework.gles.framebuffer().pixels().as_ptr() as *const u8)
+        })
+        .unwrap_or(std::ptr::null())
+}
+
+#[no_mangle]
+pub extern "C" fn donuthle_framebuffer_width() -> u32 {
+    LIVE_RUNTIME
+        .lock()
+        .ok()
+        .and_then(|live| {
+            live.as_ref()
+                .map(|runtime| runtime.framework.gles.framebuffer().width())
+        })
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn donuthle_framebuffer_height() -> u32 {
+    LIVE_RUNTIME
+        .lock()
+        .ok()
+        .and_then(|live| {
+            live.as_ref()
+                .map(|runtime| runtime.framework.gles.framebuffer().height())
+        })
+        .unwrap_or(0)
 }
 
 /// # Safety

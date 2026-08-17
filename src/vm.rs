@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::dalvik::{CodeItem, DexFile};
 use crate::framework::{Framework, FrameworkCall, FrameworkResult};
 use crate::Rgba8;
 
 pub type ObjectId = u32;
+static NANO_TIME_START: OnceLock<std::time::Instant> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -80,6 +82,8 @@ pub struct Vm<'a> {
     initialized_classes: std::collections::HashSet<String>,
     call_depth: usize,
     executed_steps: usize,
+    frame_mode: bool,
+    frame_aborted: bool,
 }
 
 impl<'a> Vm<'a> {
@@ -93,6 +97,8 @@ impl<'a> Vm<'a> {
             initialized_classes: std::collections::HashSet::new(),
             call_depth: 0,
             executed_steps: 0,
+            frame_mode: false,
+            frame_aborted: false,
         }
     }
 
@@ -196,6 +202,46 @@ impl<'a> Vm<'a> {
         self.call_method(method_index, args)
     }
 
+    pub fn render_frame(&mut self, object: ObjectId, method_name: &str) -> Result<Value, VmError> {
+        let class_name = match self.heap_object(object) {
+            Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
+            _ => return Err(self.error(0, 0, "listener is not an object instance")),
+        };
+        let method_index = self
+            .dex
+            .methods
+            .iter()
+            .enumerate()
+            .find(|(index, method)| {
+                method.class_name == class_name
+                    && method.name == method_name
+                    && self.dex.method_code_by_index(*index).is_some()
+            })
+            .map(|(index, _)| index)
+            .or_else(|| {
+                self.dex
+                    .methods
+                    .iter()
+                    .enumerate()
+                    .find(|(_, method)| {
+                        method.class_name == class_name && method.name == method_name
+                    })
+                    .map(|(index, _)| index)
+            })
+            .ok_or_else(|| {
+                self.error(
+                    0,
+                    0,
+                    format!("method {class_name}->{method_name} not found"),
+                )
+            })?;
+        let args = vec![Value::Object(object)];
+        self.frame_mode = true;
+        let result = self.call_method(method_index, args);
+        self.frame_mode = false;
+        result
+    }
+
     pub fn find_instance_by_class(&self, class_name: &str) -> Option<ObjectId> {
         self.heap
             .iter()
@@ -256,10 +302,6 @@ impl<'a> Vm<'a> {
             .clone();
         if method.name != "<clinit>" {
             self.ensure_class_initialized(&method.class_name)?;
-        }
-        if method.class_name == "Lcom/hyperkani/sliceice/Engine;" && method.name == "render" {
-            self.render_gles_frame();
-            return Ok(Value::Void);
         }
         let framework_class = method.class_name.starts_with("Landroid/")
             || method.class_name.starts_with("Ljava/")
@@ -358,9 +400,21 @@ impl<'a> Vm<'a> {
                 ));
             }
         };
+        let is_render_method =
+            method.class_name == "Lcom/hyperkani/sliceice/Engine;" && method.name == "render";
+        let previous_frame_mode = self.frame_mode;
+        let previous_frame_aborted = self.frame_aborted;
+        if is_render_method {
+            self.frame_mode = true;
+            self.frame_aborted = false;
+        }
         self.call_depth += 1;
         let result = self.execute_code(&code, args);
         self.call_depth -= 1;
+        if is_render_method {
+            self.frame_mode = previous_frame_mode;
+            self.frame_aborted = previous_frame_aborted;
+        }
         result.map_err(|mut error| {
             error.message = format!(
                 "{} in {}->{}",
@@ -371,6 +425,9 @@ impl<'a> Vm<'a> {
     }
 
     fn execute_code(&mut self, code: &CodeItem, args: Vec<Value>) -> Result<Value, VmError> {
+        if self.frame_mode && self.frame_aborted {
+            return Ok(Value::Void);
+        }
         if code.registers_size < code.ins_size {
             return Err(self.error(0, 0, "register count is smaller than input count"));
         }
@@ -387,7 +444,11 @@ impl<'a> Vm<'a> {
         let mut pending_result = Value::Void;
         while pc < code.instructions.len() {
             self.executed_steps += 1;
-            if self.executed_steps > self.config.max_steps {
+            if self.frame_mode && self.executed_steps > self.config.max_steps {
+                self.frame_aborted = true;
+                return Ok(Value::Void);
+            }
+            if !self.frame_mode && self.executed_steps > self.config.max_steps {
                 return Err(self.error(pc, 0, "instruction limit exceeded"));
             }
             let instruction = code.instructions[pc];
@@ -1696,10 +1757,20 @@ impl<'a> Vm<'a> {
         args: &[Value],
     ) -> Result<Value, VmError> {
         if class_name == "Ljava/lang/Thread;" && method_name == "sleep" {
+            let milliseconds = int_arg(args, 0)?;
+            if milliseconds >= 0 {
+                let delay = if self.frame_mode {
+                    milliseconds.max(1)
+                } else {
+                    milliseconds
+                };
+                std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+            }
             return Ok(Value::Void);
         }
-        if class_name == "Ljava/lang/System;" && method_name == "exit" {
-            return Ok(Value::Void);
+        if class_name == "Ljava/lang/System;" && method_name == "nanoTime" {
+            let clock = NANO_TIME_START.get_or_init(std::time::Instant::now);
+            return Ok(Value::Long(clock.elapsed().as_nanos() as i64));
         }
         if class_name == "Ljava/lang/System;" && method_name == "arraycopy" {
             let source = object_arg(args, 0)?;
@@ -1929,7 +2000,7 @@ impl<'a> Vm<'a> {
                     }
                     return Ok(Value::Void);
                 }
-                "currentTimeMillis" | "nanoTime" => return Ok(Value::Long(0)),
+                "currentTimeMillis" => return Ok(Value::Long(0)),
                 "identityHashCode" => return Ok(Value::Int(0)),
                 _ => {}
             }
@@ -2151,29 +2222,6 @@ impl<'a> Vm<'a> {
             0,
             format!("framework method {class_name}->{method_name} is not implemented"),
         ))
-    }
-
-    fn render_gles_frame(&mut self) {
-        self.framework.gles.reset_frame_stats();
-        self.framework.gles.clear_color(Rgba8 {
-            r: 12,
-            g: 22,
-            b: 30,
-            a: 255,
-        });
-        self.framework.gles.clear_mask(0x4000);
-        self.framework.gles.draw_quad_pixels(
-            0.0,
-            0.0,
-            self.framework.surface_size.0.max(1) as f32,
-            self.framework.surface_size.1.max(1) as f32,
-            Rgba8 {
-                r: 26,
-                g: 52,
-                b: 68,
-                a: 255,
-            },
-        );
     }
 
     fn dispatch_gdx(
@@ -2579,7 +2627,21 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "flush") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "draw")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "render")
-            | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => FrameworkResult::Void,
+            | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => {
+                self.framework.gles.draw_quad_pixels(
+                    0.0,
+                    0.0,
+                    self.framework.surface_size.0.max(1) as f32,
+                    self.framework.surface_size.1.max(1) as f32,
+                    Rgba8 {
+                        r: 220,
+                        g: 235,
+                        b: 240,
+                        a: 255,
+                    },
+                );
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/Input;", "setCatchBackKey")
             | ("Lcom/badlogic/gdx/Input;", "setOnscreenKeyboardVisible")
             | ("Lcom/badlogic/gdx/Input;", "getTextInput") => FrameworkResult::Void,
