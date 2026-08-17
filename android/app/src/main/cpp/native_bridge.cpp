@@ -13,7 +13,7 @@ extern "C" void donuthle_free_string(char* value);
 extern "C" uint32_t donuthle_framebuffer_width();
 extern "C" uint32_t donuthle_framebuffer_height();
 #ifndef DONUTHLE_NO_CORE
-extern "C" uint32_t donuthle_gles1_next_frame();
+extern "C" uint32_t donuthle_render_frame(uint32_t width, uint32_t height);
 extern "C" size_t donuthle_framebuffer_copy(uint8_t* output, size_t output_len);
 #endif
 
@@ -22,7 +22,7 @@ static uint32_t nextFrame() {
     static uint32_t frame = 0;
     return ++frame;
 #else
-    return donuthle_gles1_next_frame();
+    return 0;
 #endif
 }
 
@@ -152,6 +152,7 @@ Java_org_donuthle_android_MainActivity_nativeRenderFrame(JNIEnv*, jobject, jint 
     drawRect(safeWidth * 0.40f, safeHeight * 0.48f, safeWidth * 0.60f, safeHeight * 0.56f, 0.50f, 0.80f, 0.77f, 0.92f);
     glDisable(GL_BLEND);
 #else
+    donuthle_render_frame(static_cast<uint32_t>(safeWidth), static_cast<uint32_t>(safeHeight));
     drawSoftwareFrame(safeWidth, safeHeight);
 #endif
     (void)frame;

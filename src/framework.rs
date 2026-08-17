@@ -61,7 +61,7 @@ pub struct Message {
     pub obj: Value,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ActivityManager {
     stack: Vec<ActivityRecord>,
     lifecycle: VecDeque<(String, LifecycleEvent)>,

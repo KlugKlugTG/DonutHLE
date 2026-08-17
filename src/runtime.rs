@@ -13,7 +13,7 @@ use crate::{
     gles::GlesContext,
     manifest::AppManifest,
     resources::ResourceTable,
-    vm::{Value as VmValue, Vm, VmConfig},
+    vm::{ObjectId, Value as VmValue, Vm, VmConfig},
     VirtualScreen,
 };
 
@@ -50,6 +50,30 @@ pub struct Runtime {
     pub activities: ActivityManager,
     pub graphics: GlesContext,
     pub framework: Framework,
+    pub session: Option<RuntimeSession>,
+}
+
+pub struct RuntimeSession {
+    pub vm: Vm<'static>,
+    listener: ObjectId,
+}
+
+impl RuntimeSession {
+    pub fn render_frame(&mut self, width: u32, height: u32) -> Result<(usize, usize)> {
+        let width = width.max(1);
+        let height = height.max(1);
+        self.vm.framework.surface_size = (width as i32, height as i32);
+        self.vm.framework.gles.begin_frame();
+        self.vm.framework.gles.viewport(0, 0, width, height);
+        self.vm
+            .render_frame(self.listener, "render")
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        crate::publish_framebuffer(self.vm.framework.gles.framebuffer());
+        Ok((
+            self.vm.framework.gles.command_count(),
+            self.vm.framework.gles.rendered_pixels(),
+        ))
+    }
 }
 
 impl Default for Runtime {
@@ -60,6 +84,7 @@ impl Default for Runtime {
             config,
             activities: ActivityManager::default(),
             framework: Framework::new(),
+            session: None,
         }
     }
 }
@@ -180,7 +205,7 @@ impl Runtime {
         );
         let result = if plan.entry_method {
             let mut framework = std::mem::take(&mut self.framework);
-            framework.activities = activities;
+            framework.activities = activities.clone();
             framework.assets = Some(plan.assets.clone());
             if let Some(resources) = &plan.resources {
                 for value in &resources.values {
@@ -189,8 +214,9 @@ impl Runtime {
                         .insert(value.id, Value::String(value.value.clone()));
                 }
             }
+            let dex: &'static DexFile = Box::leak(Box::new(plan.dex.clone()));
             let mut vm = Vm::new(
-                &plan.dex,
+                dex,
                 framework,
                 VmConfig {
                     max_steps: self.config.max_steps,
@@ -220,17 +246,17 @@ impl Runtime {
             if let Some(listener) = listener {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                vm.render_frame(listener, "render")
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                let mut session = RuntimeSession { vm, listener };
+                let (commands, pixels) = session.render_frame(320, 480)?;
                 frame_status = format!(
-                    "application create/render completed; GLES commands: {}, rendered pixels: {}",
-                    vm.framework.gles.command_count(),
-                    vm.framework.gles.rendered_pixels()
+                    "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
                 );
+                activities = session.vm.framework.activities.clone();
+                self.session = Some(session);
+                self.framework = Framework::new();
+            } else {
+                self.framework = vm.framework;
             }
-            self.framework = vm.framework;
-            crate::publish_framebuffer(self.framework.gles.framebuffer());
-            activities = std::mem::take(&mut self.framework.activities);
             return Ok(BootState {
                 result: match value {
                     VmValue::Void => ExecutionResult::ReturnVoid,

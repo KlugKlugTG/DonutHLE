@@ -91,6 +91,7 @@ struct FrameSnapshot {
 }
 
 static FRAME_SNAPSHOT: Mutex<Option<FrameSnapshot>> = Mutex::new(None);
+static RUNTIME: Mutex<Option<runtime::Runtime>> = Mutex::new(None);
 
 pub(crate) fn publish_framebuffer(framebuffer: &Framebuffer) {
     let mut pixels = Vec::with_capacity(framebuffer.pixels().len().saturating_mul(4));
@@ -144,6 +145,22 @@ pub unsafe extern "C" fn donuthle_framebuffer_copy(output: *mut u8, output_len: 
 }
 
 #[no_mangle]
+pub extern "C" fn donuthle_render_frame(width: u32, height: u32) -> u32 {
+    let Ok(mut runtime) = RUNTIME.lock() else {
+        return 0;
+    };
+    let Some(runtime) = runtime.as_mut() else {
+        return 0;
+    };
+    runtime
+        .session
+        .as_mut()
+        .and_then(|session| session.render_frame(width, height).ok())
+        .map(|(commands, _)| commands as u32)
+        .unwrap_or(0)
+}
+
+#[no_mangle]
 pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
     c"Rust DonutHLE core: APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
 }
@@ -160,12 +177,22 @@ pub unsafe extern "C" fn donuthle_launch_report(
     } else {
         let path = unsafe { std::ffi::CStr::from_ptr(path) };
         match path.to_str() {
-            Ok(path) => runtime::Runtime::default().launch(path).map(|report| {
-                format!(
-                    "{}\nLauncher: {}\n{}",
-                    report.message, report.launcher_activity, report.dex
-                )
-            }),
+            Ok(path) => {
+                let mut runtime = runtime::Runtime::default();
+                match runtime.launch(path) {
+                    Ok(report) => match RUNTIME.lock() {
+                        Ok(mut shared) => {
+                            *shared = Some(runtime);
+                            Ok(format!(
+                                "{}\nLauncher: {}\n{}",
+                                report.message, report.launcher_activity, report.dex
+                            ))
+                        }
+                        Err(_) => Err(anyhow::anyhow!("runtime lock is poisoned")),
+                    },
+                    Err(error) => Err(error),
+                }
+            }
             Err(error) => Err(anyhow::anyhow!("APK path is not UTF-8: {error}")),
         }
     };

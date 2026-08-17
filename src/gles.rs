@@ -543,6 +543,11 @@ impl GlesContext {
         self.next_frame_pixels = 0;
     }
 
+    pub fn begin_frame(&mut self) {
+        self.commands.clear();
+        self.next_frame_pixels = 0;
+    }
+
     pub fn flush(&mut self) {
         self.commands.push(GlesCommand::DrawArrays {
             mode: TRIANGLE_STRIP,
