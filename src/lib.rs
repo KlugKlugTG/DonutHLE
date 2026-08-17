@@ -124,10 +124,7 @@ pub extern "C" fn donuthle_framebuffer_height() -> u32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn donuthle_framebuffer_copy(
-    output: *mut u8,
-    output_len: usize,
-) -> usize {
+pub unsafe extern "C" fn donuthle_framebuffer_copy(output: *mut u8, output_len: usize) -> usize {
     if output.is_null() || output_len == 0 {
         return 0;
     }
@@ -243,14 +240,25 @@ mod framebuffer_tests {
     #[test]
     fn published_framebuffer_is_available_to_native_bridge() {
         let framebuffer = Framebuffer::new(
-            VirtualScreen { width: 1, height: 1 },
-            Rgba8 { r: 1, g: 2, b: 3, a: 4 },
+            VirtualScreen {
+                width: 1,
+                height: 1,
+            },
+            Rgba8 {
+                r: 1,
+                g: 2,
+                b: 3,
+                a: 4,
+            },
         );
         publish_framebuffer(&framebuffer);
         assert_eq!(donuthle_framebuffer_width(), 1);
         assert_eq!(donuthle_framebuffer_height(), 1);
         let mut output = [0_u8; 4];
-        assert_eq!(unsafe { donuthle_framebuffer_copy(output.as_mut_ptr(), output.len()) }, 4);
+        assert_eq!(
+            unsafe { donuthle_framebuffer_copy(output.as_mut_ptr(), output.len()) },
+            4
+        );
         assert_eq!(output, [1, 2, 3, 4]);
     }
 }
