@@ -86,11 +86,6 @@ pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
     c"Rust DonutHLE core: APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
 }
 
-#[no_mangle]
-pub extern "C" fn donuthle_gles1_next_frame() -> u32 {
-    gles_native::donuthle_gles1_next_frame()
-}
-
 /// # Safety
 ///
 /// `path` must be a valid, NUL-terminated C string for the lifetime of this call.
