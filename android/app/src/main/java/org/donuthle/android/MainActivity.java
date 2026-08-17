@@ -7,9 +7,11 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
+import android.view.Gravity;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -22,6 +24,7 @@ public final class MainActivity extends Activity {
     static { System.loadLibrary("donuthle"); }
     private native String nativeRuntimeInfo();
     private native String nativeLaunchApk(String path);
+    native void nativeRenderFrame(int width, int height);
     private static final int PICK_APK = 42;
     private static final int PICK_DONUTHLE_FOLDER = 43;
     private final int teal = Color.rgb(128, 203, 196);
@@ -29,6 +32,7 @@ public final class MainActivity extends Activity {
     private final int muted = Color.rgb(158, 174, 180);
     private final int panel = Color.rgb(27, 33, 38);
     private final int background = Color.rgb(14, 18, 22);
+    private Gles1SurfaceView gameSurface;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -42,10 +46,17 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (gameSurface != null) gameSurface.onResume();
         if (findViewById(7001) != null) showLibrary();
     }
 
+    @Override protected void onPause() {
+        if (gameSurface != null) gameSurface.onPause();
+        super.onPause();
+    }
+
     private void showHome() {
+        gameSurface = null;
         LinearLayout content = column();
         content.setPadding(dp(22), dp(20), dp(22), dp(28));
         TextView brand = label("DONUTHLE", 27, teal); brand.setTypeface(null, 1); content.addView(brand);
@@ -63,6 +74,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showLibrary() {
+        gameSurface = null;
         StorageLayout.ensure(this);
         StorageLayout.importFromDefaultFolder(this);
         LinearLayout content = page("GAME LIBRARY", "Import APKs or scan an existing DonutHLE_apps folder.");
@@ -122,7 +134,28 @@ public final class MainActivity extends Activity {
         message.append("Dalvik classes.dex: ").append(report.hasDex ? "found" : "missing").append("\n");
         message.append("Resources: ").append(report.hasResources ? "found" : "missing").append("\n\n");
         message.append("\nRust runtime result:\n").append(nativeLaunchApk(apk.getAbsolutePath()));
-        showMessage("LAUNCH REPORT", message.toString());
+        showGameScreen(apk, message.toString());
+    }
+
+    private void showGameScreen(File apk, String report) {
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(background);
+        gameSurface = new Gles1SurfaceView(this, this);
+        root.addView(gameSurface, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout overlay = column();
+        overlay.setPadding(dp(18), dp(18), dp(18), dp(18));
+        overlay.setBackgroundColor(Color.argb(218, 14, 18, 22));
+        TextView title = label("RUNNING  •  GLES 1.1 NATIVE", 15, teal);
+        title.setTypeface(null, 1);
+        overlay.addView(title);
+        overlay.addView(label(apk.getName(), 14, text), margins(0, 5, 0, 8));
+        TextView status = label(report, 11, muted);
+        status.setMaxLines(6);
+        status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        overlay.addView(status, margins(0, 0, 0, 12));
+        overlay.addView(button("‹  BACK TO LIBRARY", false, v -> showLibrary()));
+        root.addView(overlay, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        setContentView(root);
     }
 
     private void showOptions() { LinearLayout content = page("OPTIONS", "Portable settings and file locations."); TextView options = label(StorageLayout.readText(StorageLayout.options(this)), 15, text); options.setTextIsSelectable(true); options.setPadding(dp(14), dp(14), dp(14), dp(14)); options.setBackgroundColor(panel); content.addView(options, margins(0, 18, 0, 16)); content.addView(button("OPEN DONUTHLE FOLDER", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 8)); content.addView(button("‹  BACK", false, v -> showHome())); setContentView(scroll(content)); }

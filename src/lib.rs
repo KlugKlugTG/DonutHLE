@@ -6,6 +6,7 @@ pub mod compat;
 pub mod dalvik;
 pub mod framework;
 pub mod gles;
+pub mod gles_native;
 pub mod input;
 pub mod manifest;
 pub mod resources;
@@ -83,6 +84,11 @@ impl Framebuffer {
 #[no_mangle]
 pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
     c"Rust DonutHLE core: APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn donuthle_gles1_next_frame() -> u32 {
+    gles_native::donuthle_gles1_next_frame()
 }
 
 /// # Safety
