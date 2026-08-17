@@ -32,7 +32,6 @@ impl Default for VirtualScreen {
     }
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgba8 {
     pub r: u8,
@@ -83,7 +82,66 @@ impl Framebuffer {
     }
 }
 
-static LIVE_RUNTIME: std::sync::Mutex<Option<runtime::Runtime>> = std::sync::Mutex::new(None);
+use std::sync::Mutex;
+
+struct FrameSnapshot {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+static FRAME_SNAPSHOT: Mutex<Option<FrameSnapshot>> = Mutex::new(None);
+
+pub(crate) fn publish_framebuffer(framebuffer: &Framebuffer) {
+    let mut pixels = Vec::with_capacity(framebuffer.pixels().len().saturating_mul(4));
+    for pixel in framebuffer.pixels() {
+        pixels.extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
+    }
+    if let Ok(mut snapshot) = FRAME_SNAPSHOT.lock() {
+        *snapshot = Some(FrameSnapshot {
+            width: framebuffer.width(),
+            height: framebuffer.height(),
+            pixels,
+        });
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn donuthle_framebuffer_width() -> u32 {
+    FRAME_SNAPSHOT
+        .lock()
+        .ok()
+        .and_then(|snapshot| snapshot.as_ref().map(|frame| frame.width))
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn donuthle_framebuffer_height() -> u32 {
+    FRAME_SNAPSHOT
+        .lock()
+        .ok()
+        .and_then(|snapshot| snapshot.as_ref().map(|frame| frame.height))
+        .unwrap_or(0)
+}
+
+/// # Safety
+///
+/// `output` must point to a writable buffer of at least `output_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn donuthle_framebuffer_copy(output: *mut u8, output_len: usize) -> usize {
+    if output.is_null() || output_len == 0 {
+        return 0;
+    }
+    let Ok(snapshot) = FRAME_SNAPSHOT.lock() else {
+        return 0;
+    };
+    let Some(frame) = snapshot.as_ref() else {
+        return 0;
+    };
+    let count = frame.pixels.len().min(output_len);
+    std::ptr::copy_nonoverlapping(frame.pixels.as_ptr(), output, count);
+    count
+}
 
 #[no_mangle]
 pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
@@ -102,22 +160,12 @@ pub unsafe extern "C" fn donuthle_launch_report(
     } else {
         let path = unsafe { std::ffi::CStr::from_ptr(path) };
         match path.to_str() {
-            Ok(path) => {
-                let mut runtime = runtime::Runtime::default();
-                match runtime.launch(path) {
-                    Ok(report) => {
-                        let message = format!(
-                            "{}\nLauncher: {}\n{}",
-                            report.message, report.launcher_activity, report.dex
-                        );
-                        if let Ok(mut live) = LIVE_RUNTIME.lock() {
-                            *live = Some(runtime);
-                        }
-                        Ok(message)
-                    }
-                    Err(error) => Err(error),
-                }
-            }
+            Ok(path) => runtime::Runtime::default().launch(path).map(|report| {
+                format!(
+                    "{}\nLauncher: {}\n{}",
+                    report.message, report.launcher_activity, report.dex
+                )
+            }),
             Err(error) => Err(anyhow::anyhow!("APK path is not UTF-8: {error}")),
         }
     };
@@ -128,42 +176,6 @@ pub unsafe extern "C" fn donuthle_launch_report(
     std::ffi::CString::new(message)
         .unwrap_or_else(|_| std::ffi::CString::new("Runtime returned an invalid message").unwrap())
         .into_raw()
-}
-
-#[no_mangle]
-pub extern "C" fn donuthle_framebuffer_pixels() -> *const u8 {
-    LIVE_RUNTIME
-        .lock()
-        .ok()
-        .and_then(|live| {
-            live.as_ref()
-                .map(|runtime| runtime.framework.gles.framebuffer().pixels().as_ptr() as *const u8)
-        })
-        .unwrap_or(std::ptr::null())
-}
-
-#[no_mangle]
-pub extern "C" fn donuthle_framebuffer_width() -> u32 {
-    LIVE_RUNTIME
-        .lock()
-        .ok()
-        .and_then(|live| {
-            live.as_ref()
-                .map(|runtime| runtime.framework.gles.framebuffer().width())
-        })
-        .unwrap_or(0)
-}
-
-#[no_mangle]
-pub extern "C" fn donuthle_framebuffer_height() -> u32 {
-    LIVE_RUNTIME
-        .lock()
-        .ok()
-        .and_then(|live| {
-            live.as_ref()
-                .map(|runtime| runtime.framework.gles.framebuffer().height())
-        })
-        .unwrap_or(0)
 }
 
 /// # Safety
@@ -222,5 +234,35 @@ mod tests {
             a: 255,
         });
         assert_eq!(fb.pixels()[0].g, 5);
+    }
+}
+
+#[cfg(test)]
+mod framebuffer_tests {
+    use super::*;
+
+    #[test]
+    fn published_framebuffer_is_available_to_native_bridge() {
+        let framebuffer = Framebuffer::new(
+            VirtualScreen {
+                width: 1,
+                height: 1,
+            },
+            Rgba8 {
+                r: 1,
+                g: 2,
+                b: 3,
+                a: 4,
+            },
+        );
+        publish_framebuffer(&framebuffer);
+        assert_eq!(donuthle_framebuffer_width(), 1);
+        assert_eq!(donuthle_framebuffer_height(), 1);
+        let mut output = [0_u8; 4];
+        assert_eq!(
+            unsafe { donuthle_framebuffer_copy(output.as_mut_ptr(), output.len()) },
+            4
+        );
+        assert_eq!(output, [1, 2, 3, 4]);
     }
 }

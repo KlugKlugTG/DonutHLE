@@ -229,6 +229,7 @@ impl Runtime {
                 );
             }
             self.framework = vm.framework;
+            crate::publish_framebuffer(self.framework.gles.framebuffer());
             activities = std::mem::take(&mut self.framework.activities);
             return Ok(BootState {
                 result: match value {
