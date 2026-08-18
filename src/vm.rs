@@ -639,11 +639,11 @@ impl<'a> Vm<'a> {
                 }
                 0x15 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let value = (code_word(code, pc + 1, pc, opcode)? as i16 as i32) << 16;
+                    let bits = (code_word(code, pc + 1, pc, opcode)? as u32) << 16;
                     set_register(
                         &mut registers,
                         register,
-                        Value::Int(value),
+                        Value::Float(f32::from_bits(bits)),
                         self,
                         pc,
                         opcode,
@@ -871,11 +871,11 @@ impl<'a> Vm<'a> {
                 }
                 0x19 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let value = (code_word(code, pc + 1, pc, opcode)? as i16 as i64) << 48;
+                    let bits = (code_word(code, pc + 1, pc, opcode)? as u64) << 48;
                     set_wide_register(
                         &mut registers,
                         register,
-                        Value::Long(value),
+                        Value::Double(f64::from_bits(bits)),
                         self,
                         pc,
                         opcode,
@@ -2625,7 +2625,6 @@ impl<'a> Vm<'a> {
             }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setOrigin")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRotation")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setScale")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setColor")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRegion")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setTexture")
@@ -2635,6 +2634,32 @@ impl<'a> Vm<'a> {
                 let sprite = object_arg(args, 0)?;
                 self.set_object_field(sprite, "x", Value::Float(float_arg(args, 1)?));
                 self.set_object_field(sprite, "y", Value::Float(float_arg(args, 2)?));
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setScale") => {
+                let sprite = object_arg(args, 0)?;
+                let scale_x = float_arg(args, 1)?;
+                let scale_y = args
+                    .get(2)
+                    .map(|_| float_arg(args, 2))
+                    .transpose()?
+                    .unwrap_or(scale_x);
+                self.set_object_field(sprite, "scale_x", Value::Float(scale_x));
+                self.set_object_field(sprite, "scale_y", Value::Float(scale_y));
+                if let Some(region_width) = self.object_field_float(sprite, "region_width") {
+                    self.set_object_field(
+                        sprite,
+                        "width",
+                        Value::Float(region_width * scale_x.abs()),
+                    );
+                }
+                if let Some(region_height) = self.object_field_float(sprite, "region_height") {
+                    self.set_object_field(
+                        sprite,
+                        "height",
+                        Value::Float(region_height * scale_y.abs()),
+                    );
+                }
                 FrameworkResult::Void
             }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setSize") => {
@@ -2664,9 +2689,15 @@ impl<'a> Vm<'a> {
                     "getY" => "y",
                     "getWidth" => "width",
                     "getHeight" => "height",
+                    "getScaleX" => "scale_x",
+                    "getScaleY" => "scale_y",
                     _ => "rotation",
                 };
-                FrameworkResult::Float(self.object_field_float(sprite, field).unwrap_or(0.0))
+                let fallback = match method_name {
+                    "getScaleX" | "getScaleY" => 1.0,
+                    _ => 0.0,
+                };
+                FrameworkResult::Float(self.object_field_float(sprite, field).unwrap_or(fallback))
             }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getColor") => {
                 FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Color;"))
@@ -2830,17 +2861,19 @@ impl<'a> Vm<'a> {
             ("Lcom/badlogic/gdx/math/MathUtils;", "random") => {
                 let value = match args.len() {
                     1 => float_arg(args, 0)?.mul_add(0.5, 0.5),
+                    2 if matches!(args.first(), Some(Value::Float(_) | Value::Double(_)))
+                        || matches!(args.get(1), Some(Value::Float(_) | Value::Double(_))) =>
+                    {
+                        let low = float_arg(args, 0)?;
+                        let high = float_arg(args, 1)?;
+                        low + (high - low) * ((self.executed_steps % 1000) as f32 / 1000.0)
+                    }
                     2 => {
                         let low = int_arg(args, 0)?;
                         let high = int_arg(args, 1)?;
-                        if high < low {
-                            return Err(self.error(
-                                0,
-                                0,
-                                "MathUtils.random upper bound is below lower bound",
-                            ));
-                        }
-                        (low + (self.executed_steps as i32 % (high - low + 1))) as f32
+                        let (low, high) = if high < low { (high, low) } else { (low, high) };
+                        let span = i64::from(high) - i64::from(low) + 1;
+                        (i64::from(low) + self.executed_steps as i64 % span) as f32
                     }
                     _ => {
                         ((self.executed_steps as i32)
@@ -2910,6 +2943,11 @@ impl<'a> Vm<'a> {
                 let texture_path = self
                     .object_field_string(sprite, "path")
                     .or_else(|| self.object_field_string(sprite, "asset_path"));
+                let region = ["region_x", "region_y", "region_width", "region_height"]
+                    .iter()
+                    .map(|field| self.object_field_float(sprite, field))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|values| (values[0], values[1], values[2], values[3]));
                 let rendered = texture_path.and_then(|path| {
                     self.render_asset(
                         &path,
@@ -2917,7 +2955,7 @@ impl<'a> Vm<'a> {
                         y,
                         width,
                         height,
-                        None,
+                        region,
                         Rgba8 {
                             r: 255,
                             g: 255,
