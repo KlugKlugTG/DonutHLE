@@ -616,12 +616,41 @@ impl GlesContext {
                 color,
             },
         ];
-        self.rasterize_pixel_triangle(vertices[0], vertices[1], vertices[2]);
-        self.rasterize_pixel_triangle(vertices[2], vertices[1], vertices[3]);
+        self.rasterize_pixel_quad(x, y, width, height, u0, v0, u1, v1, color);
         self.commands.push(GlesCommand::Draw {
             primitive: Primitive::TriangleStrip,
             vertices: vertices.to_vec(),
         });
+    }
+
+    fn rasterize_pixel_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        color: Rgba8,
+    ) {
+        let left = x.floor().max(0.0) as i32;
+        let top = y.floor().max(0.0) as i32;
+        let right = (x + width).ceil().min(self.framebuffer.width() as f32) as i32;
+        let bottom = (y + height).ceil().min(self.framebuffer.height() as f32) as i32;
+        if left >= right || top >= bottom || width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        for row in top..bottom {
+            for column in left..right {
+                let tx = ((column as f32 + 0.5 - x) / width).clamp(0.0, 1.0);
+                let ty = ((row as f32 + 0.5 - y) / height).clamp(0.0, 1.0);
+                let u = u0 + (u1 - u0) * tx;
+                let v = v0 + (v1 - v0) * ty;
+                self.write_fragment_without_depth(column, row, color, u, v);
+            }
+        }
     }
 
     pub fn set_pixel(&mut self, x: u32, y: u32, color: Rgba8) -> bool {
@@ -803,7 +832,7 @@ impl GlesContext {
                     let color = barycentric_color(a.color, b.color, c.color, wa, wb, wc);
                     let u = a.u * wa + b.u * wb + c.u * wc;
                     let v = a.v * wa + b.v * wb + c.v * wc;
-                    self.write_fragment(x, y, 0.0, color, u, v);
+                    self.write_fragment_2d(x, y, color, u, v);
                 }
             }
         }
@@ -900,7 +929,66 @@ impl GlesContext {
         }
     }
 
+    fn write_fragment_without_depth(&mut self, x: i32, y: i32, source: Rgba8, u: f32, v: f32) {
+        if x < 0
+            || y < 0
+            || x >= self.framebuffer.width() as i32
+            || y >= self.framebuffer.height() as i32
+        {
+            return;
+        }
+        if self.enabled.get(&SCISSOR_TEST).copied().unwrap_or(false) {
+            let Some((left, top, width, height)) = self.scissor else {
+                return;
+            };
+            if x < left
+                || y < top
+                || x >= left.saturating_add(width as i32)
+                || y >= top.saturating_add(height as i32)
+            {
+                return;
+            }
+        }
+        let textured = self.enabled.get(&TEXTURE_2D).copied().unwrap_or(false);
+        let source = if textured {
+            modulate(source, self.sample_texture(u, v))
+        } else {
+            source
+        };
+        let destination = self.framebuffer.pixel(x as u32, y as u32).unwrap_or(Rgba8 {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        });
+        let color = if self.enabled.get(&BLEND).copied().unwrap_or(false) {
+            blend_colors(source, destination, self.blend_src, self.blend_dst)
+        } else {
+            source
+        };
+        if self.framebuffer.set_pixel(x as u32, y as u32, color) {
+            self.next_frame_pixels = self.next_frame_pixels.saturating_add(1);
+        }
+    }
+
+    fn write_fragment_2d(&mut self, x: i32, y: i32, source: Rgba8, u: f32, v: f32) {
+        self.write_fragment_internal(x, y, 0.0, source, u, v, false);
+    }
+
     fn write_fragment(&mut self, x: i32, y: i32, depth: f32, source: Rgba8, u: f32, v: f32) {
+        self.write_fragment_internal(x, y, depth, source, u, v, true);
+    }
+
+    fn write_fragment_internal(
+        &mut self,
+        x: i32,
+        y: i32,
+        depth: f32,
+        source: Rgba8,
+        u: f32,
+        v: f32,
+        test_depth: bool,
+    ) {
         if x < 0
             || y < 0
             || x >= self.framebuffer.width() as i32
@@ -921,7 +1009,7 @@ impl GlesContext {
             }
         }
         let index = y as usize * self.framebuffer.width() as usize + x as usize;
-        if self.enabled.get(&DEPTH_TEST).copied().unwrap_or(false) {
+        if test_depth && self.enabled.get(&DEPTH_TEST).copied().unwrap_or(false) {
             if depth >= self.depth_buffer[index] {
                 return;
             }
@@ -1329,6 +1417,29 @@ mod tests {
         );
         assert_eq!(gles.framebuffer().pixel(1, 1).unwrap().r, 255);
         assert_eq!(gles.framebuffer().pixel(7, 7).unwrap().r, 0);
+    }
+
+    #[test]
+    fn pixel_quad_covers_both_triangles_when_depth_testing_is_enabled() {
+        let mut gles = GlesContext::new(VirtualScreen {
+            width: 8,
+            height: 8,
+        });
+        gles.enable(DEPTH_TEST);
+        gles.draw_quad_pixels(
+            0.0,
+            0.0,
+            8.0,
+            8.0,
+            Rgba8 {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 255,
+            },
+        );
+        assert_eq!(gles.framebuffer().pixel(1, 1).unwrap().r, 255);
+        assert_eq!(gles.framebuffer().pixel(6, 6).unwrap().r, 255);
     }
 
     #[test]

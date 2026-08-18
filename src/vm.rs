@@ -2850,26 +2850,21 @@ impl<'a> Vm<'a> {
                     .object_field_string(sprite, "path")
                     .or_else(|| self.object_field_string(sprite, "asset_path"));
                 let rendered = texture_path.and_then(|path| {
-                    let image = self.framework.assets.as_ref()?.image(&path).ok()?;
-                    let texture = self.framework.gles.upload_texture(
-                        image.width,
-                        image.height,
-                        &image.pixels,
-                    );
-                    self.framework.gles.draw_textured_quad_pixels(
+                    self.render_asset(
+                        &path,
                         x,
                         y,
                         width,
                         height,
-                        texture,
+                        None,
                         Rgba8 {
                             r: 255,
                             g: 255,
                             b: 255,
                             a: 255,
                         },
-                    );
-                    Some(())
+                    )
+                    .then_some(())
                 });
                 if rendered.is_none() {
                     self.framework.gles.draw_quad_pixels(
@@ -2897,27 +2892,32 @@ impl<'a> Vm<'a> {
                         .or_else(|| self.object_field_string(*id, "asset_path")),
                     _ => None,
                 });
+                let region = args.get(1).and_then(|value| match value {
+                    Value::Object(id) => {
+                        let x = self.object_field_float(*id, "region_x")?;
+                        let y = self.object_field_float(*id, "region_y")?;
+                        let width = self.object_field_float(*id, "region_width")?;
+                        let height = self.object_field_float(*id, "region_height")?;
+                        Some((x, y, width, height))
+                    }
+                    _ => None,
+                });
                 let rendered = texture_path.and_then(|path| {
-                    let image = self.framework.assets.as_ref()?.image(&path).ok()?;
-                    let texture = self.framework.gles.upload_texture(
-                        image.width,
-                        image.height,
-                        &image.pixels,
-                    );
-                    self.framework.gles.draw_textured_quad_pixels(
+                    self.render_asset(
+                        &path,
                         x,
                         y,
                         width,
                         height,
-                        texture,
+                        region,
                         Rgba8 {
                             r: 220,
                             g: 235,
                             b: 240,
                             a: 255,
                         },
-                    );
-                    Some(())
+                    )
+                    .then_some(())
                 });
                 if rendered.is_none() {
                     self.framework.gles.draw_quad_pixels(
@@ -2995,6 +2995,49 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn render_asset(
+        &mut self,
+        path: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        region: Option<(f32, f32, f32, f32)>,
+        color: Rgba8,
+    ) -> bool {
+        let Some(image) = self
+            .framework
+            .assets
+            .as_ref()
+            .and_then(|assets| assets.image(path).ok())
+        else {
+            return false;
+        };
+        let texture = self
+            .framework
+            .gles
+            .upload_texture(image.width, image.height, &image.pixels);
+        if let Some((region_x, region_y, region_width, region_height)) = region {
+            self.framework.gles.draw_textured_region_pixels(
+                x,
+                y,
+                width,
+                height,
+                texture,
+                region_x / image.width.max(1) as f32,
+                region_y / image.height.max(1) as f32,
+                (region_x + region_width) / image.width.max(1) as f32,
+                (region_y + region_height) / image.height.max(1) as f32,
+                color,
+            );
+        } else {
+            self.framework
+                .gles
+                .draw_textured_quad_pixels(x, y, width, height, texture, color);
+        }
+        true
+    }
+
     fn object_field_string(&self, object: ObjectId, name: &str) -> Option<String> {
         match self.heap_object(object) {
             Some(HeapObject::Instance { fields, .. }) => match fields.get(name) {
@@ -3016,22 +3059,23 @@ impl<'a> Vm<'a> {
     }
 
     fn draw_bounds(&self, args: &[Value]) -> (f32, f32, f32, f32) {
-        let receiver = args.first().and_then(|value| match value {
-            Value::Object(id) => Some(*id),
-            _ => None,
-        });
+        let receiver = args.first().and_then(object_id);
         let x = receiver
             .and_then(|id| self.object_field_float(id, "x"))
-            .unwrap_or(0.0);
+            .unwrap_or_else(|| numeric_value(args.get(2)).unwrap_or(0.0));
         let y = receiver
             .and_then(|id| self.object_field_float(id, "y"))
-            .unwrap_or(0.0);
+            .unwrap_or_else(|| numeric_value(args.get(3)).unwrap_or(0.0));
         let width = receiver
             .and_then(|id| self.object_field_float(id, "width"))
-            .unwrap_or(self.framework.surface_size.0.max(1) as f32);
+            .or_else(|| receiver.and_then(|id| self.object_field_float(id, "region_width")))
+            .or_else(|| numeric_value(args.get(4)))
+            .unwrap_or(1.0);
         let height = receiver
             .and_then(|id| self.object_field_float(id, "height"))
-            .unwrap_or(self.framework.surface_size.1.max(1) as f32);
+            .or_else(|| receiver.and_then(|id| self.object_field_float(id, "region_height")))
+            .or_else(|| numeric_value(args.get(5)))
+            .unwrap_or(1.0);
         (x, y, width.max(1.0), height.max(1.0))
     }
 
@@ -3059,6 +3103,23 @@ impl<'a> Vm<'a> {
             opcode,
             message: message.into(),
         }
+    }
+}
+
+fn object_id(value: &Value) -> Option<ObjectId> {
+    match value {
+        Value::Object(id) => Some(*id),
+        _ => None,
+    }
+}
+
+fn numeric_value(value: Option<&Value>) -> Option<f32> {
+    match value {
+        Some(Value::Float(value)) => Some(*value),
+        Some(Value::Double(value)) => Some(*value as f32),
+        Some(Value::Int(value)) => Some(*value as f32),
+        Some(Value::Long(value)) => Some(*value as f32),
+        _ => None,
     }
 }
 

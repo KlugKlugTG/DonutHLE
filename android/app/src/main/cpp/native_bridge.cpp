@@ -68,21 +68,27 @@ Java_org_donuthle_android_MainActivity_nativeLaunchApk(JNIEnv* env, jobject, jst
 
 
 #ifndef DONUTHLE_NO_CORE
+static uint32_t nextPowerOfTwo(uint32_t value) {
+    uint32_t result = 1;
+    while (result < value && result < 4096) result <<= 1;
+    return result;
+}
+
 static void drawSoftwareFrame(GLfloat width, GLfloat height) {
     const uint32_t frameWidth = donuthle_framebuffer_width();
     const uint32_t frameHeight = donuthle_framebuffer_height();
     if (frameWidth == 0 || frameHeight == 0) return;
 
-    const uint32_t textureWidth = 512;
-    const uint32_t textureHeight = 512;
+    const uint32_t textureWidth = nextPowerOfTwo(frameWidth);
+    const uint32_t textureHeight = nextPowerOfTwo(frameHeight);
     std::vector<uint8_t> pixels(static_cast<size_t>(textureWidth) * textureHeight * 4u, 0);
     const size_t sourceLength = static_cast<size_t>(frameWidth) * frameHeight * 4u;
     std::vector<uint8_t> source(sourceLength);
     if (donuthle_framebuffer_copy(source.data(), source.size()) != source.size()) return;
-    for (uint32_t row = 0; row < frameHeight && row < textureHeight; ++row) {
+    for (uint32_t row = 0; row < frameHeight; ++row) {
         const size_t sourceOffset = static_cast<size_t>(row) * frameWidth * 4u;
         const size_t destinationOffset = static_cast<size_t>(row) * textureWidth * 4u;
-        const size_t rowBytes = std::min(static_cast<size_t>(frameWidth), static_cast<size_t>(textureWidth)) * 4u;
+        const size_t rowBytes = static_cast<size_t>(frameWidth) * 4u;
         std::memcpy(pixels.data() + destinationOffset, source.data() + sourceOffset, rowBytes);
     }
 
@@ -93,14 +99,14 @@ static void drawSoftwareFrame(GLfloat width, GLfloat height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, textureWidth, textureHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(textureWidth), static_cast<GLsizei>(textureHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 
     const GLfloat vertices[] = {0.0f, 0.0f, width, 0.0f, 0.0f, height, width, height};
     const GLfloat coordinates[] = {
-        0.0f, 1.0f,
-        static_cast<GLfloat>(frameWidth) / textureWidth, 1.0f,
-        0.0f, 1.0f - static_cast<GLfloat>(frameHeight) / textureHeight,
-        static_cast<GLfloat>(frameWidth) / textureWidth, 1.0f - static_cast<GLfloat>(frameHeight) / textureHeight
+        0.0f, 0.0f,
+        static_cast<GLfloat>(frameWidth) / textureWidth, 0.0f,
+        0.0f, static_cast<GLfloat>(frameHeight) / textureHeight,
+        static_cast<GLfloat>(frameWidth) / textureWidth, static_cast<GLfloat>(frameHeight) / textureHeight
     };
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
