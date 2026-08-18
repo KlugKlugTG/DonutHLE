@@ -94,26 +94,37 @@ static void drawSoftwareFrame(GLfloat width, GLfloat height) {
 
     static GLuint texture = 0;
     if (texture == 0) glGenTextures(1, &texture);
+    glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_FOG);
+    glDisable(GL_ALPHA_TEST);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_NORMAL_ARRAY);
     glBindTexture(GL_TEXTURE_2D, texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(textureWidth), static_cast<GLsizei>(textureHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 
     const GLfloat vertices[] = {0.0f, 0.0f, width, 0.0f, 0.0f, height, width, height};
-    const GLfloat coordinates[] = {
-        0.0f, 0.0f,
-        static_cast<GLfloat>(frameWidth) / textureWidth, 0.0f,
-        0.0f, static_cast<GLfloat>(frameHeight) / textureHeight,
-        static_cast<GLfloat>(frameWidth) / textureWidth, static_cast<GLfloat>(frameHeight) / textureHeight
-    };
+    const GLfloat u = static_cast<GLfloat>(frameWidth) / textureWidth;
+    const GLfloat v = static_cast<GLfloat>(frameHeight) / textureHeight;
+    const GLfloat coordinates[] = {0.0f, 1.0f, u, 1.0f, 0.0f, 1.0f - v, u, 1.0f - v};
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     glEnable(GL_TEXTURE_2D);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
