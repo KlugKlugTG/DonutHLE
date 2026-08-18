@@ -15,6 +15,9 @@ pub mod resources;
 pub mod runtime;
 pub mod vm;
 
+/// Single host graphics entry point: GLES 1.x is always adapted to the GL2-style renderer.
+pub type HostGles = gles1_on_gl2::Gles1OnGl2;
+
 pub const API_LEVEL: u32 = 4;
 pub const RELEASE: &str = "Donut";
 

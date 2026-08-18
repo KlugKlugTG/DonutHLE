@@ -153,12 +153,38 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  windows:
+    name: Windows binary
+    runs-on: windows-latest
+    needs: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build release binary
+        run: cargo build --release
+      - name: Package Windows artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/donuthle.exe dist/DonutHLE-windows-x86_64.exe
+          Get-FileHash dist/DonutHLE-windows-x86_64.exe -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)"
+          } | Set-Content dist/SHA256SUMS.txt
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DonutHLE-Windows-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+
   release:
     name: Publish GitHub release
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.publish_release == true)
-    needs: [android, linux]
+    needs: [android, linux, windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download Android artifact
@@ -170,6 +196,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: DonutHLE-Linux-${{ github.sha }}
+          path: release
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: DonutHLE-Windows-${{ github.sha }}
           path: release
       - name: Publish release
         uses: softprops/action-gh-release@v2

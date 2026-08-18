@@ -36,7 +36,7 @@ The project follows the same broad idea as [touchHLE](https://github.com/touchHL
 
 - Android builds for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
 - A UI-only fallback when the Rust library is not linked into a local Android build.
-- GitHub Actions for formatting, tests, Clippy, Linux builds, Android debug/release APKs, checksums, and optional release publishing.
+- GitHub Actions for formatting, tests, Clippy, Linux and Windows builds, Android debug/release APKs, checksums, and optional release publishing.
 - The repository intentionally contains no proprietary APKs, Android system images, signing keys, or copyrighted game assets.
 
 ## Current state of Slice Ice support
@@ -116,10 +116,10 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## GitHub Actions and releases
 
-The repository includes a `Build DonutHLE` workflow:
+The repository includes a `Build DonutHLE` workflow. The desktop runtime always constructs `HostGles`, whose implementation routes GLES 1.x calls through the GLES1-on-GL2 adapter; there is no separate raw-GLES path for the PC build.
 
-- pushes and pull requests run the repository checks; pushes and pull requests targeting `main` also run the full Linux and Android build workflow;
-- Android debug/release APKs and a Linux x86_64 binary are uploaded as artifacts;
+- pushes and pull requests run the repository checks; pushes and pull requests targeting `main` also run the full Linux, Windows, and Android build workflow;
+- Android debug/release APKs, a Linux x86_64 binary, and a Windows x86_64 `.exe` are uploaded as artifacts;
 - each packaged artifact includes a checksum file;
 - pushing a tag such as `v0.1.1` publishes a GitHub release automatically;
 - a manual workflow run can publish a release when `publish_release` is enabled.
