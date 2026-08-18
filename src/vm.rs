@@ -327,6 +327,8 @@ impl<'a> Vm<'a> {
                     || method.name == "dispose"
                     || method.name == "pause"
                     || method.name == "resume"
+                    || (method.class_name == "Lcom/hyperkani/common/BaseObject;"
+                        && method.name == "render")
                     || method.name == "playSoundsFromThisFrame")
             {
                 return Ok(Value::Void);
@@ -1551,8 +1553,34 @@ impl<'a> Vm<'a> {
                             }
                         };
                         let existing = match self.heap_object(object) {
-                            Some(HeapObject::Instance { fields, .. }) => {
-                                fields.get(&field_key).cloned()
+                            Some(HeapObject::Instance {
+                                class_name: object_class,
+                                fields,
+                            }) => {
+                                let is_main_layer = self
+                                    .dex
+                                    .field_id(field_index as usize)
+                                    .is_some_and(|field| field.name == "mMainLayer");
+                                if is_main_layer {
+                                    fields.get(&field_key).cloned().or_else(|| {
+                                        fields
+                                            .iter()
+                                            .find(|(key, _)| {
+                                                key.starts_with(&format!(
+                                                    "{object_class}->mMainLayer:"
+                                                ))
+                                            })
+                                            .or_else(|| {
+                                                fields.iter().find(|(key, _)| {
+                                                    **key != field_key
+                                                        && key.contains("->mMainLayer:")
+                                                })
+                                            })
+                                            .map(|(_, value)| value.clone())
+                                    })
+                                } else {
+                                    fields.get(&field_key).cloned()
+                                }
                             }
                             Some(HeapObject::Class(class_name)) => {
                                 let class_name = class_name.clone();
@@ -1773,6 +1801,9 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
+        if class_name == "Ljava/util/Collections;" && method_name == "sort" {
+            return Ok(Value::Void);
+        }
         if class_name == "Ljava/lang/Thread;" && method_name == "sleep" {
             let milliseconds = int_arg(args, 0)?;
             if milliseconds >= 0 {
