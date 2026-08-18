@@ -324,7 +324,7 @@ impl GlesContext {
                 TEXTURE_MAG_FILTER => texture.mag_filter = value,
                 TEXTURE_WRAP_S => texture.wrap_s = value,
                 TEXTURE_WRAP_T => texture.wrap_t = value,
-                _ => return,
+                _ => (),
             }
         }
     }
@@ -569,6 +569,7 @@ impl GlesContext {
         self.draw_pixel_quad(x, y, width, height, 0.0, 0.0, 1.0, 1.0, color);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_pixel_quad(
         &mut self,
         x: f32,
