@@ -261,6 +261,25 @@ impl<'a> Vm<'a> {
 
     fn instance_method_index(&self, object: ObjectId, referenced_index: usize) -> Option<usize> {
         let referenced = self.dex.method_id(referenced_index)?;
+        if referenced.class_name == "Lcom/hyperkani/common/BaseObject;"
+            && referenced.name == "render"
+        {
+            if let Some(HeapObject::Instance { class_name, .. }) = self.heap_object(object) {
+                if class_name == "Lcom/hyperkani/common/GameObjectSprite;" {
+                    return self
+                        .dex
+                        .methods
+                        .iter()
+                        .enumerate()
+                        .find(|(_, method)| {
+                            method.class_name == *class_name
+                                && method.name == "render"
+                                && method.prototype == referenced.prototype
+                        })
+                        .map(|(index, _)| index);
+                }
+            }
+        }
         let class_name = match self.heap_object(object)? {
             HeapObject::Instance { class_name, .. } => class_name,
             _ => return None,
@@ -279,6 +298,28 @@ impl<'a> Vm<'a> {
             current = self.dex.find_class(current)?.super_class.as_deref()?;
         }
         None
+    }
+
+    fn is_assignable(&self, actual: &str, expected: &str) -> bool {
+        if actual == expected {
+            return true;
+        }
+        let mut current = actual;
+        let mut visited = std::collections::BTreeSet::new();
+        while visited.insert(current.to_owned()) {
+            let Some(super_class) = self
+                .dex
+                .find_class(current)
+                .and_then(|class| class.super_class.as_deref())
+            else {
+                return false;
+            };
+            if super_class == expected {
+                return true;
+            }
+            current = super_class;
+        }
+        false
     }
 
     fn ensure_class_initialized(&mut self, class_name: &str) -> Result<(), VmError> {
@@ -327,8 +368,6 @@ impl<'a> Vm<'a> {
                     || method.name == "dispose"
                     || method.name == "pause"
                     || method.name == "resume"
-                    || (method.class_name == "Lcom/hyperkani/common/BaseObject;"
-                        && method.name == "render")
                     || method.name == "playSoundsFromThisFrame")
             {
                 return Ok(Value::Void);
@@ -884,31 +923,23 @@ impl<'a> Vm<'a> {
                 }
                 0x1f => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let type_index = code_word(code, pc + 1, pc, opcode)? as usize;
-                    let class_name = self
-                        .dex
-                        .types
-                        .get(type_index)
-                        .cloned()
-                        .ok_or_else(|| self.error(pc, opcode, "class type index is invalid"))?;
-                    let object = self.alloc(HeapObject::Class(class_name));
-                    set_register(
-                        &mut registers,
-                        register,
-                        Value::Object(object),
-                        self,
-                        pc,
-                        opcode,
-                    )?;
+                    let _type_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let _value = get_register(&registers, register, pc, opcode)?;
                     pc += 2;
                 }
                 0x20 => {
                     let dest = ((instruction >> 8) & 0xff) as usize;
                     let source = ((instruction >> 12) & 0x0f) as usize;
+                    let type_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let expected = self.dex.types.get(type_index).map(String::as_str);
                     let result = match get_register(&registers, source, pc, opcode)? {
-                        Value::Object(id) => {
-                            matches!(self.heap_object(id), Some(HeapObject::Instance { .. }))
-                        }
+                        Value::Object(id) => match (self.heap_object(id), expected) {
+                            (Some(HeapObject::Instance { class_name, .. }), Some(expected)) => {
+                                self.is_assignable(class_name, expected)
+                            }
+                            (Some(HeapObject::Instance { .. }), None) => true,
+                            _ => false,
+                        },
                         Value::Null => false,
                         _ => false,
                     };
@@ -1579,7 +1610,15 @@ impl<'a> Vm<'a> {
                                             .map(|(_, value)| value.clone())
                                     })
                                 } else {
-                                    fields.get(&field_key).cloned()
+                                    fields.get(&field_key).cloned().or_else(|| {
+                                        self.dex.field_id(field_index as usize).and_then(|field| {
+                                            let suffix =
+                                                format!("->{}:{}", field.name, field.type_name);
+                                            fields.iter().find_map(|(key, value)| {
+                                                key.ends_with(&suffix).then(|| value.clone())
+                                            })
+                                        })
+                                    })
                                 }
                             }
                             Some(HeapObject::Class(class_name)) => {
@@ -2804,6 +2843,50 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setColor")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setBlendFunction")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "flush") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "draw") => {
+                let sprite = object_arg(args, 0)?;
+                let (x, y, width, height) = self.draw_bounds(&[Value::Object(sprite)]);
+                let texture_path = self
+                    .object_field_string(sprite, "path")
+                    .or_else(|| self.object_field_string(sprite, "asset_path"));
+                let rendered = texture_path.and_then(|path| {
+                    let image = self.framework.assets.as_ref()?.image(&path).ok()?;
+                    let texture = self.framework.gles.upload_texture(
+                        image.width,
+                        image.height,
+                        &image.pixels,
+                    );
+                    self.framework.gles.draw_textured_quad_pixels(
+                        x,
+                        y,
+                        width,
+                        height,
+                        texture,
+                        Rgba8 {
+                            r: 255,
+                            g: 255,
+                            b: 255,
+                            a: 255,
+                        },
+                    );
+                    Some(())
+                });
+                if rendered.is_none() {
+                    self.framework.gles.draw_quad_pixels(
+                        x,
+                        y,
+                        width,
+                        height,
+                        Rgba8 {
+                            r: 220,
+                            g: 235,
+                            b: 240,
+                            a: 255,
+                        },
+                    );
+                }
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "draw")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "render")
             | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => {
