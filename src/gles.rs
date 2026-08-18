@@ -623,6 +623,7 @@ impl GlesContext {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rasterize_pixel_quad(
         &mut self,
         x: f32,
@@ -804,40 +805,6 @@ impl GlesContext {
         }
     }
 
-    fn rasterize_pixel_triangle(&mut self, a: Vertex, b: Vertex, c: Vertex) {
-        let min_x = a.x.min(b.x).min(c.x).floor().max(0.0) as i32;
-        let max_x =
-            a.x.max(b.x)
-                .max(c.x)
-                .ceil()
-                .min(self.framebuffer.width() as f32) as i32;
-        let min_y = a.y.min(b.y).min(c.y).floor().max(0.0) as i32;
-        let max_y =
-            a.y.max(b.y)
-                .max(c.y)
-                .ceil()
-                .min(self.framebuffer.height() as f32) as i32;
-        let area = pixel_edge(a.x, a.y, b.x, b.y, c.x, c.y);
-        if min_x >= max_x || min_y >= max_y || area.abs() < f32::EPSILON {
-            return;
-        }
-        for y in min_y..max_y {
-            for x in min_x..max_x {
-                let sample_x = x as f32 + 0.5;
-                let sample_y = y as f32 + 0.5;
-                let wa = pixel_edge(b.x, b.y, c.x, c.y, sample_x, sample_y) / area;
-                let wb = pixel_edge(c.x, c.y, a.x, a.y, sample_x, sample_y) / area;
-                let wc = pixel_edge(a.x, a.y, b.x, b.y, sample_x, sample_y) / area;
-                if (wa >= 0.0 && wb >= 0.0 && wc >= 0.0) || (wa <= 0.0 && wb <= 0.0 && wc <= 0.0) {
-                    let color = barycentric_color(a.color, b.color, c.color, wa, wb, wc);
-                    let u = a.u * wa + b.u * wb + c.u * wc;
-                    let v = a.v * wa + b.v * wb + c.v * wc;
-                    self.write_fragment_2d(x, y, color, u, v);
-                }
-            }
-        }
-    }
-
     fn project(&self, vertex: Vertex) -> ProjectedVertex {
         let model = multiply(&self.projection_matrix, &self.modelview_matrix);
         let clip = transform(&model, vertex.x, vertex.y, vertex.z, 1.0);
@@ -971,14 +938,11 @@ impl GlesContext {
         }
     }
 
-    fn write_fragment_2d(&mut self, x: i32, y: i32, source: Rgba8, u: f32, v: f32) {
-        self.write_fragment_internal(x, y, 0.0, source, u, v, false);
-    }
-
     fn write_fragment(&mut self, x: i32, y: i32, depth: f32, source: Rgba8, u: f32, v: f32) {
         self.write_fragment_internal(x, y, depth, source, u, v, true);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_fragment_internal(
         &mut self,
         x: i32,
@@ -1312,10 +1276,6 @@ fn blend_factor(
 }
 
 fn edge(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i32 {
-    (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
-}
-
-fn pixel_edge(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> f32 {
     (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
 }
 

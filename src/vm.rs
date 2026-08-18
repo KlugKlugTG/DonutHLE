@@ -2995,6 +2995,7 @@ impl<'a> Vm<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_asset(
         &mut self,
         path: &str,
