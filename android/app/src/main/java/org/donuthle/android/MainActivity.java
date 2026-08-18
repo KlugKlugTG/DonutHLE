@@ -139,22 +139,23 @@ public final class MainActivity extends Activity {
 
     private void showGameScreen(File apk, String report) {
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(background);
+        root.setBackgroundColor(Color.BLACK);
         gameSurface = new Gles1SurfaceView(this, this);
         root.addView(gameSurface, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout overlay = column();
-        overlay.setPadding(dp(18), dp(18), dp(18), dp(18));
-        overlay.setBackgroundColor(Color.argb(218, 14, 18, 22));
-        TextView title = label("RUNNING  •  GLES 1.1 NATIVE", 15, teal);
+        LinearLayout overlay = new LinearLayout(this);
+        overlay.setOrientation(LinearLayout.HORIZONTAL);
+        overlay.setGravity(Gravity.CENTER_VERTICAL);
+        overlay.setPadding(dp(10), dp(6), dp(10), dp(6));
+        overlay.setBackgroundColor(Color.argb(176, 14, 18, 22));
+        TextView title = label("SLICE ICE  •  GLES 1.1", 13, teal);
         title.setTypeface(null, 1);
-        overlay.addView(title);
-        overlay.addView(label(apk.getName(), 14, text), margins(0, 5, 0, 8));
-        TextView status = label(report, 11, muted);
-        status.setMaxLines(6);
-        status.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        overlay.addView(status, margins(0, 0, 0, 12));
-        overlay.addView(button("‹  BACK TO LIBRARY", false, v -> showLibrary()));
-        root.addView(overlay, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        overlay.addView(title, new LinearLayout.LayoutParams(0, -2, 1.0f));
+        Button back = button("BACK", false, v -> showLibrary());
+        back.setMinHeight(dp(40));
+        overlay.addView(back, new LinearLayout.LayoutParams(-2, -2));
+        FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
+        root.addView(overlay, overlayParams);
+        StorageLayout.appendLog(this, "GAME_SURFACE_STARTED: " + apk.getName() + "\n" + report);
         setContentView(root);
     }
 

@@ -358,7 +358,15 @@ impl<'a> Vm<'a> {
                 return Ok(Value::Void);
             }
             if method.class_name.starts_with("Lcom/badlogic/gdx/") {
-                if method.name == "<init>" || method.name == "<clinit>" {
+                if method.name == "<clinit>"
+                    || (method.name == "<init>"
+                        && !matches!(
+                            method.class_name.as_str(),
+                            "Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;"
+                                | "Lcom/badlogic/gdx/graphics/Texture;"
+                                | "Lcom/badlogic/gdx/graphics/g2d/Sprite;"
+                        ))
+                {
                     return Ok(Value::Void);
                 }
                 return self.dispatch_gdx(&method.class_name, &method.name, &args);
@@ -2587,17 +2595,62 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "setRegion") => {
                 FrameworkResult::Void
             }
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "<init>") => {
+                let sprite = object_arg(args, 0)?;
+                if let Some(drawable) = args.get(1).and_then(object_id) {
+                    for field in [
+                        "asset_path",
+                        "region_x",
+                        "region_y",
+                        "region_width",
+                        "region_height",
+                    ] {
+                        if let Some(value) =
+                            self.heap_object(drawable).and_then(|object| match object {
+                                HeapObject::Instance { fields, .. } => fields.get(field).cloned(),
+                                _ => None,
+                            })
+                        {
+                            self.set_object_field(sprite, field, value);
+                        }
+                    }
+                    if let Some(width) = self.object_field_float(drawable, "region_width") {
+                        self.set_object_field(sprite, "width", Value::Float(width));
+                    }
+                    if let Some(height) = self.object_field_float(drawable, "region_height") {
+                        self.set_object_field(sprite, "height", Value::Float(height));
+                    }
+                }
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setOrigin")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setPosition")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRotation")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setScale")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setSize")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setBounds")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setColor")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRegion")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setTexture")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "translate")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "rotate") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setPosition") => {
+                let sprite = object_arg(args, 0)?;
+                self.set_object_field(sprite, "x", Value::Float(float_arg(args, 1)?));
+                self.set_object_field(sprite, "y", Value::Float(float_arg(args, 2)?));
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setSize") => {
+                let sprite = object_arg(args, 0)?;
+                self.set_object_field(sprite, "width", Value::Float(float_arg(args, 1)?));
+                self.set_object_field(sprite, "height", Value::Float(float_arg(args, 2)?));
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setBounds") => {
+                let sprite = object_arg(args, 0)?;
+                self.set_object_field(sprite, "x", Value::Float(float_arg(args, 1)?));
+                self.set_object_field(sprite, "y", Value::Float(float_arg(args, 2)?));
+                self.set_object_field(sprite, "width", Value::Float(float_arg(args, 3)?));
+                self.set_object_field(sprite, "height", Value::Float(float_arg(args, 4)?));
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getX")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getY")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getWidth")
@@ -2605,7 +2658,15 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getRotation")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleX")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getScaleY") => {
-                FrameworkResult::Float(0.0)
+                let sprite = object_arg(args, 0)?;
+                let field = match method_name {
+                    "getX" => "x",
+                    "getY" => "y",
+                    "getWidth" => "width",
+                    "getHeight" => "height",
+                    _ => "rotation",
+                };
+                FrameworkResult::Float(self.object_field_float(sprite, field).unwrap_or(0.0))
             }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "getColor") => {
                 FrameworkResult::Object(self.alloc_instance("Lcom/badlogic/gdx/graphics/Color;"))
@@ -2985,6 +3046,26 @@ impl<'a> Vm<'a> {
             Some(Value::String(value)) => Ok(value.clone()),
             Some(Value::Object(id)) => match self.heap_object(*id) {
                 Some(HeapObject::String(value)) => Ok(value.clone()),
+                Some(HeapObject::Instance { fields, .. }) => match fields.get("path") {
+                    Some(Value::String(value)) => Ok(value.clone()),
+                    Some(Value::Object(path)) => match self.heap_object(*path) {
+                        Some(HeapObject::String(value)) => Ok(value.clone()),
+                        _ => Err(self.error(
+                            0,
+                            0,
+                            format!(
+                                "framework argument {index} is object {id}, expected a path string"
+                            ),
+                        )),
+                    },
+                    _ => Err(self.error(
+                        0,
+                        0,
+                        format!(
+                            "framework argument {index} is object {id}, expected a path string"
+                        ),
+                    )),
+                },
                 _ => Err(self.error(
                     0,
                     0,
@@ -3063,10 +3144,12 @@ impl<'a> Vm<'a> {
         let receiver = args.first().and_then(object_id);
         let x = receiver
             .and_then(|id| self.object_field_float(id, "x"))
-            .unwrap_or_else(|| numeric_value(args.get(2)).unwrap_or(0.0));
+            .or_else(|| numeric_value(args.get(2)))
+            .unwrap_or(0.0);
         let y = receiver
             .and_then(|id| self.object_field_float(id, "y"))
-            .unwrap_or_else(|| numeric_value(args.get(3)).unwrap_or(0.0));
+            .or_else(|| numeric_value(args.get(3)))
+            .unwrap_or(0.0);
         let width = receiver
             .and_then(|id| self.object_field_float(id, "width"))
             .or_else(|| receiver.and_then(|id| self.object_field_float(id, "region_width")))
