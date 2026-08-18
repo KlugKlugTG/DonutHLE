@@ -83,9 +83,19 @@ impl AssetStore {
     }
 
     pub fn atlas_region(&self, atlas_path: &str, name: &str) -> Option<AtlasRegionInfo> {
+        let atlas_path = normalize(atlas_path);
         self.atlases
-            .get(&normalize(atlas_path))
+            .get(&atlas_path)
             .and_then(|regions| regions.get(name).cloned())
+            .or_else(|| {
+                if atlas_path.is_empty() {
+                    self.atlases
+                        .values()
+                        .find_map(|regions| regions.get(name).cloned())
+                } else {
+                    None
+                }
+            })
     }
 
     fn index_atlases(&mut self) {

@@ -74,17 +74,34 @@ static uint32_t nextPowerOfTwo(uint32_t value) {
     return result;
 }
 
-static void drawSoftwareFrame(GLfloat width, GLfloat height) {
+static void drawFallbackFrame(GLfloat width, GLfloat height) {
+    glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glClearColor(0.035f, 0.055f, 0.07f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    drawRect(width * 0.08f, height * 0.42f, width * 0.92f, height * 0.58f, 0.50f, 0.80f, 0.77f, 1.0f);
+}
+
+static bool drawSoftwareFrame(GLfloat width, GLfloat height) {
     const uint32_t frameWidth = donuthle_framebuffer_width();
     const uint32_t frameHeight = donuthle_framebuffer_height();
-    if (frameWidth == 0 || frameHeight == 0) return;
+    if (frameWidth == 0 || frameHeight == 0) return false;
 
     const uint32_t textureWidth = nextPowerOfTwo(frameWidth);
     const uint32_t textureHeight = nextPowerOfTwo(frameHeight);
     std::vector<uint8_t> pixels(static_cast<size_t>(textureWidth) * textureHeight * 4u, 0);
     const size_t sourceLength = static_cast<size_t>(frameWidth) * frameHeight * 4u;
     std::vector<uint8_t> source(sourceLength);
-    if (donuthle_framebuffer_copy(source.data(), source.size()) != source.size()) return;
+    if (donuthle_framebuffer_copy(source.data(), source.size()) != source.size()) return false;
     for (uint32_t row = 0; row < frameHeight; ++row) {
         const size_t sourceOffset = static_cast<size_t>(row) * frameWidth * 4u;
         const size_t destinationOffset = static_cast<size_t>(row) * textureWidth * 4u;
@@ -122,10 +139,6 @@ static void drawSoftwareFrame(GLfloat width, GLfloat height) {
     glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_BLEND);
     glEnable(GL_TEXTURE_2D);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     glEnableClientState(GL_VERTEX_ARRAY);
@@ -136,6 +149,7 @@ static void drawSoftwareFrame(GLfloat width, GLfloat height) {
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
     glDisable(GL_TEXTURE_2D);
+    return true;
 }
 #endif
 
@@ -170,7 +184,7 @@ Java_org_donuthle_android_MainActivity_nativeRenderFrame(JNIEnv*, jobject, jint 
     glDisable(GL_BLEND);
 #else
     donuthle_render_frame(static_cast<uint32_t>(safeWidth), static_cast<uint32_t>(safeHeight));
-    drawSoftwareFrame(safeWidth, safeHeight);
+    if (!drawSoftwareFrame(safeWidth, safeHeight)) drawFallbackFrame(safeWidth, safeHeight);
 #endif
     (void)frame;
 }
