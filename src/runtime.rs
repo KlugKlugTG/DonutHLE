@@ -10,7 +10,7 @@ use crate::{
     dalvik::{DexFile, DexHeader, ExecutionResult},
     framework::Framework,
     framework::{ActivityManager, Intent, Value},
-    gles::GlesContext,
+    gles1_on_gl2::Gles1OnGl2,
     manifest::AppManifest,
     resources::ResourceTable,
     vm::{ObjectId, Value as VmValue, Vm, VmConfig},
@@ -48,7 +48,7 @@ pub struct LaunchReport {
 pub struct Runtime {
     pub config: RuntimeConfig,
     pub activities: ActivityManager,
-    pub graphics: GlesContext,
+    pub graphics: Gles1OnGl2,
     pub framework: Framework,
     pub session: Option<RuntimeSession>,
 }
@@ -80,7 +80,7 @@ impl Default for Runtime {
     fn default() -> Self {
         let config = RuntimeConfig::default();
         Self {
-            graphics: GlesContext::new(config.screen),
+            graphics: Gles1OnGl2::new(config.screen),
             config,
             activities: ActivityManager::default(),
             framework: Framework::new(),

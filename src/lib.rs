@@ -7,6 +7,7 @@ pub mod compat;
 pub mod dalvik;
 pub mod framework;
 pub mod gles;
+pub mod gles1_on_gl2;
 pub mod gles_native;
 pub mod input;
 pub mod manifest;

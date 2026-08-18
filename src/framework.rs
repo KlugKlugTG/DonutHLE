@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::assets::AssetStore;
-use crate::gles::GlesContext;
+use crate::gles1_on_gl2::Gles1OnGl2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -341,7 +341,7 @@ pub struct Framework {
     pub surface_events: Vec<String>,
     pub audio_writes: usize,
     pub system_services: HashMap<String, u32>,
-    pub gles: GlesContext,
+    pub gles: Gles1OnGl2,
     pub gdx_listener: Option<u32>,
     pub gdx_view: Option<u32>,
     pub gdx_graphics: Option<u32>,
@@ -357,7 +357,7 @@ impl Framework {
     pub fn new() -> Self {
         Self {
             next_handle: 1,
-            gles: GlesContext::default(),
+            gles: Gles1OnGl2::default(),
             assets: Some(AssetStore::default()),
             ..Self::default()
         }

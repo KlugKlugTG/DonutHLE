@@ -24,6 +24,7 @@ The project follows the same broad idea as [touchHLE](https://github.com/touchHL
 ### Rendering and libGDX path
 
 - Software framebuffer with viewport, scissor, depth-buffer, matrix, blending, and clear-state support.
+- A portable GLES 1.x compatibility layer modeled on HyperHLE's GLES1-on-GL2 design: fixed-point array conversion, client-array staging, matrix stacks, OES matrix-palette CPU skinning, and indexed/array draw forwarding into the host GL2-style renderer.
 - GLES 1.x-style command recording and rasterization for points, lines, triangle primitives, indexed draws, client arrays, and common state calls.
 - PNG and JPEG asset decoding from APK files, including normalized `assets/` paths.
 - libGDX-style texture, `TextureRegion`, `TextureAtlas`, and atlas-region lookup support.

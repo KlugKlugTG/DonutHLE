@@ -15,7 +15,14 @@ Dalvik 035 interpreter <-> heap / class registry
 Android 1.6 API shims
   Activity + Context + View + Looper + services
         |
-        +--> framebuffer / GLES 1.x
+        +--> GLES 1.x API
+                |
+                v
+          GLES1-on-GL2 adapter
+          fixed-point conversion / client arrays / palette skinning
+                |
+                v
+          software GL2-style rasterizer + framebuffer
         +--> input
         +--> audio
         +--> host filesystem and network policy
