@@ -14,6 +14,14 @@ const MODELVIEW: u32 = 0x1700;
 const PROJECTION: u32 = 0x1701;
 const TEXTURE: u32 = 0x1702;
 const TEXTURE_2D: u32 = 0x0DE1;
+const TEXTURE_MIN_FILTER: u32 = 0x2801;
+const TEXTURE_MAG_FILTER: u32 = 0x2800;
+const TEXTURE_WRAP_S: u32 = 0x2802;
+const TEXTURE_WRAP_T: u32 = 0x2803;
+const NEAREST: u32 = 0x2600;
+const LINEAR: u32 = 0x2601;
+const CLAMP_TO_EDGE: u32 = 0x812F;
+const REPEAT: u32 = 0x2901;
 const BLEND: u32 = 0x0BE2;
 const DEPTH_TEST: u32 = 0x0B71;
 const SCISSOR_TEST: u32 = 0x0C11;
@@ -107,6 +115,10 @@ struct TextureImage {
     width: u32,
     height: u32,
     pixels: Vec<Rgba8>,
+    min_filter: u32,
+    mag_filter: u32,
+    wrap_s: u32,
+    wrap_t: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +147,7 @@ pub struct GlesContext {
     enabled: HashMap<u32, bool>,
     blend_src: u32,
     blend_dst: u32,
+    depth_mask_enabled: bool,
     bound_texture: u32,
     next_texture: u32,
     textures: HashMap<u32, TextureImage>,
@@ -180,6 +193,7 @@ impl GlesContext {
             enabled: HashMap::new(),
             blend_src: ONE,
             blend_dst: ZERO,
+            depth_mask_enabled: true,
             bound_texture: 0,
             next_texture: 1,
             textures: HashMap::new(),
@@ -272,12 +286,21 @@ impl GlesContext {
         for (destination, source) in data.iter_mut().zip(pixels.iter().copied()) {
             *destination = source;
         }
+        let sampler = self
+            .textures
+            .get(&self.bound_texture)
+            .cloned()
+            .unwrap_or_else(white_texture);
         self.textures.insert(
             self.bound_texture,
             TextureImage {
                 width,
                 height,
                 pixels: data,
+                min_filter: sampler.min_filter,
+                mag_filter: sampler.mag_filter,
+                wrap_s: sampler.wrap_s,
+                wrap_t: sampler.wrap_t,
             },
         );
         self.commands
@@ -289,6 +312,25 @@ impl GlesContext {
         self.bind_texture(TEXTURE_2D, texture);
         self.tex_image_2d(width, height, pixels);
         texture
+    }
+
+    pub fn texture_parameter(&mut self, target: u32, pname: u32, value: u32) {
+        if target != TEXTURE_2D || self.bound_texture == 0 {
+            return;
+        }
+        if let Some(texture) = self.textures.get_mut(&self.bound_texture) {
+            match pname {
+                TEXTURE_MIN_FILTER => texture.min_filter = value,
+                TEXTURE_MAG_FILTER => texture.mag_filter = value,
+                TEXTURE_WRAP_S => texture.wrap_s = value,
+                TEXTURE_WRAP_T => texture.wrap_t = value,
+                _ => return,
+            }
+        }
+    }
+
+    pub fn depth_mask(&mut self, enabled: bool) {
+        self.depth_mask_enabled = enabled;
     }
 
     pub fn draw_textured_quad_pixels(
@@ -882,7 +924,9 @@ impl GlesContext {
             if depth >= self.depth_buffer[index] {
                 return;
             }
-            self.depth_buffer[index] = depth;
+            if self.depth_mask_enabled {
+                self.depth_buffer[index] = depth;
+            }
         }
         let textured = self.enabled.get(&TEXTURE_2D).copied().unwrap_or(false);
         let source = if textured {
@@ -923,12 +967,13 @@ impl GlesContext {
                 a: 255,
             };
         }
-        let u = u.rem_euclid(1.0);
-        let v = v.rem_euclid(1.0);
-        let x = (u * texture.width as f32).floor() as u32;
-        let y = (v * texture.height as f32).floor() as u32;
-        texture.pixels
-            [(y.min(texture.height - 1) * texture.width + x.min(texture.width - 1)) as usize]
+        let u = wrap_coordinate(u, texture.wrap_s);
+        let v = wrap_coordinate(v, texture.wrap_t);
+        if texture.mag_filter == LINEAR {
+            sample_linear(texture, u, v)
+        } else {
+            sample_nearest(texture, u, v)
+        }
     }
 }
 
@@ -952,6 +997,56 @@ fn white_texture() -> TextureImage {
             b: 255,
             a: 255,
         }],
+        min_filter: NEAREST,
+        mag_filter: NEAREST,
+        wrap_s: REPEAT,
+        wrap_t: REPEAT,
+    }
+}
+
+fn wrap_coordinate(value: f32, mode: u32) -> f32 {
+    if mode == CLAMP_TO_EDGE {
+        value.clamp(0.0, 1.0)
+    } else {
+        value.rem_euclid(1.0)
+    }
+}
+
+fn sample_nearest(texture: &TextureImage, u: f32, v: f32) -> Rgba8 {
+    let x = (u * texture.width as f32).floor() as u32;
+    let y = (v * texture.height as f32).floor() as u32;
+    texture.pixels[(y.min(texture.height - 1) * texture.width + x.min(texture.width - 1)) as usize]
+}
+
+fn sample_linear(texture: &TextureImage, u: f32, v: f32) -> Rgba8 {
+    let x = u * texture.width as f32 - 0.5;
+    let y = v * texture.height as f32 - 0.5;
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let tx = x - x.floor();
+    let ty = y - y.floor();
+    let sample = |ix: i32, iy: i32| {
+        let ix = ix.clamp(0, texture.width as i32 - 1) as u32;
+        let iy = iy.clamp(0, texture.height as i32 - 1) as u32;
+        texture.pixels[(iy * texture.width + ix) as usize]
+    };
+    let a = sample(x0, y0);
+    let b = sample(x0 + 1, y0);
+    let c = sample(x0, y0 + 1);
+    let d = sample(x0 + 1, y0 + 1);
+    let mix = |a: u8, b: u8, c: u8, d: u8| {
+        (a as f32 * (1.0 - tx) * (1.0 - ty)
+            + b as f32 * tx * (1.0 - ty)
+            + c as f32 * (1.0 - tx) * ty
+            + d as f32 * tx * ty)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Rgba8 {
+        r: mix(a.r, b.r, c.r, d.r),
+        g: mix(a.g, b.g, c.g, d.g),
+        b: mix(a.b, b.b, c.b, d.b),
+        a: mix(a.a, b.a, c.a, d.a),
     }
 }
 
