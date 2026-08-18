@@ -84,6 +84,7 @@ pub struct Vm<'a> {
     executed_steps: usize,
     frame_mode: bool,
     frame_aborted: bool,
+    frame_steps: usize,
 }
 
 impl<'a> Vm<'a> {
@@ -99,6 +100,7 @@ impl<'a> Vm<'a> {
             executed_steps: 0,
             frame_mode: false,
             frame_aborted: false,
+            frame_steps: 0,
         }
     }
 
@@ -237,6 +239,8 @@ impl<'a> Vm<'a> {
             })?;
         let args = vec![Value::Object(object)];
         self.frame_mode = true;
+        self.frame_steps = 0;
+        self.frame_aborted = false;
         let result = self.call_method(method_index, args);
         self.frame_mode = false;
         result
@@ -444,9 +448,11 @@ impl<'a> Vm<'a> {
         let mut pending_result = Value::Void;
         while pc < code.instructions.len() {
             self.executed_steps += 1;
-            if self.frame_mode && self.executed_steps > self.config.max_steps {
-                self.frame_aborted = true;
-                return Ok(Value::Void);
+            if self.frame_mode {
+                self.frame_steps += 1;
+                if self.frame_steps > self.config.max_steps {
+                    return Ok(Value::Void);
+                }
             }
             if !self.frame_mode && self.executed_steps > self.config.max_steps {
                 return Err(self.error(pc, 0, "instruction limit exceeded"));
@@ -1465,9 +1471,10 @@ impl<'a> Vm<'a> {
                     let take = match opcode {
                         0x38 => zero,
                         0x39 => !zero,
-                        0x3a => zero,
-                        0x3b => !zero,
-                        0x3c => zero,
+                        0x3a => as_int(value.clone(), pc, opcode)? < 0,
+                        0x3b => as_int(value.clone(), pc, opcode)? >= 0,
+                        0x3c => as_int(value.clone(), pc, opcode)? > 0,
+                        0x3d => as_int(value.clone(), pc, opcode)? <= 0,
                         _ => !zero,
                     };
                     if take {
@@ -1584,6 +1591,16 @@ impl<'a> Vm<'a> {
                                 fields.insert(field_key, Value::Object(layer));
                             }
                             Value::Object(layer)
+                        } else if matches!(
+                            self.dex.field_id(field_index as usize),
+                            Some(field) if matches!(
+                                field.type_name.as_str(),
+                                "Ljava/util/ArrayList;"
+                            )
+                        ) {
+                            let collection = self.alloc(HeapObject::Collection(Vec::new()));
+                            self.set_object_field(object, &field_key, Value::Object(collection));
+                            Value::Object(collection)
                         } else {
                             self.dex
                                 .field_id(field_index as usize)
