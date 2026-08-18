@@ -320,50 +320,7 @@ impl GlesContext {
         let previous = self.bound_texture;
         self.bind_texture(TEXTURE_2D, texture);
         self.enable(TEXTURE_2D);
-        let (_, _, viewport_width, viewport_height) = self.viewport;
-        if viewport_width != 0 && viewport_height != 0 {
-            let left = (x / viewport_width as f32) * 2.0 - 1.0;
-            let right = ((x + width) / viewport_width as f32) * 2.0 - 1.0;
-            let top = 1.0 - (y / viewport_height as f32) * 2.0;
-            let bottom = 1.0 - ((y + height) / viewport_height as f32) * 2.0;
-            self.draw(
-                Primitive::TriangleStrip,
-                &[
-                    Vertex {
-                        x: left,
-                        y: top,
-                        z: 0.0,
-                        u: u0,
-                        v: v0,
-                        color,
-                    },
-                    Vertex {
-                        x: right,
-                        y: top,
-                        z: 0.0,
-                        u: u1,
-                        v: v0,
-                        color,
-                    },
-                    Vertex {
-                        x: right,
-                        y: bottom,
-                        z: 0.0,
-                        u: u1,
-                        v: v1,
-                        color,
-                    },
-                    Vertex {
-                        x: left,
-                        y: bottom,
-                        z: 0.0,
-                        u: u0,
-                        v: v1,
-                        color,
-                    },
-                ],
-            );
-        }
+        self.draw_pixel_quad(x, y, width, height, u0, v0, u1, v1, color);
         self.bind_texture(TEXTURE_2D, previous);
     }
 
@@ -567,51 +524,61 @@ impl GlesContext {
     }
 
     pub fn draw_quad_pixels(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgba8) {
-        let (_, _, viewport_width, viewport_height) = self.viewport;
-        if viewport_width == 0 || viewport_height == 0 {
-            return;
-        }
-        let left = (x / viewport_width as f32) * 2.0 - 1.0;
-        let right = ((x + width) / viewport_width as f32) * 2.0 - 1.0;
-        let top = 1.0 - (y / viewport_height as f32) * 2.0;
-        let bottom = 1.0 - ((y + height) / viewport_height as f32) * 2.0;
-        self.draw(
-            Primitive::TriangleStrip,
-            &[
-                Vertex {
-                    x: left,
-                    y: top,
-                    z: 0.0,
-                    u: 0.0,
-                    v: 0.0,
-                    color,
-                },
-                Vertex {
-                    x: right,
-                    y: top,
-                    z: 0.0,
-                    u: 1.0,
-                    v: 0.0,
-                    color,
-                },
-                Vertex {
-                    x: right,
-                    y: bottom,
-                    z: 0.0,
-                    u: 1.0,
-                    v: 1.0,
-                    color,
-                },
-                Vertex {
-                    x: left,
-                    y: bottom,
-                    z: 0.0,
-                    u: 0.0,
-                    v: 1.0,
-                    color,
-                },
-            ],
-        );
+        self.draw_pixel_quad(x, y, width, height, 0.0, 0.0, 1.0, 1.0, color);
+    }
+
+    fn draw_pixel_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        color: Rgba8,
+    ) {
+        let vertices = [
+            Vertex {
+                x,
+                y,
+                z: 0.0,
+                u: u0,
+                v: v0,
+                color,
+            },
+            Vertex {
+                x: x + width,
+                y,
+                z: 0.0,
+                u: u1,
+                v: v0,
+                color,
+            },
+            Vertex {
+                x: x + width,
+                y: y + height,
+                z: 0.0,
+                u: u1,
+                v: v1,
+                color,
+            },
+            Vertex {
+                x,
+                y: y + height,
+                z: 0.0,
+                u: u0,
+                v: v1,
+                color,
+            },
+        ];
+        self.rasterize_pixel_triangle(vertices[0], vertices[1], vertices[2]);
+        self.rasterize_pixel_triangle(vertices[2], vertices[1], vertices[3]);
+        self.commands.push(GlesCommand::Draw {
+            primitive: Primitive::TriangleStrip,
+            vertices: vertices.to_vec(),
+        });
     }
 
     pub fn set_pixel(&mut self, x: u32, y: u32, color: Rgba8) -> bool {
@@ -760,6 +727,40 @@ impl GlesContext {
                     for pair in vertices[1..].windows(2) {
                         self.triangle(first, pair[0], pair[1]);
                     }
+                }
+            }
+        }
+    }
+
+    fn rasterize_pixel_triangle(&mut self, a: Vertex, b: Vertex, c: Vertex) {
+        let min_x = a.x.min(b.x).min(c.x).floor().max(0.0) as i32;
+        let max_x =
+            a.x.max(b.x)
+                .max(c.x)
+                .ceil()
+                .min(self.framebuffer.width() as f32) as i32;
+        let min_y = a.y.min(b.y).min(c.y).floor().max(0.0) as i32;
+        let max_y =
+            a.y.max(b.y)
+                .max(c.y)
+                .ceil()
+                .min(self.framebuffer.height() as f32) as i32;
+        let area = pixel_edge(a.x, a.y, b.x, b.y, c.x, c.y);
+        if min_x >= max_x || min_y >= max_y || area.abs() < f32::EPSILON {
+            return;
+        }
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                let sample_x = x as f32 + 0.5;
+                let sample_y = y as f32 + 0.5;
+                let wa = pixel_edge(b.x, b.y, c.x, c.y, sample_x, sample_y) / area;
+                let wb = pixel_edge(c.x, c.y, a.x, a.y, sample_x, sample_y) / area;
+                let wc = pixel_edge(a.x, a.y, b.x, b.y, sample_x, sample_y) / area;
+                if (wa >= 0.0 && wb >= 0.0 && wc >= 0.0) || (wa <= 0.0 && wb <= 0.0 && wc <= 0.0) {
+                    let color = barycentric_color(a.color, b.color, c.color, wa, wb, wc);
+                    let u = a.u * wa + b.u * wb + c.u * wc;
+                    let v = a.v * wa + b.v * wb + c.v * wc;
+                    self.write_fragment(x, y, 0.0, color, u, v);
                 }
             }
         }
@@ -1130,6 +1131,10 @@ fn edge(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i32 {
     (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
 }
 
+fn pixel_edge(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> f32 {
+    (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1203,6 +1208,31 @@ mod tests {
             ],
         );
         assert_eq!(gles.framebuffer().pixel(1, 8).unwrap().r, 255);
+    }
+
+    #[test]
+    fn pixel_quads_ignore_the_current_projection_matrix() {
+        let mut gles = GlesContext::new(VirtualScreen {
+            width: 8,
+            height: 8,
+        });
+        gles.matrix_mode(PROJECTION);
+        gles.load_identity();
+        gles.translate(100.0, 100.0, 0.0);
+        gles.draw_quad_pixels(
+            1.0,
+            1.0,
+            2.0,
+            2.0,
+            Rgba8 {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 255,
+            },
+        );
+        assert_eq!(gles.framebuffer().pixel(1, 1).unwrap().r, 255);
+        assert_eq!(gles.framebuffer().pixel(7, 7).unwrap().r, 0);
     }
 
     #[test]
