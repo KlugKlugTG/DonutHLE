@@ -81,6 +81,15 @@ Run the current experimental launcher/runtime path:
 ```sh
 cargo run -- run path/to/game.apk
 ```
+### Windows artifact
+
+The Windows download is a console executable, not a graphical game window. Launch it from PowerShell or Command Prompt with an APK argument:
+
+```powershell
+DonutHLE-windows-x86_64.exe run path\\to\\game.apk
+```
+
+You can also drag an APK onto the executable. Running the `.exe` by itself only prints the command help; the desktop runtime does not yet create a native window or render a playable game surface.
 
 Only test APKs you own or are legally allowed to analyze. DonutHLE does not ship game files and does not bypass licensing, DRM, signature checks, or online services.
 

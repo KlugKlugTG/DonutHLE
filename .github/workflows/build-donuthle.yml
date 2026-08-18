@@ -163,6 +163,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build release binary
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release
       - name: Package Windows artifact
         shell: pwsh
