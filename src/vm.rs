@@ -2517,6 +2517,37 @@ impl<'a> Vm<'a> {
                 }
                 FrameworkResult::Void
             }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "<init>") => {
+                let receiver = object_arg(args, 0)?;
+                if let Some(texture) = args.get(1).and_then(object_id) {
+                    self.copy_drawable_fields(texture, receiver);
+                    if self.object_field_float(receiver, "region_width").is_none() {
+                        if let Some(path) = self
+                            .object_field_string(receiver, "path")
+                            .or_else(|| self.object_field_string(receiver, "asset_path"))
+                        {
+                            if let Some((width, height)) = self
+                                .framework
+                                .assets
+                                .as_ref()
+                                .and_then(|assets| assets.image_size(&path))
+                            {
+                                self.set_object_field(
+                                    receiver,
+                                    "region_width",
+                                    Value::Int(width as i32),
+                                );
+                                self.set_object_field(
+                                    receiver,
+                                    "region_height",
+                                    Value::Int(height as i32),
+                                );
+                            }
+                        }
+                    }
+                }
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "findRegion") => {
                 let region =
                     self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;");
@@ -2560,9 +2591,17 @@ impl<'a> Vm<'a> {
             }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "createSprite")
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "newSprite") => {
-                FrameworkResult::Object(
-                    self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/Sprite;"),
-                )
+                let sprite = self.alloc_instance("Lcom/badlogic/gdx/graphics/g2d/Sprite;");
+                if let Some(region) = args.get(1).and_then(object_id) {
+                    self.copy_drawable_fields(region, sprite);
+                    if let Some(width) = self.object_field_float(region, "region_width") {
+                        self.set_object_field(sprite, "width", Value::Float(width));
+                    }
+                    if let Some(height) = self.object_field_float(region, "region_height") {
+                        self.set_object_field(sprite, "height", Value::Float(height));
+                    }
+                }
+                FrameworkResult::Object(sprite)
             }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas;", "dispose") => FrameworkResult::Void,
             ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "getRegionWidth")
@@ -2586,10 +2625,38 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "getTexture") => {
                 let receiver = object_arg(args, 0)?;
                 let texture = self.alloc_instance("Lcom/badlogic/gdx/graphics/Texture;");
-                if let Some(path) = self.object_field_string(receiver, "asset_path") {
-                    self.set_object_field(texture, "path", Value::String(path));
-                }
+                self.copy_drawable_fields(receiver, texture);
                 FrameworkResult::Object(texture)
+            }
+            ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "<init>") => {
+                let region = object_arg(args, 0)?;
+                if let Some(drawable) = args.get(1).and_then(object_id) {
+                    self.copy_drawable_fields(drawable, region);
+                    if self.object_field_float(region, "region_width").is_none() {
+                        if let Some(path) = self.object_field_string(region, "path") {
+                            if let Some((width, height)) = self
+                                .framework
+                                .assets
+                                .as_ref()
+                                .and_then(|assets| assets.image_size(&path))
+                            {
+                                self.set_object_field(region, "region_x", Value::Int(0));
+                                self.set_object_field(region, "region_y", Value::Int(0));
+                                self.set_object_field(
+                                    region,
+                                    "region_width",
+                                    Value::Int(width as i32),
+                                );
+                                self.set_object_field(
+                                    region,
+                                    "region_height",
+                                    Value::Int(height as i32),
+                                );
+                            }
+                        }
+                    }
+                }
+                FrameworkResult::Void
             }
             ("Lcom/badlogic/gdx/graphics/g2d/TextureRegion;", "setRegion")
             | ("Lcom/badlogic/gdx/graphics/g2d/TextureAtlas$AtlasRegion;", "setRegion") => {
@@ -2625,10 +2692,22 @@ impl<'a> Vm<'a> {
             }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setOrigin")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRotation")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRegion")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setTexture")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "translate")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "rotate") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRegion")
+            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setTexture") => {
+                let sprite = object_arg(args, 0)?;
+                if let Some(drawable) = args.get(1).and_then(object_id) {
+                    self.copy_drawable_fields(drawable, sprite);
+                    if let Some(width) = self.object_field_float(drawable, "region_width") {
+                        self.set_object_field(sprite, "width", Value::Float(width));
+                    }
+                    if let Some(height) = self.object_field_float(drawable, "region_height") {
+                        self.set_object_field(sprite, "height", Value::Float(height));
+                    }
+                }
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setColor") => {
                 let sprite = object_arg(args, 0)?;
                 let color = color_args(self, args, 1)?;
@@ -2991,20 +3070,19 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "render")
             | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => {
                 if class_name == "Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;" && args.len() >= 10 {
-                    let texture = object_arg(args, 1)?;
+                    let drawable = object_arg(args, 1)?;
                     let path = self
-                        .object_field_string(texture, "path")
-                        .or_else(|| self.object_field_string(texture, "asset_path"));
+                        .object_field_string(drawable, "path")
+                        .or_else(|| self.object_field_string(drawable, "asset_path"));
                     let x = float_arg(args, 2)?;
                     let y = float_arg(args, 3)?;
-                    let width = float_arg(args, 4)?;
-                    let height = float_arg(args, 5)?;
-                    let region = Some((
-                        float_arg(args, 6)?,
-                        float_arg(args, 7)?,
-                        float_arg(args, 8)?,
-                        float_arg(args, 9)?,
-                    ));
+                    let width = float_arg(args, 6)?;
+                    let height = float_arg(args, 7)?;
+                    let region = ["region_x", "region_y", "region_width", "region_height"]
+                        .iter()
+                        .map(|field| self.object_field_float(drawable, field))
+                        .collect::<Option<Vec<_>>>()
+                        .map(|values| (values[0], values[1], values[2], values[3]));
                     let color = self
                         .object_field_int(args.first().and_then(object_id).unwrap_or(0), "color")
                         .map(unpack_color)
@@ -3232,6 +3310,26 @@ impl<'a> Vm<'a> {
     fn set_object_field(&mut self, object: ObjectId, name: &str, value: Value) {
         if let Some(HeapObject::Instance { fields, .. }) = self.heap.get_mut(object as usize) {
             fields.insert(name.to_owned(), value);
+        }
+    }
+
+    fn copy_drawable_fields(&mut self, source: ObjectId, destination: ObjectId) {
+        for field in [
+            "asset_path",
+            "path",
+            "region_x",
+            "region_y",
+            "region_width",
+            "region_height",
+            "width",
+            "height",
+        ] {
+            if let Some(value) = self.heap_object(source).and_then(|object| match object {
+                HeapObject::Instance { fields, .. } => fields.get(field).cloned(),
+                _ => None,
+            }) {
+                self.set_object_field(destination, field, value);
+            }
         }
     }
 
