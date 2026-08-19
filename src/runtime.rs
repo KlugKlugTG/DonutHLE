@@ -58,12 +58,15 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
-    pub fn render_frame(&mut self, width: u32, height: u32) -> Result<(usize, usize)> {
-        let width = width.max(1);
-        let height = height.max(1);
-        self.vm.framework.surface_size = (width as i32, height as i32);
+    pub fn render_frame(&mut self, _width: u32, _height: u32) -> Result<(usize, usize)> {
+        let logical_width = self.vm.framework.gles.framebuffer().width().max(1);
+        let logical_height = self.vm.framework.gles.framebuffer().height().max(1);
+        self.vm.framework.surface_size = (logical_width as i32, logical_height as i32);
         self.vm.framework.gles.begin_frame();
-        self.vm.framework.gles.viewport(0, 0, width, height);
+        self.vm
+            .framework
+            .gles
+            .viewport(0, 0, logical_width, logical_height);
         self.vm
             .render_frame(self.listener, "render")
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;

@@ -2625,11 +2625,16 @@ impl<'a> Vm<'a> {
             }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setOrigin")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRotation")
-            | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setColor")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setRegion")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setTexture")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "translate")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "rotate") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setColor") => {
+                let sprite = object_arg(args, 0)?;
+                let color = color_args(self, args, 1)?;
+                self.set_object_field(sprite, "color", Value::Int(pack_color(color)));
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "setPosition") => {
                 let sprite = object_arg(args, 0)?;
                 self.set_object_field(sprite, "x", Value::Float(float_arg(args, 1)?));
@@ -2934,9 +2939,14 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "enableBlending")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "disableBlending")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setProjectionMatrix")
-            | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setColor")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setBlendFunction")
             | ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "flush") => FrameworkResult::Void,
+            ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "setColor") => {
+                let batch = object_arg(args, 0)?;
+                let color = color_args(self, args, 1)?;
+                self.set_object_field(batch, "color", Value::Int(pack_color(color)));
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "draw") => {
                 let sprite = object_arg(args, 0)?;
                 let (x, y, width, height) = self.draw_bounds(&[Value::Object(sprite)]);
@@ -2948,22 +2958,18 @@ impl<'a> Vm<'a> {
                     .map(|field| self.object_field_float(sprite, field))
                     .collect::<Option<Vec<_>>>()
                     .map(|values| (values[0], values[1], values[2], values[3]));
+                let color = self
+                    .object_field_int(sprite, "color")
+                    .map(unpack_color)
+                    .unwrap_or(Rgba8 {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                        a: 255,
+                    });
                 let rendered = texture_path.and_then(|path| {
-                    self.render_asset(
-                        &path,
-                        x,
-                        y,
-                        width,
-                        height,
-                        region,
-                        Rgba8 {
-                            r: 255,
-                            g: 255,
-                            b: 255,
-                            a: 255,
-                        },
-                    )
-                    .then_some(())
+                    self.render_asset(&path, x, y, width, height, region, color)
+                        .then_some(())
                 });
                 if rendered.is_none() {
                     self.framework.gles.draw_quad_pixels(
@@ -2984,6 +2990,50 @@ impl<'a> Vm<'a> {
             ("Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;", "draw")
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "render")
             | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => {
+                if class_name == "Lcom/badlogic/gdx/graphics/g2d/SpriteBatch;" && args.len() >= 10 {
+                    let texture = object_arg(args, 1)?;
+                    let path = self
+                        .object_field_string(texture, "path")
+                        .or_else(|| self.object_field_string(texture, "asset_path"));
+                    let x = float_arg(args, 2)?;
+                    let y = float_arg(args, 3)?;
+                    let width = float_arg(args, 4)?;
+                    let height = float_arg(args, 5)?;
+                    let region = Some((
+                        float_arg(args, 6)?,
+                        float_arg(args, 7)?,
+                        float_arg(args, 8)?,
+                        float_arg(args, 9)?,
+                    ));
+                    let color = self
+                        .object_field_int(args.first().and_then(object_id).unwrap_or(0), "color")
+                        .map(unpack_color)
+                        .unwrap_or(Rgba8 {
+                            r: 255,
+                            g: 255,
+                            b: 255,
+                            a: 255,
+                        });
+                    let rendered = path.and_then(|path| {
+                        self.render_asset(&path, x, y, width, height, region, color)
+                            .then_some(())
+                    });
+                    if rendered.is_none() {
+                        self.framework.gles.draw_quad_pixels(
+                            x,
+                            y,
+                            width,
+                            height,
+                            Rgba8 {
+                                r: 220,
+                                g: 235,
+                                b: 240,
+                                a: 255,
+                            },
+                        );
+                    }
+                    return Ok(Value::Void);
+                }
                 let (x, y, width, height) = self.draw_bounds(args);
                 let drawable = args.get(1).and_then(object_id).or_else(|| {
                     (class_name == "Lcom/badlogic/gdx/graphics/g2d/Sprite;")
@@ -3001,22 +3051,18 @@ impl<'a> Vm<'a> {
                     let height = self.object_field_float(id, "region_height")?;
                     Some((x, y, width, height))
                 });
+                let color = drawable
+                    .and_then(|id| self.object_field_int(id, "color"))
+                    .map(unpack_color)
+                    .unwrap_or(Rgba8 {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                        a: 255,
+                    });
                 let rendered = texture_path.and_then(|path| {
-                    self.render_asset(
-                        &path,
-                        x,
-                        y,
-                        width,
-                        height,
-                        region,
-                        Rgba8 {
-                            r: 220,
-                            g: 235,
-                            b: 240,
-                            a: 255,
-                        },
-                    )
-                    .then_some(())
+                    self.render_asset(&path, x, y, width, height, region, color)
+                        .then_some(())
                 });
                 if rendered.is_none() {
                     self.framework.gles.draw_quad_pixels(
@@ -3158,6 +3204,17 @@ impl<'a> Vm<'a> {
         true
     }
 
+    fn object_field_int(&self, object: ObjectId, name: &str) -> Option<i32> {
+        match self.heap_object(object).and_then(|value| match value {
+            HeapObject::Instance { fields, .. } => fields.get(name),
+            _ => None,
+        }) {
+            Some(Value::Int(value)) => Some(*value),
+            Some(Value::Long(value)) => Some(*value as i32),
+            _ => None,
+        }
+    }
+
     fn object_field_string(&self, object: ObjectId, name: &str) -> Option<String> {
         match self.heap_object(object) {
             Some(HeapObject::Instance { fields, .. }) => match fields.get(name) {
@@ -3279,6 +3336,37 @@ impl<'a> Vm<'a> {
             message: message.into(),
         }
     }
+}
+
+fn color_args(vm: &Vm<'_>, args: &[Value], index: usize) -> Result<Rgba8, VmError> {
+    if args.len() >= index + 4 {
+        return Ok(Rgba8 {
+            r: (float_arg(args, index)? * 255.0).clamp(0.0, 255.0) as u8,
+            g: (float_arg(args, index + 1)? * 255.0).clamp(0.0, 255.0) as u8,
+            b: (float_arg(args, index + 2)? * 255.0).clamp(0.0, 255.0) as u8,
+            a: (float_arg(args, index + 3)? * 255.0).clamp(0.0, 255.0) as u8,
+        });
+    }
+    let object = object_arg(args, index)?;
+    let red = vm.object_field_float(object, "r").unwrap_or(1.0);
+    let green = vm.object_field_float(object, "g").unwrap_or(1.0);
+    let blue = vm.object_field_float(object, "b").unwrap_or(1.0);
+    let alpha = vm.object_field_float(object, "a").unwrap_or(1.0);
+    Ok(Rgba8 {
+        r: (red * 255.0).clamp(0.0, 255.0) as u8,
+        g: (green * 255.0).clamp(0.0, 255.0) as u8,
+        b: (blue * 255.0).clamp(0.0, 255.0) as u8,
+        a: (alpha * 255.0).clamp(0.0, 255.0) as u8,
+    })
+}
+
+fn pack_color(color: Rgba8) -> i32 {
+    i32::from_be_bytes([color.r, color.g, color.b, color.a])
+}
+
+fn unpack_color(value: i32) -> Rgba8 {
+    let [r, g, b, a] = value.to_be_bytes();
+    Rgba8 { r, g, b, a }
 }
 
 fn object_id(value: &Value) -> Option<ObjectId> {
