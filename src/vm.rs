@@ -639,11 +639,11 @@ impl<'a> Vm<'a> {
                 }
                 0x15 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let bits = (code_word(code, pc + 1, pc, opcode)? as u32) << 16;
+                    let value = (code_word(code, pc + 1, pc, opcode)? as i16 as i32) << 16;
                     set_register(
                         &mut registers,
                         register,
-                        Value::Float(f32::from_bits(bits)),
+                        Value::Int(value),
                         self,
                         pc,
                         opcode,
@@ -871,11 +871,11 @@ impl<'a> Vm<'a> {
                 }
                 0x19 => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let bits = (code_word(code, pc + 1, pc, opcode)? as u64) << 48;
+                    let value = (code_word(code, pc + 1, pc, opcode)? as i16 as i64) << 48;
                     set_wide_register(
                         &mut registers,
                         register,
-                        Value::Double(f64::from_bits(bits)),
+                        Value::Long(value),
                         self,
                         pc,
                         opcode,
