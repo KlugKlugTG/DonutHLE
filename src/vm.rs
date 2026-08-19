@@ -2985,21 +2985,21 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/g2d/Sprite;", "render")
             | ("Lcom/badlogic/gdx/graphics/g2d/BitmapFont;", "draw") => {
                 let (x, y, width, height) = self.draw_bounds(args);
-                let texture_path = args.get(1).and_then(|value| match value {
-                    Value::Object(id) => self
-                        .object_field_string(*id, "path")
-                        .or_else(|| self.object_field_string(*id, "asset_path")),
-                    _ => None,
+                let drawable = args.get(1).and_then(object_id).or_else(|| {
+                    (class_name == "Lcom/badlogic/gdx/graphics/g2d/Sprite;")
+                        .then(|| object_arg(args, 0).ok())
+                        .flatten()
                 });
-                let region = args.get(1).and_then(|value| match value {
-                    Value::Object(id) => {
-                        let x = self.object_field_float(*id, "region_x")?;
-                        let y = self.object_field_float(*id, "region_y")?;
-                        let width = self.object_field_float(*id, "region_width")?;
-                        let height = self.object_field_float(*id, "region_height")?;
-                        Some((x, y, width, height))
-                    }
-                    _ => None,
+                let texture_path = drawable.and_then(|id| {
+                    self.object_field_string(id, "path")
+                        .or_else(|| self.object_field_string(id, "asset_path"))
+                });
+                let region = drawable.and_then(|id| {
+                    let x = self.object_field_float(id, "region_x")?;
+                    let y = self.object_field_float(id, "region_y")?;
+                    let width = self.object_field_float(id, "region_width")?;
+                    let height = self.object_field_float(id, "region_height")?;
+                    Some((x, y, width, height))
                 });
                 let rendered = texture_path.and_then(|path| {
                     self.render_asset(
@@ -3180,6 +3180,12 @@ impl<'a> Vm<'a> {
 
     fn draw_bounds(&self, args: &[Value]) -> (f32, f32, f32, f32) {
         let receiver = args.first().and_then(object_id);
+        let drawable = args.get(1).and_then(object_id).or_else(|| {
+            let receiver = receiver?;
+            self.heap_object(receiver)
+                .is_some_and(|object| matches!(object, HeapObject::Instance { class_name, .. } if class_name == "Lcom/badlogic/gdx/graphics/g2d/Sprite;"))
+                .then_some(receiver)
+        });
         let x = receiver
             .and_then(|id| self.object_field_float(id, "x"))
             .or_else(|| numeric_value(args.get(2)))
@@ -3188,15 +3194,62 @@ impl<'a> Vm<'a> {
             .and_then(|id| self.object_field_float(id, "y"))
             .or_else(|| numeric_value(args.get(3)))
             .unwrap_or(0.0);
+        let drawable_width = drawable.and_then(|id| {
+            self.object_field_float(id, "region_width")
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .or_else(|| {
+                    let path = self
+                        .object_field_string(id, "path")
+                        .or_else(|| self.object_field_string(id, "asset_path"))?;
+                    self.framework
+                        .assets
+                        .as_ref()
+                        .and_then(|assets| assets.image_size(&path))
+                        .map(|(width, _)| width as f32)
+                })
+        });
+        let drawable_height = drawable.and_then(|id| {
+            self.object_field_float(id, "region_height")
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .or_else(|| {
+                    let path = self
+                        .object_field_string(id, "path")
+                        .or_else(|| self.object_field_string(id, "asset_path"))?;
+                    self.framework
+                        .assets
+                        .as_ref()
+                        .and_then(|assets| assets.image_size(&path))
+                        .map(|(_, height)| height as f32)
+                })
+        });
+
         let width = receiver
-            .and_then(|id| self.object_field_float(id, "width"))
-            .or_else(|| receiver.and_then(|id| self.object_field_float(id, "region_width")))
-            .or_else(|| numeric_value(args.get(4)))
+            .and_then(|id| {
+                self.object_field_float(id, "width")
+                    .filter(|value| value.is_finite() && *value > 0.0)
+            })
+            .or_else(|| {
+                receiver.and_then(|id| {
+                    self.object_field_float(id, "region_width")
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                })
+            })
+            .or_else(|| numeric_value(args.get(4)).filter(|value| *value > 0.0))
+            .or(drawable_width)
             .unwrap_or(1.0);
         let height = receiver
-            .and_then(|id| self.object_field_float(id, "height"))
-            .or_else(|| receiver.and_then(|id| self.object_field_float(id, "region_height")))
-            .or_else(|| numeric_value(args.get(5)))
+            .and_then(|id| {
+                self.object_field_float(id, "height")
+                    .filter(|value| value.is_finite() && *value > 0.0)
+            })
+            .or_else(|| {
+                receiver.and_then(|id| {
+                    self.object_field_float(id, "region_height")
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                })
+            })
+            .or_else(|| numeric_value(args.get(5)).filter(|value| *value > 0.0))
+            .or(drawable_height)
             .unwrap_or(1.0);
         (x, y, width.max(1.0), height.max(1.0))
     }
