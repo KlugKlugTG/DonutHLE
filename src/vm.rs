@@ -2807,7 +2807,7 @@ impl<'a> Vm<'a> {
                     .assets
                     .as_ref()
                     .and_then(|assets| path.and_then(|path| assets.image_size(&path)))
-                    .unwrap_or((256, 256));
+                    .ok_or_else(|| self.error(0, 0, "Texture dimensions unavailable: asset was not found or could not be decoded"))?;
                 FrameworkResult::Int(if method_name == "getWidth" {
                     size.0 as i32
                 } else {
@@ -3049,23 +3049,8 @@ impl<'a> Vm<'a> {
                         b: 255,
                         a: 255,
                     });
-                let rendered = texture_path.and_then(|path| {
-                    self.render_asset(&path, x, y, width, height, region, color)
-                        .then_some(())
-                });
-                if rendered.is_none() {
-                    self.framework.gles.draw_quad_pixels(
-                        x,
-                        y,
-                        width,
-                        height,
-                        Rgba8 {
-                            r: 220,
-                            g: 235,
-                            b: 240,
-                            a: 255,
-                        },
-                    );
+                if let Some(path) = texture_path {
+                    let _ = self.render_asset(&path, x, y, width, height, region, color);
                 }
                 FrameworkResult::Void
             }
@@ -3095,23 +3080,8 @@ impl<'a> Vm<'a> {
                             b: 255,
                             a: 255,
                         });
-                    let rendered = path.and_then(|path| {
-                        self.render_asset(&path, x, y, width, height, region, color)
-                            .then_some(())
-                    });
-                    if rendered.is_none() {
-                        self.framework.gles.draw_quad_pixels(
-                            x,
-                            y,
-                            width,
-                            height,
-                            Rgba8 {
-                                r: 220,
-                                g: 235,
-                                b: 240,
-                                a: 255,
-                            },
-                        );
+                    if let Some(path) = path {
+                        let _ = self.render_asset(&path, x, y, width, height, region, color);
                     }
                     return Ok(Value::Void);
                 }

@@ -2,7 +2,7 @@
 
 ![DonutHLE logo](docs/images/donuthle-logo.png)
 
-**DonutHLE** is an experimental, open-source high-level emulator (HLE) for applications built for Android 1.6 **Donut**. It is written in Rust, with an Android shell and JNI bridge for running the core on modern Android devices.
+**DonutHLE** is an experimental, open-source high-level emulator (HLE) for applications built for Android 1.x (API levels 1–4). It is written in Rust, with an Android shell and JNI bridge for running the core on modern Android devices.
 
 The project follows the same broad idea as [touchHLE](https://github.com/touchHLE/touchHLE) and [PocketHLE](https://github.com/j92580498-max/PocketHLE): replace the original operating-system APIs with clean-room, host-side implementations instead of emulating an entire phone or device. DonutHLE is an independent project, not a fork of or an affiliated project with either emulator.
 
@@ -10,12 +10,12 @@ The project follows the same broad idea as [touchHLE](https://github.com/touchHL
 
 ## What is implemented
 
-### APK and Android 1.6 platform foundation
+### APK and Android 1.x platform foundation
 
 - ZIP/APK inspection with deterministic file listing and safety limits.
 - Android binary XML (`AndroidManifest.xml`) parsing and launcher resolution.
 - DEX header validation and parsing for Dalvik 035 files.
-- An explicit Android 1.6 target profile: API level 4, Dalvik VM, ARMv5TE-era application assumptions, and a 320×480 default virtual screen.
+- An explicit Android 1.x target profile covering API levels 1–4, with API 4 as the default compatibility profile, the Dalvik VM, ARMv5TE-era application assumptions, and a 320×480 default virtual screen.
 - Resource-table discovery and partial `resources.arsc` decoding.
 - Activity, Context, View, lifecycle, message-queue, input, audio, and resource framework shims.
 - A Rust Dalvik interpreter with register bounds checks, method dispatch, call-depth/step limits, and clear unsupported-call diagnostics.
@@ -96,7 +96,7 @@ Only test APKs you own or are legally allowed to analyze. DonutHLE does not ship
 ## Roadmap
 
 1. Expand Dalvik 035 opcode coverage and improve `invoke-direct`, `invoke-virtual`, interface, class initialization, exception, and array behavior.
-2. Complete the Android 1.6 framework surface needed by real applications: `Activity`, `View`, `SurfaceView`, resources, `Canvas`, timers, storage, and lifecycle edge cases.
+2. Complete the Android 1.x framework surface needed by real applications: `Activity`, `View`, `SurfaceView`, resources, `Canvas`, timers, storage, and lifecycle edge cases.
 3. Harden the libGDX compatibility layer: more constructor/signature variants, texture filtering/wrapping, atlas rotation/trim metadata, SpriteBatch transforms, and reliable texture lifetime management.
 4. Improve GLES 1.x correctness: full fixed-function state, color/texture pointers, blending factors, clipping, depth behavior, and more complete indexed rendering.
 5. Connect Android touch/key events and audio output to the emulated application instead of returning placeholders.

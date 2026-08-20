@@ -2,7 +2,7 @@
 name = "donuthle"
 version = "0.1.1"
 edition = "2021"
-description = "Experimental high-level Android 1.6 (Donut) emulator"
+description = "Experimental high-level emulator for Android 1.x applications"
 license = "MIT"
 repository = "https://github.com/KlugKlugTG/DonutHLE"
 

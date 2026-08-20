@@ -47,7 +47,7 @@ final class StorageLayout {
         root(context).mkdirs();
         apps(context).mkdirs();
         sandbox(context).mkdirs();
-        if (!options(context).exists()) writeText(options(context), "# DonutHLE options\n# Android 1.6 / API level 4\n# Put one option per line.\n");
+        if (!options(context).exists()) writeText(options(context), "# DonutHLE options\n# Android 1.x / API levels 1-4; default profile API level 4\n# Put one option per line.\n");
         File readme = new File(root(context), "README.txt");
         if (!readme.exists()) writeText(readme, "DonutHLE files\n\nDonutHLE_apps: APK library.\nDonutHLE_sandbox: per-game writable data.\nDonutHLE_log.txt: UTF-8 emulator log.\nDonutHLE_options.txt: emulator options.\n");
     }

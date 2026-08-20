@@ -1,4 +1,4 @@
-//! DonutHLE core: a small, explicit foundation for Android 1.6 (Donut) HLE work.
+//! DonutHLE core: an explicit foundation for Android 1.x HLE work.
 
 pub mod apk;
 pub mod assets;
@@ -18,8 +18,10 @@ pub mod vm;
 /// Single host graphics entry point: GLES 1.x is always adapted to the GL2-style renderer.
 pub type HostGles = gles1_on_gl2::Gles1OnGl2;
 
-pub const API_LEVEL: u32 = 4;
-pub const RELEASE: &str = "Donut";
+pub const ANDROID_X_MIN_API_LEVEL: u32 = 1;
+pub const ANDROID_X_MAX_API_LEVEL: u32 = 4;
+pub const API_LEVEL: u32 = ANDROID_X_MAX_API_LEVEL;
+pub const RELEASE: &str = "Android 1.x";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VirtualScreen {
@@ -166,7 +168,7 @@ pub extern "C" fn donuthle_render_frame(width: u32, height: u32) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
-    c"Rust DonutHLE core: APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
+    c"Rust DonutHLE core: Android 1.x APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
 }
 
 /// # Safety

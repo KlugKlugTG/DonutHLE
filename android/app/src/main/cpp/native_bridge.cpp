@@ -88,7 +88,6 @@ static void drawFallbackFrame(GLfloat width, GLfloat height) {
     glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    drawRect(width * 0.08f, height * 0.42f, width * 0.92f, height * 0.58f, 0.50f, 0.80f, 0.77f, 1.0f);
 }
 
 static bool drawSoftwareFrame(GLfloat width, GLfloat height) {

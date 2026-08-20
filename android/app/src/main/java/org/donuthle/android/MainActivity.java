@@ -60,7 +60,7 @@ public final class MainActivity extends Activity {
         LinearLayout content = column();
         content.setPadding(dp(22), dp(20), dp(22), dp(28));
         TextView brand = label("DONUTHLE", 27, teal); brand.setTypeface(null, 1); content.addView(brand);
-        content.addView(label("Android 1.6 • Donut • HLE prototype", 14, muted), margins(0, 2, 0, 22));
+        content.addView(label("Android 1.x • API 1–4 • HLE prototype", 14, muted), margins(0, 2, 0, 22));
         TextView status = label("READY TO EXPLORE", 12, Color.rgb(112, 214, 164)); status.setTypeface(null, 1); content.addView(status);
         TextView title = label("Your games,\nyour sandbox.", 31, text); title.setTypeface(null, 1); content.addView(title, margins(0, 5, 0, 8));
         content.addView(label("Import APKs or place them in DonutHLE_apps.", 15, muted), margins(0, 0, 0, 22));
@@ -147,7 +147,7 @@ public final class MainActivity extends Activity {
         overlay.setGravity(Gravity.CENTER_VERTICAL);
         overlay.setPadding(dp(10), dp(6), dp(10), dp(6));
         overlay.setBackgroundColor(Color.argb(176, 14, 18, 22));
-        TextView title = label("SLICE ICE  •  GLES 1.1", 13, teal);
+        TextView title = label("SLICE ICE  •  ANDROID 1.x  •  GLES 1.1", 13, teal);
         title.setTypeface(null, 1);
         overlay.addView(title, new LinearLayout.LayoutParams(0, -2, 1.0f));
         Button back = button("BACK", false, v -> showLibrary());
@@ -161,7 +161,7 @@ public final class MainActivity extends Activity {
 
     private void showOptions() { LinearLayout content = page("OPTIONS", "Portable settings and file locations."); TextView options = label(StorageLayout.readText(StorageLayout.options(this)), 15, text); options.setTextIsSelectable(true); options.setPadding(dp(14), dp(14), dp(14), dp(14)); options.setBackgroundColor(panel); content.addView(options, margins(0, 18, 0, 16)); content.addView(button("OPEN DONUTHLE FOLDER", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 8)); content.addView(button("‹  BACK", false, v -> showHome())); setContentView(scroll(content)); }
     private void showLog() { StorageLayout.appendLog(this, "LOG_VIEW_OPENED"); LinearLayout content = page("EMULATOR LOG", "UTF-8 compatibility log with unimplemented features."); TextView log = label(nativeRuntimeInfo() + "\n\n" + StorageLayout.readText(StorageLayout.logFile(this)), 14, text); log.setTextIsSelectable(true); log.setPadding(dp(14), dp(14), dp(14), dp(14)); log.setTypeface(android.graphics.Typeface.MONOSPACE); log.setBackgroundColor(panel); content.addView(log, margins(0, 16, 0, 16)); content.addView(button("‹  BACK", true, v -> showHome())); setContentView(scroll(content)); }
-    private void showAbout() { LinearLayout content = page("ABOUT DONUTHLE", "A clean-room Android 1.6 HLE project."); content.addView(label("The current APK pipeline scans packages, reports their requested APIs, and prepares the compatibility log. Dalvik execution, Android framework shims, graphics, audio, input, and activity launching remain active development milestones.", 16, text), margins(0, 18, 0, 20)); content.addView(button("‹  BACK", true, v -> showHome())); setContentView(scroll(content)); }
+    private void showAbout() { LinearLayout content = page("ABOUT DONUTHLE", "A clean-room Android 1.x HLE project."); content.addView(label("The current APK pipeline emulates Android 1.x APIs (API 1–4), scans packages, reports requested APIs, and prepares the compatibility log. Dalvik execution, Android framework shims, graphics, audio, input, and activity launching remain active development milestones.", 16, text), margins(0, 18, 0, 20)); content.addView(button("‹  BACK", true, v -> showHome())); setContentView(scroll(content)); }
     private void showMessage(String heading, String message) { LinearLayout content = page(heading, "Compatibility inspection"); content.addView(label(message, 16, text), margins(0, 18, 0, 20)); content.addView(button("‹  BACK TO LIBRARY", false, v -> showLibrary())); setContentView(scroll(content)); }
     private void chooseDonutHleFolder() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);

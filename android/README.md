@@ -1,5 +1,7 @@
 # DonutHLE Android build
 
+DonutHLE is an **Android 1.x emulator**. The Android application is only the modern host shell; it does not change the emulated platform target.
+
 This directory is the Android Studio/Gradle shell for DonutHLE. It builds a native Android application for:
 
 - `arm64-v8a`

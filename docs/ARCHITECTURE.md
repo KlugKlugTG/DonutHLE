@@ -12,7 +12,7 @@ loader -> manifest/package model -> launch plan
 Dalvik 035 interpreter <-> heap / class registry
         |
         v
-Android 1.6 API shims
+Android 1.x API shims (API 1–4)
   Activity + Context + View + Looper + services
         |
         +--> GLES 1.x API
