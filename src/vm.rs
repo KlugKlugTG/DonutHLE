@@ -2418,7 +2418,10 @@ impl<'a> Vm<'a> {
             ("Lcom/badlogic/gdx/Graphics;", "getHeight") => {
                 FrameworkResult::Int(self.framework.surface_size.1)
             }
-            ("Lcom/badlogic/gdx/Graphics;", "getDeltaTime") => FrameworkResult::Int(0),
+            ("Lcom/badlogic/gdx/Graphics;", "getDeltaTime")
+            | ("Lcom/badlogic/gdx/Graphics;", "getRawDeltaTime") => {
+                FrameworkResult::Float(1.0 / 60.0)
+            }
             ("Lcom/badlogic/gdx/Graphics;", "getFramesPerSecond") => FrameworkResult::Int(60),
             ("Lcom/badlogic/gdx/Graphics;", "getGL10")
             | ("Lcom/badlogic/gdx/Graphics;", "getGLCommon") => {
