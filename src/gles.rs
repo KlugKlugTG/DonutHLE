@@ -764,7 +764,7 @@ impl GlesContext {
                 }
             }
             Primitive::Lines => {
-                for pair in vertices.chunks_exact(2) {
+                for pair in vertices.as_chunks::<2>().0 {
                     self.line(pair[0], pair[1]);
                 }
             }
@@ -782,7 +782,7 @@ impl GlesContext {
                 }
             }
             Primitive::Triangles => {
-                for tri in vertices.chunks_exact(3) {
+                for tri in vertices.as_chunks::<3>().0 {
                     self.triangle(tri[0], tri[1], tri[2]);
                 }
             }
