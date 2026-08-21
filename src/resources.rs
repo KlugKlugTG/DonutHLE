@@ -118,6 +118,13 @@ impl StringPool {
 }
 
 impl ResourceTable {
+    pub fn value_by_id(&self, id: u32) -> Option<&str> {
+        self.values
+            .iter()
+            .find(|resource| resource.id == id)
+            .map(|resource| resource.value.as_str())
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let reader = Reader::new(bytes);
         if bytes.len() < 12 || reader.u16(0)? != RES_TABLE_TYPE {

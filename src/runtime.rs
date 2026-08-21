@@ -40,6 +40,7 @@ pub struct LaunchReport {
     pub package: String,
     pub dex: String,
     pub launcher_activity: String,
+    pub application_label: Option<String>,
     pub message: String,
     pub compatibility: CompatibilityReport,
 }
@@ -50,6 +51,7 @@ pub struct Runtime {
     pub graphics: HostGles,
     pub framework: Framework,
     pub session: Option<RuntimeSession>,
+    pub game_title: Option<String>,
 }
 
 pub struct RuntimeSession {
@@ -170,6 +172,7 @@ impl Default for Runtime {
             activities: ActivityManager::default(),
             framework: Framework::new(),
             session: None,
+            game_title: None,
         }
     }
 }
@@ -190,13 +193,17 @@ impl Runtime {
         let dex_bytes = read_entry(&mut archive, "classes.dex")?;
         let manifest = AppManifest::parse_axml(&manifest_bytes)?;
         let dex = DexFile::parse(&dex_bytes)?;
-        let resource_status = if info.entries.iter().any(|entry| entry == "resources.arsc") {
-            match ResourceTable::parse(&read_entry(&mut archive, "resources.arsc")?) {
-                Ok(table) => format!("{} resources", table.values.len()),
-                Err(_) => "present but not decoded".to_owned(),
-            }
+        let resources = if info.entries.iter().any(|entry| entry == "resources.arsc") {
+            ResourceTable::parse(&read_entry(&mut archive, "resources.arsc")?).ok()
         } else {
-            "not present".to_owned()
+            None
+        };
+        let resource_status = match &resources {
+            Some(table) => format!("{} resources", table.values.len()),
+            None if info.entries.iter().any(|entry| entry == "resources.arsc") => {
+                "present but not decoded".to_owned()
+            }
+            None => "not present".to_owned(),
         };
         let launcher = manifest
             .launcher_activity
@@ -206,6 +213,10 @@ impl Runtime {
         Ok(LaunchReport {
             package: manifest.package,
             launcher_activity: launcher.clone(),
+            application_label: resolve_application_label(
+                manifest.application_label.as_deref(),
+                resources.as_ref(),
+            ),
             dex: format!(
                 "{} bytes / {} classes / {} methods",
                 dex.header.file_size,
@@ -221,6 +232,7 @@ impl Runtime {
 
     pub fn launch(&mut self, path: impl AsRef<Path>) -> Result<LaunchReport> {
         let plan = self.launch_plan(path)?;
+        self.game_title = plan.application_label.clone().or_else(|| Some(plan.package.clone()));
         let state = self.boot(&plan)?;
         self.activities = state.activities;
         let compatibility = compat::scan_dex(&plan.dex);
@@ -233,6 +245,7 @@ impl Runtime {
                 plan.dex.methods.len()
             ),
             launcher_activity: plan.activity,
+            application_label: plan.application_label,
             message: format!("booted launcher; {}", state.graphics),
             compatibility,
         })
@@ -259,6 +272,11 @@ impl Runtime {
         let mut archive = zip::ZipArchive::new(file)?;
         let manifest = read_manifest(&mut archive)?;
         let dex = read_dex(&mut archive)?;
+        let resources = read_resources(&mut archive)?;
+        let application_label = resolve_application_label(
+            manifest.application_label.as_deref(),
+            resources.as_ref(),
+        );
         let assets = crate::assets::AssetStore::from_archive(&mut archive)?;
         let activity = manifest
             .launcher_activity
@@ -268,9 +286,10 @@ impl Runtime {
         let entry_method = dex.method_code(&class_name, "onCreate").is_some();
         Ok(LaunchPlan {
             package: manifest.package,
+            application_label,
             activity,
             class_name,
-            resources: read_resources(&mut archive)?,
+            resources,
             assets,
             dex,
             entry_method,
@@ -405,6 +424,7 @@ pub struct FrameworkSnapshot {
 #[derive(Debug)]
 pub struct LaunchPlan {
     pub package: String,
+    pub application_label: Option<String>,
     pub activity: String,
     pub class_name: String,
     pub dex: DexFile,
@@ -419,6 +439,21 @@ pub struct BootState {
     pub activities: ActivityManager,
     pub graphics: String,
     pub vm_result: String,
+}
+
+fn resolve_application_label(
+    label: Option<&str>,
+    resources: Option<&ResourceTable>,
+) -> Option<String> {
+    let label = label?;
+    if let Some(id) = label.strip_prefix("@0x") {
+        if let Ok(id) = u32::from_str_radix(id, 16) {
+            return resources
+                .and_then(|table| table.value_by_id(id))
+                .map(str::to_owned);
+        }
+    }
+    Some(label.to_owned())
 }
 
 fn read_manifest(archive: &mut zip::ZipArchive<File>) -> Result<AppManifest> {

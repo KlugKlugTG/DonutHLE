@@ -10,6 +10,7 @@
 extern "C" const char* donuthle_core_info();
 extern "C" char* donuthle_launch_report(const char* path);
 extern "C" void donuthle_free_string(char* value);
+extern "C" char* donuthle_game_title();
 extern "C" uint32_t donuthle_framebuffer_width();
 extern "C" uint32_t donuthle_framebuffer_height();
 #ifndef DONUTHLE_NO_CORE
@@ -47,6 +48,18 @@ Java_org_donuthle_android_MainActivity_nativeRuntimeInfo(JNIEnv* env, jobject) {
     return makeString(env, "Android shell is built; Rust core is not linked in this local build.");
 #else
     return makeString(env, donuthle_core_info());
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_donuthle_android_MainActivity_nativeGameTitle(JNIEnv* env, jobject) {
+#ifdef DONUTHLE_NO_CORE
+    return makeString(env, "Unknown game");
+#else
+    char* title = donuthle_game_title();
+    jstring result = makeString(env, title);
+    donuthle_free_string(title);
+    return result;
 #endif
 }
 

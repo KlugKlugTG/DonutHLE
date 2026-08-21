@@ -69,6 +69,7 @@ fn main() -> Result<()> {
                 let report = runtime.validate_apk(&path)?;
                 println!("valid Android 1.x package");
                 println!("package: {}", report.package);
+                println!("application: {}", report.application_label.as_deref().unwrap_or("unknown"));
                 println!("dex: {}", report.dex);
                 println!("status: {}", report.message);
                 for line in report.compatibility.format_lines() {
@@ -79,6 +80,7 @@ fn main() -> Result<()> {
                 let report = runtime.launch(&path)?;
                 println!("{}", report.message);
                 println!("launcher: {}", report.launcher_activity);
+                println!("application: {}", report.application_label.as_deref().unwrap_or("unknown"));
                 println!("dex: {}", report.dex);
                 for line in report.compatibility.format_lines() {
                     println!("{line}");

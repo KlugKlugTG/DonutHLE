@@ -23,6 +23,7 @@ import java.io.IOException;
 public final class MainActivity extends Activity {
     static { System.loadLibrary("donuthle"); }
     private native String nativeRuntimeInfo();
+    private native String nativeGameTitle();
     private native String nativeLaunchApk(String path);
     native void nativeRenderFrame(int width, int height);
     private static final int PICK_APK = 42;
@@ -147,7 +148,11 @@ public final class MainActivity extends Activity {
         overlay.setGravity(Gravity.CENTER_VERTICAL);
         overlay.setPadding(dp(10), dp(6), dp(10), dp(6));
         overlay.setBackgroundColor(Color.argb(176, 14, 18, 22));
-        TextView title = label("SLICE ICE  •  ANDROID 1.x  •  GLES 1.1", 13, teal);
+        String gameTitle = nativeGameTitle();
+        if (gameTitle == null || gameTitle.trim().isEmpty() || "Unknown game".equals(gameTitle)) {
+            gameTitle = apk.getName().replaceFirst("(?i)\\.apk$", "");
+        }
+        TextView title = label(gameTitle + "  •  Android 1.x  •  GLES 1.1", 13, teal);
         title.setTypeface(null, 1);
         overlay.addView(title, new LinearLayout.LayoutParams(0, -2, 1.0f));
         Button back = button("BACK", false, v -> showLibrary());

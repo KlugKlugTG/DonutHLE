@@ -173,6 +173,18 @@ pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
     c"Rust DonutHLE core: Android 1.x APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
 }
 
+#[no_mangle]
+pub extern "C" fn donuthle_game_title() -> *mut std::os::raw::c_char {
+    let title = RUNTIME
+        .lock()
+        .ok()
+        .and_then(|runtime| runtime.as_ref().and_then(|runtime| runtime.game_title.clone()))
+        .unwrap_or_else(|| "Unknown game".to_owned());
+    std::ffi::CString::new(title)
+        .unwrap_or_else(|_| std::ffi::CString::new("Unknown game").unwrap())
+        .into_raw()
+}
+
 /// # Safety
 ///
 /// `path` must be a valid, NUL-terminated C string for the lifetime of this call.
