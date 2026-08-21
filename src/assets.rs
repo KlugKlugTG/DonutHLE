@@ -68,9 +68,7 @@ impl AssetStore {
     }
 
     pub fn image_size(&self, path: &str) -> Option<(u32, u32)> {
-        self.image(path)
-            .ok()
-            .map(|image| (image.width, image.height))
+        self.image(path).ok().map(|image| (image.width, image.height))
     }
 
     pub fn image(&self, path: &str) -> Result<AssetImage> {
@@ -150,7 +148,8 @@ impl AssetStore {
                 let Some((x, y)) = parse_pair(xy.trim().trim_start_matches("xy:")) else {
                     continue;
                 };
-                let Some((width, height)) = parse_pair(size.trim().trim_start_matches("size:"))
+                let Some((width, height)) =
+                    parse_pair(size.trim().trim_start_matches("size:"))
                 else {
                     continue;
                 };
@@ -178,9 +177,9 @@ impl AssetStore {
 }
 
 fn normalize(path: &str) -> String {
-    path.trim_start_matches("/")
+    path.trim_start_matches('/')
         .strip_prefix("assets/")
-        .unwrap_or(path.trim_start_matches("/"))
+        .unwrap_or(path.trim_start_matches('/'))
         .replace('\\', "/")
 }
 
