@@ -232,7 +232,10 @@ impl Runtime {
 
     pub fn launch(&mut self, path: impl AsRef<Path>) -> Result<LaunchReport> {
         let plan = self.launch_plan(path)?;
-        self.game_title = plan.application_label.clone().or_else(|| Some(plan.package.clone()));
+        self.game_title = plan
+            .application_label
+            .clone()
+            .or_else(|| Some(plan.package.clone()));
         let state = self.boot(&plan)?;
         self.activities = state.activities;
         let compatibility = compat::scan_dex(&plan.dex);
@@ -273,10 +276,8 @@ impl Runtime {
         let manifest = read_manifest(&mut archive)?;
         let dex = read_dex(&mut archive)?;
         let resources = read_resources(&mut archive)?;
-        let application_label = resolve_application_label(
-            manifest.application_label.as_deref(),
-            resources.as_ref(),
-        );
+        let application_label =
+            resolve_application_label(manifest.application_label.as_deref(), resources.as_ref());
         let assets = crate::assets::AssetStore::from_archive(&mut archive)?;
         let activity = manifest
             .launcher_activity

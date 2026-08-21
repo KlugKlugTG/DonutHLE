@@ -178,7 +178,11 @@ pub extern "C" fn donuthle_game_title() -> *mut std::os::raw::c_char {
     let title = RUNTIME
         .lock()
         .ok()
-        .and_then(|runtime| runtime.as_ref().and_then(|runtime| runtime.game_title.clone()))
+        .and_then(|runtime| {
+            runtime
+                .as_ref()
+                .and_then(|runtime| runtime.game_title.clone())
+        })
         .unwrap_or_else(|| "Unknown game".to_owned());
     std::ffi::CString::new(title)
         .unwrap_or_else(|_| std::ffi::CString::new("Unknown game").unwrap())
