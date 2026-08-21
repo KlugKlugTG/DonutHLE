@@ -123,6 +123,30 @@ impl<'a> Vm<'a> {
         self.alloc(HeapObject::Collection(Vec::new()))
     }
 
+    fn alloc_bitmap(&mut self, width: i32, height: i32) -> ObjectId {
+        let bitmap = self.alloc_instance("Landroid/graphics/Bitmap;");
+        self.set_object_field(bitmap, "width", Value::Int(width.max(1)));
+        self.set_object_field(bitmap, "height", Value::Int(height.max(1)));
+        bitmap
+    }
+
+    fn alloc_reflective_array(&mut self, component: &str, dimensions: &[usize]) -> ObjectId {
+        let length = dimensions.first().copied().unwrap_or(0);
+        let values = if dimensions.len() > 1 {
+            (0..length)
+                .map(|_| Value::Object(self.alloc_reflective_array(component, &dimensions[1..])))
+                .collect()
+        } else {
+            (0..length)
+                .map(|_| default_value_for_type(component))
+                .collect()
+        };
+        self.alloc(HeapObject::Array {
+            component: component.to_owned(),
+            values,
+        })
+    }
+
     pub fn run_method(&mut self, method_index: usize, args: Vec<Value>) -> Result<Value, VmError> {
         self.call_method(method_index, args)
     }
@@ -352,9 +376,13 @@ impl<'a> Vm<'a> {
             || method.class_name.starts_with("Ljava/")
             || method.class_name.starts_with("Ldalvik/")
             || method.class_name.starts_with("Lcom/badlogic/gdx/")
-            || method.class_name.starts_with("Lcom/hyperkani/common/");
+            || method.class_name.starts_with("Lcom/hyperkani/common/")
+            || method.class_name.starts_with("Lcom/mobclix/");
         if framework_class {
             if method.name == "<clinit>" {
+                return Ok(Value::Void);
+            }
+            if method.class_name.starts_with("Lcom/mobclix/") {
                 return Ok(Value::Void);
             }
             if method.class_name.starts_with("Lcom/badlogic/gdx/") {
@@ -370,6 +398,12 @@ impl<'a> Vm<'a> {
                     return Ok(Value::Void);
                 }
                 return self.dispatch_gdx(&method.class_name, &method.name, &args);
+            }
+            if method.class_name.starts_with("Lcom/mobclix/") {
+                return Ok(match method.name.as_str() {
+                    "<init>" | "<clinit>" => Value::Void,
+                    _ => Value::Void,
+                });
             }
             if method.class_name.starts_with("Lcom/hyperkani/common/")
                 && (method.name == "update"
@@ -1435,10 +1469,10 @@ impl<'a> Vm<'a> {
                     let take = match opcode {
                         0x32 => values_equal(&left_value, &right_value),
                         0x33 => !values_equal(&left_value, &right_value),
-                        0x34 => as_int(left_value, pc, opcode)? < as_int(right_value, pc, opcode)?,
-                        0x35 => as_int(left_value, pc, opcode)? >= as_int(right_value, pc, opcode)?,
-                        0x36 => as_int(left_value, pc, opcode)? > as_int(right_value, pc, opcode)?,
-                        _ => as_int(left_value, pc, opcode)? <= as_int(right_value, pc, opcode)?,
+                        0x34 => compare_values(&left_value, &right_value, pc, opcode)? < 0,
+                        0x35 => compare_values(&left_value, &right_value, pc, opcode)? >= 0,
+                        0x36 => compare_values(&left_value, &right_value, pc, opcode)? > 0,
+                        _ => compare_values(&left_value, &right_value, pc, opcode)? <= 0,
                     };
                     if take {
                         pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
@@ -1507,8 +1541,14 @@ impl<'a> Vm<'a> {
                     let register = ((instruction >> 8) & 0xff) as usize;
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     let value = get_register(&registers, register, pc, opcode)?;
-                    let zero = matches!(value, Value::Null)
-                        || as_int(value.clone(), pc, opcode).unwrap_or(0) == 0;
+                    let zero = match &value {
+                        Value::Null | Value::Void => true,
+                        Value::Int(value) => *value == 0,
+                        Value::Long(value) => *value == 0,
+                        Value::Float(value) => *value == 0.0,
+                        Value::Double(value) => *value == 0.0,
+                        Value::Object(_) | Value::String(_) => false,
+                    };
                     let take = match opcode {
                         0x38 => zero,
                         0x39 => !zero,
@@ -1772,6 +1812,9 @@ impl<'a> Vm<'a> {
                                     "height" => {
                                         Value::Float(self.framework.surface_size.1.max(480) as f32)
                                     }
+                                    "RELEASE" => Value::String("1.6".to_owned()),
+                                    "DEVICE" => Value::String("donuthle".to_owned()),
+                                    "MODEL" => Value::String("DonutHLE Linux".to_owned()),
                                     _ => default_value_for_type(&field.type_name),
                                 })
                             })
@@ -1851,6 +1894,12 @@ impl<'a> Vm<'a> {
         if class_name == "Ljava/util/Collections;" && method_name == "sort" {
             return Ok(Value::Void);
         }
+        if class_name == "Ljava/io/PrintStream;" {
+            return match method_name {
+                "print" | "println" | "flush" | "close" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
         if class_name == "Ljava/lang/Thread;" && method_name == "sleep" {
             let milliseconds = int_arg(args, 0)?;
             if milliseconds >= 0 {
@@ -1863,9 +1912,173 @@ impl<'a> Vm<'a> {
             }
             return Ok(Value::Void);
         }
+        if class_name == "Ljava/lang/Thread;" {
+            return match method_name {
+                "currentThread" => Ok(Value::Object(self.alloc_instance("Ljava/lang/Thread;"))),
+                "setPriority" | "yield" => Ok(Value::Void),
+                "getPriority" => Ok(Value::Int(5)),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/os/Looper;" {
+            return match method_name {
+                "getThread" => Ok(Value::Object(self.alloc_instance("Ljava/lang/Thread;"))),
+                "loop" | "prepare" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
         if class_name == "Ljava/lang/System;" && method_name == "nanoTime" {
             let clock = NANO_TIME_START.get_or_init(std::time::Instant::now);
             return Ok(Value::Long(clock.elapsed().as_nanos() as i64));
+        }
+        if class_name == "Ljava/util/Locale;" {
+            return match method_name {
+                "getDefault" => Ok(Value::Object(self.alloc_instance("Ljava/util/Locale;"))),
+                "getCountry" => Ok(Value::String("EN".to_owned())),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/os/Environment;" && method_name == "getExternalStorageDirectory"
+        {
+            return Ok(Value::Object(self.alloc_instance("Ljava/io/File;")));
+        }
+        if class_name == "Landroid/content/Context;" || class_name.starts_with("Landroid/app/") {
+            match method_name {
+                "getApplicationContext" => return Ok(args.first().cloned().unwrap_or(Value::Null)),
+                "getResources" => {
+                    return Ok(Value::Object(
+                        self.alloc_instance("Landroid/content/res/Resources;"),
+                    ))
+                }
+                "getSystemService" => {
+                    let name = self.string_arg(args, 1).unwrap_or_default();
+                    let service_class = match name.as_str() {
+                        "sensor" => "Landroid/hardware/SensorManager;",
+                        "vibrator" => "Landroid/os/Vibrator;",
+                        "audio" => "Landroid/media/AudioManager;",
+                        _ => "Landroid/content/Context;",
+                    };
+                    let object = self
+                        .framework
+                        .system_services
+                        .get(&name)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            let id = self.alloc_instance(service_class);
+                            self.framework.system_services.insert(name, id);
+                            id
+                        });
+                    return Ok(Value::Object(object));
+                }
+                "getSharedPreferences" => {
+                    return Ok(Value::Object(
+                        self.alloc_instance("Landroid/content/SharedPreferences;"),
+                    ))
+                }
+                "registerReceiver" => return Ok(Value::Null),
+                "getMainLooper" => {
+                    return Ok(Value::Object(self.alloc_instance("Landroid/os/Looper;")))
+                }
+                "setContentView" => return Ok(Value::Void),
+                "findViewById" => {
+                    let id = int_arg(args, 1)?;
+                    let class_name = match id {
+                        2131492892 => "Landroid/widget/ViewFlipper;",
+                        2131492894 => "Lcom/mobclix/android/sdk/MobclixMMABannerXLAdView;",
+                        _ => "Landroid/view/View;",
+                    };
+                    return Ok(Value::Object(self.alloc_instance(class_name)));
+                }
+                "setRequestedOrientation" | "requestWindowFeature" => return Ok(Value::Int(1)),
+                "getWindow" => {
+                    return Ok(Value::Object(self.alloc_instance("Landroid/view/Window;")))
+                }
+                "getWindowManager" => {
+                    return Ok(Value::Object(
+                        self.alloc_instance("Landroid/view/WindowManager;"),
+                    ))
+                }
+                _ => {}
+            }
+        }
+        if class_name == "Landroid/content/SharedPreferences;" {
+            return match method_name {
+                "getBoolean" => Ok(Value::Int(int_arg(args, 2)?)),
+                "getInt" => Ok(Value::Int(int_arg(args, 2)?)),
+                "getLong" => Ok(Value::Long(int_arg(args, 2)? as i64)),
+                "getFloat" => Ok(Value::Float(float_arg(args, 2)?)),
+                "getString" => Ok(args.get(2).cloned().unwrap_or(Value::String(String::new()))),
+                "edit" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/content/SharedPreferences$Editor;"),
+                )),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/content/res/Resources;" {
+            return match method_name {
+                "getDisplayMetrics" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/util/DisplayMetrics;"),
+                )),
+                "getStringArray" => {
+                    let values = (0..3)
+                        .map(|_| Value::Object(self.alloc_string(String::new())))
+                        .collect();
+                    Ok(Value::Object(self.alloc(HeapObject::Array {
+                        component: "Ljava/lang/String;".to_owned(),
+                        values,
+                    })))
+                }
+                "getString" => Ok(Value::String(String::new())),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/graphics/BitmapFactory;" {
+            return match method_name {
+                "decodeResource" | "decodeStream" | "decodeFile" => {
+                    Ok(Value::Object(self.alloc_bitmap(320, 480)))
+                }
+                _ => Ok(Value::Null),
+            };
+        }
+        if class_name == "Landroid/graphics/Bitmap;" {
+            return match method_name {
+                "getWidth" => Ok(Value::Int(
+                    object_arg(args, 0)
+                        .ok()
+                        .and_then(|id| self.object_field_int(id, "width"))
+                        .unwrap_or(320),
+                )),
+                "getHeight" => Ok(Value::Int(
+                    object_arg(args, 0)
+                        .ok()
+                        .and_then(|id| self.object_field_int(id, "height"))
+                        .unwrap_or(480),
+                )),
+                "recycle" | "eraseColor" => Ok(Value::Void),
+                "isRecycled" => Ok(Value::Int(0)),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/view/animation/AnimationUtils;" {
+            if method_name == "loadAnimation" {
+                return Ok(Value::Object(
+                    self.alloc_instance("Landroid/view/animation/Animation;"),
+                ));
+            }
+            return Ok(Value::Null);
+        }
+        if class_name == "Landroid/view/animation/Animation;" {
+            return Ok(Value::Void);
+        }
+        if class_name == "Landroid/content/SharedPreferences$Editor;" {
+            return match method_name {
+                "putBoolean" | "putInt" | "putLong" | "putFloat" | "putString" => {
+                    Ok(Value::Object(object_arg(args, 0)?))
+                }
+                "commit" => Ok(Value::Int(1)),
+                "apply" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
         }
         if class_name == "Ljava/lang/System;" && method_name == "arraycopy" {
             let source = object_arg(args, 0)?;
@@ -1973,16 +2186,19 @@ impl<'a> Vm<'a> {
             && (class_name.starts_with("Lcom/badlogic/gdx/")
                 || class_name.starts_with("Landroid/")
                 || class_name.starts_with("Ljava/lang/ref/")
+                || class_name.starts_with("Ljava/lang/")
                 || class_name == "Ljava/lang/Enum;"
                 || class_name == "Ljava/lang/Object;"
                 || class_name == "Ljava/util/ArrayList;"
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/util/Vector;"
                 || class_name == "Ljava/lang/StringBuilder;")
         {
             if class_name == "Ljava/util/ArrayList;"
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/util/Vector;"
             {
                 if let Some(Value::Object(receiver)) = args.first() {
                     if (*receiver as usize) < self.heap.len() {
@@ -2104,10 +2320,156 @@ impl<'a> Vm<'a> {
             || class_name.starts_with("Landroid/widget/")
             || class_name == "Landroid/opengl/GLSurfaceView;"
         {
+            return match method_name {
+                "getCurrentView" => {
+                    let view =
+                        self.alloc_instance("Lde/nurogames/android/tinysanta/views/ViewPlus;");
+                    Ok(Value::Object(view))
+                }
+                "getChildAt" => {
+                    let view =
+                        self.alloc_instance("Lde/nurogames/android/tinysanta/views/ViewPlus;");
+                    Ok(Value::Object(view))
+                }
+                "setDisplayedChild" | "startAnimation" | "setAnimation" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Ljava/util/Locale;" {
+            return match method_name {
+                "getDefault" => Ok(Value::Object(self.alloc_instance("Ljava/util/Locale;"))),
+                "getCountry" => Ok(Value::String("EN".to_owned())),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/os/Environment;" && method_name == "getExternalStorageDirectory"
+        {
+            return Ok(Value::Object(self.alloc_instance("Ljava/io/File;")));
+        }
+        if class_name == "Landroid/content/Context;" || class_name.starts_with("Landroid/app/") {
+            return match method_name {
+                "getApplicationContext" => object_arg(args, 0).map(Value::Object),
+                "getResources" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/content/res/Resources;"),
+                )),
+                "getSystemService" => {
+                    let name = self.string_arg(args, 1).unwrap_or_default();
+                    match self.framework_call(FrameworkCall::GetSystemService { name })? {
+                        FrameworkResult::Object(value) => Ok(Value::Object(value)),
+                        _ => Ok(Value::Null),
+                    }
+                }
+                "getWindowManager" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/view/WindowManager;"),
+                )),
+                "getWindow" => Ok(Value::Object(self.alloc_instance("Landroid/view/Window;"))),
+                "getMainLooper" => Ok(Value::Object(self.alloc_instance("Landroid/os/Looper;"))),
+                "registerReceiver"
+                | "unregisterReceiver"
+                | "setContentView"
+                | "setRequestedOrientation"
+                | "requestWindowFeature" => Ok(Value::Void),
+                "findViewById" => Ok(Value::Object(self.alloc_instance("Landroid/view/View;"))),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/view/Window;" {
+            return match method_name {
+                "getWindowManager" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/view/WindowManager;"),
+                )),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/view/Window;" || class_name.starts_with("Landroid/app/") {
             return Ok(Value::Void);
         }
         if class_name == "Landroid/view/Window;" || class_name.starts_with("Landroid/app/") {
             return Ok(Value::Void);
+        }
+        if class_name == "Landroid/hardware/SensorManager;" {
+            return match method_name {
+                "getDefaultSensor" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/hardware/Sensor;"),
+                )),
+                "getSensorList" => Ok(Value::Object(
+                    self.alloc(HeapObject::Collection(Vec::new())),
+                )),
+                "registerListener" => Ok(Value::Int(1)),
+                "unregisterListener" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/view/WindowManager;" {
+            return match method_name {
+                "getDefaultDisplay" => {
+                    Ok(Value::Object(self.alloc_instance("Landroid/view/Display;")))
+                }
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/view/Display;" {
+            return match method_name {
+                "getWidth" | "getHeight" => Ok(Value::Int(320)),
+                "getMetrics" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/media/MediaPlayer;" {
+            return match method_name {
+                "create" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/media/MediaPlayer;"),
+                )),
+                "isPlaying" => Ok(Value::Int(0)),
+                "start"
+                | "pause"
+                | "stop"
+                | "reset"
+                | "release"
+                | "prepare"
+                | "prepareAsync"
+                | "setLooping"
+                | "setVolume"
+                | "seekTo"
+                | "setOnCompletionListener"
+                | "setOnPreparedListener" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Ljava/lang/reflect/Array;" && method_name == "newInstance" {
+            let component = match args.first() {
+                Some(Value::Object(id)) => match self.heap_object(*id) {
+                    Some(HeapObject::Class(name)) => name.clone(),
+                    _ => "Ljava/lang/Object;".to_owned(),
+                },
+                _ => "Ljava/lang/Object;".to_owned(),
+            };
+            let dimensions = match args.get(1) {
+                Some(Value::Object(id)) => match self.heap_object(*id) {
+                    Some(HeapObject::Array { values, .. }) => values
+                        .iter()
+                        .map(|value| match value {
+                            Value::Int(value) => (*value).max(0) as usize,
+                            Value::Long(value) => (*value).max(0) as usize,
+                            _ => 0,
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => vec![0],
+                },
+                _ => vec![int_arg(args, 1)?.max(0) as usize],
+            };
+            return Ok(Value::Object(
+                self.alloc_reflective_array(&component, &dimensions),
+            ));
+        }
+        if class_name == "Ljava/io/File;" {
+            let receiver = object_arg(args, 0)?;
+            return Ok(match method_name {
+                "exists" => Value::Int(0),
+                "delete" => Value::Int(1),
+                "toString" => Value::Object(receiver),
+                _ => Value::Void,
+            });
         }
         if class_name == "Ljava/lang/Integer;"
             || class_name == "Ljava/lang/Long;"
@@ -2163,6 +2525,11 @@ impl<'a> Vm<'a> {
                 "equals" => {
                     let left = value_of(args.first());
                     let right = value_of(args.get(1));
+                    return Ok(Value::Int(i32::from(left == right)));
+                }
+                "equalsIgnoreCase" => {
+                    let left = value_of(args.first()).to_ascii_lowercase();
+                    let right = value_of(args.get(1)).to_ascii_lowercase();
                     return Ok(Value::Int(i32::from(left == right)));
                 }
                 "startsWith" | "endsWith" | "contains" => {
@@ -2256,6 +2623,7 @@ impl<'a> Vm<'a> {
         if class_name == "Ljava/util/ArrayList;"
             || class_name == "Ljava/util/LinkedList;"
             || class_name == "Ljava/util/HashMap;"
+            || class_name == "Ljava/util/Vector;"
             || class_name == "Ljava/util/Collection;"
             || class_name == "Ljava/util/List;"
             || class_name == "Ljava/util/AbstractList;"
@@ -2278,15 +2646,19 @@ impl<'a> Vm<'a> {
                         _ => 1,
                     }))
                 }
-                "add" => {
+                "add" | "addElement" => {
                     if let Some(HeapObject::Collection(values)) =
                         self.heap.get_mut(receiver as usize)
                     {
                         values.push(args.get(1).cloned().unwrap_or(Value::Null));
                     }
-                    return Ok(Value::Int(1));
+                    return Ok(if method_name == "add" {
+                        Value::Int(1)
+                    } else {
+                        Value::Void
+                    });
                 }
-                "get" => {
+                "get" | "elementAt" => {
                     let index = int_arg(args, 1)? as usize;
                     return Ok(match self.heap_object(receiver) {
                         Some(HeapObject::Collection(values)) => {
@@ -2294,6 +2666,14 @@ impl<'a> Vm<'a> {
                         }
                         _ => Value::Null,
                     });
+                }
+                "clear" => {
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        values.clear();
+                    }
+                    return Ok(Value::Void);
                 }
                 _ => return Ok(Value::Void),
             }
@@ -3629,11 +4009,11 @@ fn default_value_for_type(type_name: &str) -> Value {
 fn as_int(value: Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
     match value {
         Value::Int(value) => Ok(value),
-        Value::Null => Ok(0),
+        Value::Null | Value::Void => Ok(0),
         _ => Err(VmError {
             pc,
             opcode,
-            message: "value is not an integer".to_owned(),
+            message: format!("value is not an integer: {value:?}"),
         }),
     }
 }
@@ -3724,6 +4104,26 @@ fn object_arg(args: &[Value], index: usize) -> Result<ObjectId, VmError> {
 
 fn values_equal(left: &Value, right: &Value) -> bool {
     left == right
+}
+
+fn compare_values(left: &Value, right: &Value, pc: usize, opcode: u8) -> Result<i32, VmError> {
+    match (left, right) {
+        (Value::Int(left), Value::Int(right)) => Ok(left.cmp(right) as i32),
+        (Value::Long(left), Value::Long(right)) => Ok(left.cmp(right) as i32),
+        (Value::Float(left), Value::Float(right)) => {
+            Ok(left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal) as i32)
+        }
+        (Value::Double(left), Value::Double(right)) => {
+            Ok(left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal) as i32)
+        }
+        (Value::Void, Value::Void) | (Value::Null, Value::Null) => Ok(0),
+        (Value::Void, Value::Null) | (Value::Null, Value::Void) => Ok(0),
+        _ => Err(VmError {
+            pc,
+            opcode,
+            message: format!("values are not comparable: {left:?} and {right:?}"),
+        }),
+    }
 }
 
 fn branch_target(
