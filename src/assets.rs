@@ -68,7 +68,9 @@ impl AssetStore {
     }
 
     pub fn image_size(&self, path: &str) -> Option<(u32, u32)> {
-        self.image(path).ok().map(|image| (image.width, image.height))
+        self.image(path)
+            .ok()
+            .map(|image| (image.width, image.height))
     }
 
     pub fn image(&self, path: &str) -> Result<AssetImage> {
@@ -78,6 +80,33 @@ impl AssetStore {
         }
         let bytes = self.files.get(&key).context("asset is missing")?;
         AssetImage::decode(Path::new(&key), bytes)
+    }
+
+    pub fn find_image(&self, stems: &[&str]) -> Option<String> {
+        stems.iter().find_map(|stem| {
+            self.files
+                .keys()
+                .filter(|path| {
+                    let path = path.as_str();
+                    let lower = path.to_ascii_lowercase();
+                    let stem = stem.to_ascii_lowercase();
+                    (lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg"))
+                        && Path::new(path)
+                            .file_stem()
+                            .and_then(|value| value.to_str())
+                            .is_some_and(|value| value.eq_ignore_ascii_case(&stem))
+                })
+                .min_by_key(|path| {
+                    if path.contains("drawable-mdpi") {
+                        0
+                    } else if path.contains("drawable") {
+                        1
+                    } else {
+                        2
+                    }
+                })
+                .cloned()
+        })
     }
 
     pub fn atlas_region(&self, atlas_path: &str, name: &str) -> Option<AtlasRegionInfo> {
@@ -148,8 +177,7 @@ impl AssetStore {
                 let Some((x, y)) = parse_pair(xy.trim().trim_start_matches("xy:")) else {
                     continue;
                 };
-                let Some((width, height)) =
-                    parse_pair(size.trim().trim_start_matches("size:"))
+                let Some((width, height)) = parse_pair(size.trim().trim_start_matches("size:"))
                 else {
                     continue;
                 };

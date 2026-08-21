@@ -5,6 +5,8 @@ pub mod assets;
 pub mod audio;
 pub mod compat;
 pub mod dalvik;
+#[cfg(target_os = "linux")]
+pub mod desktop;
 pub mod framework;
 pub mod gles;
 pub mod gles1_on_gl2;

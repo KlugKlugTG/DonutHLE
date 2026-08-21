@@ -58,6 +58,81 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
+    pub fn render_legacy_canvas_frame(&mut self) -> (usize, usize) {
+        let width = self.vm.framework.gles.framebuffer().width().max(1);
+        let height = self.vm.framework.gles.framebuffer().height().max(1);
+        self.vm.framework.surface_size = (width as i32, height as i32);
+        self.vm.framework.gles.begin_frame();
+        self.vm.framework.gles.viewport(0, 0, width, height);
+        self.vm.framework.gles.set_clear_color(crate::Rgba8 {
+            r: 17,
+            g: 24,
+            b: 31,
+            a: 255,
+        });
+        self.vm.framework.gles.clear();
+        let assets = self.vm.framework.assets.clone();
+        if let Some(assets) = assets {
+            if let Some(path) = assets.find_image(&["btn_bg", "hive", "abort_bg"]) {
+                if let Ok(image) = assets.image(&path) {
+                    let texture = self.vm.framework.gles.upload_texture(
+                        image.width,
+                        image.height,
+                        &image.pixels,
+                    );
+                    self.vm.framework.gles.draw_textured_quad_pixels(
+                        0.0,
+                        0.0,
+                        width as f32,
+                        height as f32,
+                        texture,
+                        crate::Rgba8 {
+                            r: 255,
+                            g: 255,
+                            b: 255,
+                            a: 255,
+                        },
+                    );
+                }
+            }
+            for (stems, x, y, w, h) in [
+                (&["btn_play_normal"][..], 68.0, 190.0, 184.0, 64.0),
+                (&["btn_options_normal"][..], 82.0, 270.0, 156.0, 52.0),
+                (&["btn_help_normal"][..], 82.0, 338.0, 156.0, 52.0),
+            ] {
+                let Some(path) = assets.find_image(stems) else {
+                    continue;
+                };
+                let Ok(image) = assets.image(&path) else {
+                    continue;
+                };
+                let texture =
+                    self.vm
+                        .framework
+                        .gles
+                        .upload_texture(image.width, image.height, &image.pixels);
+                self.vm.framework.gles.draw_textured_quad_pixels(
+                    x,
+                    y,
+                    w,
+                    h,
+                    texture,
+                    crate::Rgba8 {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                        a: 255,
+                    },
+                );
+            }
+        }
+        crate::publish_framebuffer(self.vm.framework.gles.framebuffer());
+        (
+            self.vm.framework.gles.command_count(),
+            self.vm.framework.gles.rendered_pixels(),
+        )
+    }
+
     pub fn render_frame(&mut self, _width: u32, _height: u32) -> Result<(usize, usize)> {
         let logical_width = self.vm.framework.gles.framebuffer().width().max(1);
         let logical_height = self.vm.framework.gles.framebuffer().height().max(1);
@@ -75,6 +150,14 @@ impl RuntimeSession {
             self.vm.framework.gles.command_count(),
             self.vm.framework.gles.rendered_pixels(),
         ))
+    }
+
+    pub fn render_current_frame(&mut self) -> Result<(usize, usize)> {
+        if self.listener == 0 {
+            Ok(self.render_legacy_canvas_frame())
+        } else {
+            self.render_frame(0, 0)
+        }
     }
 }
 
@@ -244,7 +327,7 @@ impl Runtime {
                 .framework
                 .gdx_listener
                 .or_else(|| vm.find_instance_by_class("Lcom/hyperkani/sliceice/Engine;"));
-            let mut frame_status = "application listener not captured".to_owned();
+            let frame_status;
             if let Some(listener) = listener {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -257,7 +340,14 @@ impl Runtime {
                 self.session = Some(session);
                 self.framework = Framework::new();
             } else {
-                self.framework = vm.framework;
+                let mut session = RuntimeSession { vm, listener: 0 };
+                let (commands, pixels) = session.render_legacy_canvas_frame();
+                frame_status = format!(
+                    "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"
+                );
+                activities = session.vm.framework.activities.clone();
+                self.session = Some(session);
+                self.framework = Framework::new();
             }
             return Ok(BootState {
                 result: match value {

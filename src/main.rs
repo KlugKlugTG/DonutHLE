@@ -83,6 +83,12 @@ fn main() -> Result<()> {
                 for line in report.compatibility.format_lines() {
                     println!("{line}");
                 }
+                #[cfg(target_os = "linux")]
+                if std::env::var_os("DISPLAY").is_some() {
+                    donuthle::desktop::present(runtime)?;
+                } else {
+                    println!("Linux framebuffer rendered; no X11 DISPLAY is available for a native window");
+                }
             }
         }
         Ok(())

@@ -23,6 +23,7 @@ impl CompatibilityReport {
 
 const FEATURES: &[(&str, &str, bool)] = &[
     ("android/opengl", "GLES 1.x graphics backend", true),
+    ("android/graphics/Canvas", "legacy Canvas renderer", true),
     (
         "javax/microedition/khronos",
         "OpenGL ES EGL/Khronos bridge",
