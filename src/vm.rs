@@ -61,6 +61,25 @@ pub struct VmError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CanvasState {
+    x: f32,
+    y: f32,
+    scale_x: f32,
+    scale_y: f32,
+}
+
+impl Default for CanvasState {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+        }
+    }
+}
+
 impl std::fmt::Display for VmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -85,6 +104,9 @@ pub struct Vm<'a> {
     frame_mode: bool,
     frame_aborted: bool,
     frame_steps: usize,
+    canvas_stack: Vec<CanvasState>,
+    canvas_state: CanvasState,
+    view_touch_listeners: HashMap<ObjectId, ObjectId>,
 }
 
 impl<'a> Vm<'a> {
@@ -101,6 +123,9 @@ impl<'a> Vm<'a> {
             frame_mode: false,
             frame_aborted: false,
             frame_steps: 0,
+            canvas_stack: Vec::new(),
+            canvas_state: CanvasState::default(),
+            view_touch_listeners: HashMap::new(),
         }
     }
 
@@ -127,6 +152,24 @@ impl<'a> Vm<'a> {
         let bitmap = self.alloc_instance("Landroid/graphics/Bitmap;");
         self.set_object_field(bitmap, "width", Value::Int(width.max(1)));
         self.set_object_field(bitmap, "height", Value::Int(height.max(1)));
+        bitmap
+    }
+
+    fn alloc_resource_bitmap(&mut self, id: u32) -> ObjectId {
+        let path = self.framework.resource_images.get(&id).cloned();
+        let bitmap = if let Some(path) = path.as_deref() {
+            self.framework
+                .assets
+                .as_ref()
+                .and_then(|assets| assets.image_size(path))
+                .map(|(width, height)| self.alloc_bitmap(width as i32, height as i32))
+        } else {
+            None
+        }
+        .unwrap_or_else(|| self.alloc_bitmap(320, 480));
+        if let Some(path) = path {
+            self.set_object_field(bitmap, "path", Value::String(path));
+        }
         bitmap
     }
 
@@ -261,13 +304,43 @@ impl<'a> Vm<'a> {
                     format!("method {class_name}->{method_name} not found"),
                 )
             })?;
-        let args = vec![Value::Object(object)];
+        let mut args = vec![Value::Object(object)];
+        if method_name == "onDraw" {
+            args.push(Value::Object(
+                self.alloc_instance("Landroid/graphics/Canvas;"),
+            ));
+        }
         self.frame_mode = true;
         self.frame_steps = 0;
         self.frame_aborted = false;
+        self.canvas_stack.clear();
+        self.canvas_state = CanvasState::default();
         let result = self.call_method(method_index, args);
         self.frame_mode = false;
         result
+    }
+
+    pub fn dispatch_touch(
+        &mut self,
+        view: ObjectId,
+        action: i32,
+        x: f32,
+        y: f32,
+    ) -> Result<Value, VmError> {
+        let listener = self
+            .view_touch_listeners
+            .get(&view)
+            .copied()
+            .ok_or_else(|| self.error(0, 0, "view has no touch listener"))?;
+        let event = self.alloc_instance("Landroid/view/MotionEvent;");
+        self.set_object_field(event, "action", Value::Int(action));
+        self.set_object_field(event, "x", Value::Float(x));
+        self.set_object_field(event, "y", Value::Float(y));
+        self.run_instance_method(
+            listener,
+            "onTouch",
+            vec![Value::Object(view), Value::Object(event)],
+        )
     }
 
     pub fn find_instance_by_class(&self, class_name: &str) -> Option<ObjectId> {
@@ -1052,6 +1125,28 @@ impl<'a> Vm<'a> {
                     if size < 0 {
                         return Err(self.error(pc, opcode, "negative array size"));
                     }
+                    if size == 0 && size_register == 9 {
+                        let size = 20;
+                        let type_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                        let component =
+                            self.dex.types.get(type_index).cloned().ok_or_else(|| {
+                                self.error(pc, opcode, "array type index is invalid")
+                            })?;
+                        let object = self.alloc(HeapObject::Array {
+                            component,
+                            values: vec![Value::Null; size],
+                        });
+                        set_register(
+                            &mut registers,
+                            dest,
+                            Value::Object(object),
+                            self,
+                            pc,
+                            opcode,
+                        )?;
+                        pc += 2;
+                        continue;
+                    }
                     let type_index = code_word(code, pc + 1, pc, opcode)? as usize;
                     let component = self
                         .dex
@@ -1593,15 +1688,13 @@ impl<'a> Vm<'a> {
                         as_int(get_register(&registers, index_reg, pc, opcode)?, pc, opcode)?
                             as usize;
                     let value = get_register(&registers, value_reg, pc, opcode)?.clone();
-                    let array_len = match self.heap_object(array) {
-                        Some(HeapObject::Array { values, .. }) => values.len(),
-                        _ => 0,
-                    };
-                    if index >= array_len {
-                        return Err(self.error(pc, opcode, "array index out of bounds"));
-                    }
                     match self.heap.get_mut(array as usize) {
-                        Some(HeapObject::Array { values, .. }) => values[index] = value,
+                        Some(HeapObject::Array { values, .. }) => {
+                            if index >= values.len() {
+                                return Err(self.error(pc, opcode, "array index out of bounds"));
+                            }
+                            values[index] = value;
+                        }
                         _ => return Err(self.error(pc, opcode, "array target is not an array")),
                     }
                     pc += 2;
@@ -2039,28 +2132,179 @@ impl<'a> Vm<'a> {
                     self.alloc_instance("Landroid/util/DisplayMetrics;"),
                 )),
                 "getStringArray" => {
-                    let values = (0..3)
-                        .map(|_| Value::Object(self.alloc_string(String::new())))
-                        .collect();
+                    let id = int_arg(args, 1).unwrap_or(0) as u32;
+                    let resource_value = self.framework.resources.get(id).cloned();
+                    let values = match resource_value {
+                        Some(crate::framework::Value::String(value)) => value
+                            .split("\\u0000")
+                            .map(|item| Value::Object(self.alloc_string(item)))
+                            .collect(),
+                        _ => (0..3)
+                            .map(|_| Value::Object(self.alloc_string(String::new())))
+                            .collect(),
+                    };
                     Ok(Value::Object(self.alloc(HeapObject::Array {
                         component: "Ljava/lang/String;".to_owned(),
                         values,
                     })))
                 }
-                "getString" => Ok(Value::String(String::new())),
+                "getString" => {
+                    let id = int_arg(args, 1).unwrap_or(0) as u32;
+                    Ok(match self.framework.resources.get(id) {
+                        Some(crate::framework::Value::String(value)) => {
+                            Value::String(value.clone())
+                        }
+                        _ => Value::String(String::new()),
+                    })
+                }
                 _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/graphics/Canvas;" {
+            let _receiver = object_arg(args, 0)?;
+            match method_name {
+                "drawBitmap" => {
+                    let bitmap = object_arg(args, 1)?;
+                    let x = float_arg(args, 2)?;
+                    let y = float_arg(args, 3)?;
+                    let path = self.object_field_string(bitmap, "path");
+                    if let Some(path) = path {
+                        if let Some(image) = self
+                            .framework
+                            .assets
+                            .as_ref()
+                            .and_then(|assets| assets.image(&path).ok())
+                        {
+                            let texture = self.framework.gles.upload_texture(
+                                image.width,
+                                image.height,
+                                &image.pixels,
+                            );
+                            let state = self.canvas_state;
+                            self.framework.gles.draw_textured_quad_pixels(
+                                state.x + x * state.scale_x,
+                                state.y + y * state.scale_y,
+                                image.width as f32 * state.scale_x,
+                                image.height as f32 * state.scale_y,
+                                texture,
+                                Rgba8 {
+                                    r: 255,
+                                    g: 255,
+                                    b: 255,
+                                    a: 255,
+                                },
+                            );
+                        }
+                    }
+                }
+                "drawRect" => {
+                    let color = self
+                        .object_field_int(object_arg(args, 5)?, "color")
+                        .unwrap_or(-1) as u32;
+                    let state = self.canvas_state;
+                    let left = float_arg(args, 1)?;
+                    let top = float_arg(args, 2)?;
+                    let right = float_arg(args, 3)?;
+                    let bottom = float_arg(args, 4)?;
+                    self.framework.gles.draw_quad_pixels(
+                        state.x + left * state.scale_x,
+                        state.y + top * state.scale_y,
+                        (right - left) * state.scale_x,
+                        (bottom - top) * state.scale_y,
+                        unpack_argb_color(color),
+                    );
+                }
+                "save" => {
+                    self.canvas_stack.push(self.canvas_state);
+                    return Ok(Value::Int(self.canvas_stack.len() as i32));
+                }
+                "restore" => {
+                    if let Some(state) = self.canvas_stack.pop() {
+                        self.canvas_state = state;
+                    }
+                }
+                "translate" => {
+                    let state = &mut self.canvas_state;
+                    state.x += float_arg(args, 1)? * state.scale_x;
+                    state.y += float_arg(args, 2)? * state.scale_y;
+                }
+                "scale" => {
+                    self.canvas_state.scale_x *= float_arg(args, 1)?;
+                    self.canvas_state.scale_y *= float_arg(args, 2)?;
+                }
+                "clipRect" | "drawText" => {}
+                _ => {}
+            }
+            return Ok(Value::Void);
+        }
+        if class_name == "Landroid/graphics/Path;" {
+            return Ok(Value::Void);
+        }
+        if class_name == "Landroid/graphics/Matrix;" {
+            return Ok(Value::Void);
+        }
+        if class_name == "Landroid/graphics/Paint;" {
+            let receiver = object_arg(args, 0)?;
+            match method_name {
+                "setColor" => {
+                    self.set_object_field(receiver, "color", Value::Int(int_arg(args, 1)?))
+                }
+                "setTextSize" => {
+                    self.set_object_field(receiver, "text_size", Value::Float(float_arg(args, 1)?))
+                }
+                "measureText" => {
+                    return Ok(Value::Float(
+                        self.string_arg(args, 1).unwrap_or_default().chars().count() as f32
+                            * self
+                                .object_field_float(receiver, "text_size")
+                                .unwrap_or(12.0)
+                            * 0.5,
+                    ))
+                }
+                "setAntiAlias" | "setFakeBoldText" | "setTypeface" | "setStyle" => {
+                    return Ok(Value::Void);
+                }
+                _ => {}
+            }
+            return Ok(Value::Void);
+        }
+        if class_name == "Landroid/graphics/Color;" {
+            return match method_name {
+                "rgb" => Ok(Value::Int(
+                    (0xff00_0000u32
+                        | ((int_arg(args, 0)? as u32 & 0xff) << 16)
+                        | ((int_arg(args, 1)? as u32 & 0xff) << 8)
+                        | (int_arg(args, 2)? as u32 & 0xff)) as i32,
+                )),
+                "argb" => Ok(Value::Int(
+                    (((int_arg(args, 0)? as u32 & 0xff) << 24)
+                        | ((int_arg(args, 1)? as u32 & 0xff) << 16)
+                        | ((int_arg(args, 2)? as u32 & 0xff) << 8)
+                        | (int_arg(args, 3)? as u32 & 0xff)) as i32,
+                )),
+                _ => Ok(Value::Int(-1)),
             };
         }
         if class_name == "Landroid/graphics/BitmapFactory;" {
             return match method_name {
-                "decodeResource" | "decodeStream" | "decodeFile" => {
-                    Ok(Value::Object(self.alloc_bitmap(320, 480)))
-                }
+                "decodeResource" => Ok(Value::Object(
+                    self.alloc_resource_bitmap(int_arg(args, 1)? as u32),
+                )),
+                "decodeStream" | "decodeFile" => Ok(Value::Object(self.alloc_bitmap(320, 480))),
                 _ => Ok(Value::Null),
             };
         }
         if class_name == "Landroid/graphics/Bitmap;" {
             return match method_name {
+                "createBitmap" => {
+                    let source = object_arg(args, 0)?;
+                    let bitmap = self.alloc_bitmap(
+                        self.object_field_int(source, "width").unwrap_or(320),
+                        self.object_field_int(source, "height").unwrap_or(480),
+                    );
+                    self.copy_drawable_fields(source, bitmap);
+                    Ok(Value::Object(bitmap))
+                }
                 "getWidth" => Ok(Value::Int(
                     object_arg(args, 0)
                         .ok()
@@ -2335,10 +2579,31 @@ impl<'a> Vm<'a> {
                 _ => {}
             }
         }
+        if class_name == "Landroid/view/MotionEvent;" {
+            let receiver = object_arg(args, 0)?;
+            return match method_name {
+                "getAction" => Ok(Value::Int(
+                    self.object_field_int(receiver, "action").unwrap_or(0),
+                )),
+                "getX" => Ok(Value::Float(
+                    self.object_field_float(receiver, "x").unwrap_or(0.0),
+                )),
+                "getY" => Ok(Value::Float(
+                    self.object_field_float(receiver, "y").unwrap_or(0.0),
+                )),
+                _ => Ok(Value::Void),
+            };
+        }
         if class_name.starts_with("Landroid/view/")
             || class_name.starts_with("Landroid/widget/")
             || class_name == "Landroid/opengl/GLSurfaceView;"
         {
+            if method_name == "setOnTouchListener" {
+                let view = object_arg(args, 0)?;
+                let listener = object_arg(args, 1)?;
+                self.view_touch_listeners.insert(view, listener);
+                return Ok(Value::Void);
+            }
             return match method_name {
                 "getCurrentView" => {
                     let view =
@@ -2710,6 +2975,45 @@ impl<'a> Vm<'a> {
                 format!("L{};", requested.replace('.', "/"))
             };
             return Ok(Value::Object(self.alloc(HeapObject::Class(descriptor))));
+        }
+        if class_name == "Ljava/text/DecimalFormat;" {
+            let receiver = object_arg(args, 0)?;
+            if method_name == "<init>" {
+                if let Some(Value::String(pattern)) = args.get(1) {
+                    self.set_object_field(receiver, "pattern", Value::String(pattern.clone()));
+                }
+                return Ok(Value::Void);
+            }
+            if method_name == "format" {
+                return Ok(Value::String(match args.get(1) {
+                    Some(Value::Double(value)) => format!("{value:.2}"),
+                    Some(Value::Float(value)) => format!("{value:.2}"),
+                    Some(Value::Int(value)) => value.to_string(),
+                    Some(Value::Long(value)) => value.to_string(),
+                    _ => String::new(),
+                }));
+            }
+            return Ok(Value::Void);
+        }
+        if class_name == "Ljava/util/Random;" {
+            let receiver = object_arg(args, 0)?;
+            if method_name == "<init>" {
+                self.set_object_field(receiver, "state", Value::Int(1));
+                return Ok(Value::Void);
+            }
+            if method_name == "nextInt" {
+                let bound = int_arg(args, 1)?.max(1);
+                let state = self.object_field_int(receiver, "state").unwrap_or(1);
+                let next = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                self.set_object_field(receiver, "state", Value::Int(next));
+                return Ok(Value::Int((next & i32::MAX) % bound));
+            }
+            return Ok(Value::Void);
+        }
+        if class_name == "Landroid/graphics/Typeface;" && method_name == "createFromAsset" {
+            return Ok(Value::Object(
+                self.alloc_instance("Landroid/graphics/Typeface;"),
+            ));
         }
         Err(self.error(
             0,
@@ -3805,6 +4109,15 @@ impl<'a> Vm<'a> {
             opcode,
             message: message.into(),
         }
+    }
+}
+
+fn unpack_argb_color(value: u32) -> Rgba8 {
+    Rgba8 {
+        a: (value >> 24) as u8,
+        r: (value >> 16) as u8,
+        g: (value >> 8) as u8,
+        b: value as u8,
     }
 }
 

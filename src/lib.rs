@@ -181,6 +181,27 @@ pub extern "C" fn donuthle_render_frame(_width: u32, _height: u32) -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn donuthle_touch(action: i32, x: f32, y: f32) -> i32 {
+    let Ok(mut runtime) = RUNTIME.lock() else {
+        return 0;
+    };
+    let Some(runtime) = runtime.as_mut() else {
+        return 0;
+    };
+    let Some(session) = runtime.session.as_mut() else {
+        return 0;
+    };
+    match session.vm.dispatch_touch(session.listener, action, x, y) {
+        Ok(crate::vm::Value::Int(value)) => value,
+        Ok(_) => 1,
+        Err(error) => {
+            eprintln!("DonutHLE touch dispatch failed: {error}");
+            0
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
     c"Rust DonutHLE core: Android 1.x APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
 }

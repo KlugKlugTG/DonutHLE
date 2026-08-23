@@ -13,6 +13,7 @@ extern "C" void donuthle_free_string(char* value);
 extern "C" char* donuthle_game_title();
 extern "C" uint32_t donuthle_framebuffer_width();
 extern "C" uint32_t donuthle_framebuffer_height();
+extern "C" int32_t donuthle_touch(int32_t action, float x, float y);
 #ifndef DONUTHLE_NO_CORE
 extern "C" uint32_t donuthle_render_frame(uint32_t width, uint32_t height);
 extern "C" size_t donuthle_framebuffer_copy(uint8_t* output, size_t output_len);
@@ -164,6 +165,15 @@ static bool drawSoftwareFrame(GLfloat width, GLfloat height) {
     return true;
 }
 #endif
+
+extern "C" JNIEXPORT jint JNICALL
+Java_org_donuthle_android_MainActivity_nativeTouchEvent(JNIEnv*, jobject, jint action, jfloat x, jfloat y) {
+#ifdef DONUTHLE_NO_CORE
+    return 0;
+#else
+    return static_cast<jint>(donuthle_touch(static_cast<int32_t>(action), x, y));
+#endif
+}
 
 extern "C" JNIEXPORT void JNICALL
 Java_org_donuthle_android_MainActivity_nativeRenderFrame(JNIEnv*, jobject, jint width, jint height) {

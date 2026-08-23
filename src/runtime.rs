@@ -56,7 +56,7 @@ pub struct Runtime {
 
 pub struct RuntimeSession {
     pub vm: Vm<'static>,
-    listener: ObjectId,
+    pub listener: ObjectId,
     legacy_canvas: bool,
 }
 
@@ -145,8 +145,17 @@ impl RuntimeSession {
             .framework
             .gles
             .viewport(0, 0, logical_width, logical_height);
+        let method = if self
+            .vm
+            .heap_object(self.listener)
+            .is_some_and(|object| matches!(object, crate::vm::HeapObject::Instance { class_name, .. } if class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"))
+        {
+            "onDraw"
+        } else {
+            "render"
+        };
         self.vm
-            .render_frame(self.listener, "render")
+            .render_frame(self.listener, method)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         crate::publish_framebuffer(self.vm.framework.gles.framebuffer());
         Ok((
@@ -318,6 +327,11 @@ impl Runtime {
                     framework
                         .resources
                         .insert(value.id, Value::String(value.value.clone()));
+                    if value.type_name == "drawable" {
+                        if let Some(path) = plan.assets.find_image(&[value.name.as_str()]) {
+                            framework.resource_images.insert(value.id, path);
+                        }
+                    }
                 }
             }
             let dex: &'static DexFile = Box::leak(Box::new(plan.dex.clone()));
@@ -348,10 +362,38 @@ impl Runtime {
                 .framework
                 .gdx_listener
                 .or_else(|| vm.find_instance_by_class("Lcom/hyperkani/sliceice/Engine;"));
+            let listener = if listener.is_none() && plan.package == "de.nurogames.android.tinysanta"
+            {
+                let view =
+                    vm.alloc_instance("Lde/nurogames/android/tinysanta/views/TinySantaView;");
+                if let Some(index) = plan.dex.methods.iter().position(|method| {
+                    method.class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
+                        && method.name == "<init>"
+                        && method.prototype.contains("Landroid/content/Context;")
+                        && method.prototype.contains("Landroid/util/AttributeSet;")
+                }) {
+                    vm.run_method(
+                        index,
+                        vec![
+                            VmValue::Object(view),
+                            VmValue::Object(activity_object),
+                            VmValue::Null,
+                        ],
+                    )
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    Some(view)
+                } else {
+                    None
+                }
+            } else {
+                listener
+            };
             let frame_status;
             if let Some(listener) = listener {
-                vm.run_instance_method(listener, "create", Vec::new())
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                if plan.package != "de.nurogames.android.tinysanta" {
+                    vm.run_instance_method(listener, "create", Vec::new())
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                }
                 let mut session = RuntimeSession {
                     vm,
                     listener,

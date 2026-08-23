@@ -193,6 +193,8 @@ pub struct ViewNode {
     pub bounds: Rect,
     pub visible: bool,
     pub children: Vec<u32>,
+    pub displayed_child: usize,
+    pub touch_listener: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,6 +351,7 @@ pub struct Framework {
     pub gdx_files: Option<u32>,
     pub gdx_input: Option<u32>,
     pub assets: Option<AssetStore>,
+    pub resource_images: HashMap<u32, String>,
     pub surface_size: (i32, i32),
     next_handle: u32,
 }
@@ -380,6 +383,8 @@ impl Framework {
                 },
                 visible: true,
                 children: Vec::new(),
+                displayed_child: 0,
+                touch_listener: None,
             },
         );
         handle
@@ -398,6 +403,8 @@ impl Framework {
             },
             visible: true,
             children: Vec::new(),
+            displayed_child: 0,
+            touch_listener: None,
         });
     }
 
