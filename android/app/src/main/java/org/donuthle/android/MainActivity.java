@@ -26,7 +26,7 @@ public final class MainActivity extends Activity {
     private native String nativeGameTitle();
     private native String nativeLaunchApk(String path);
     native void nativeRenderFrame(int width, int height);
-    private native int nativeTouchEvent(int action, float x, float y);
+    native int nativeTouchEvent(int action, float x, float y);
     private static final int PICK_APK = 42;
     private static final int PICK_DONUTHLE_FOLDER = 43;
     private final int teal = Color.rgb(128, 203, 196);
