@@ -2795,16 +2795,17 @@ impl<'a> Vm<'a> {
                     let value = args.first().cloned().unwrap_or(Value::Int(0));
                     return Ok(Value::Object(self.alloc(HeapObject::Boxed(value))));
                 }
-                "intValue" => return Ok(Value::Int(int_arg(args, 0)?)),
-                "longValue" => return Ok(Value::Long(int_arg(args, 0)? as i64)),
-                "floatValue" => return Ok(Value::Float(float_arg(args, 0)?)),
-                "doubleValue" => return Ok(Value::Double(float_arg(args, 0)? as f64)),
-                "booleanValue" => return Ok(Value::Int(int_arg(args, 0)?)),
+                "intValue" => return Ok(Value::Int(self.boxed_int_arg(args, 0)?)),
+                "longValue" => return Ok(Value::Long(self.boxed_long_arg(args, 0)?)),
+                "floatValue" => return Ok(Value::Float(self.boxed_float_arg(args, 0)?)),
+                "doubleValue" => return Ok(Value::Double(self.boxed_float_arg(args, 0)? as f64)),
+                "booleanValue" => {
+                    return Ok(Value::Int(i32::from(self.boxed_int_arg(args, 0)? != 0)))
+                }
                 "toString" => {
-                    return Ok(Value::Object(self.alloc_string(format!(
-                        "{:?}",
-                        args.first().unwrap_or(&Value::Int(0))
-                    ))))
+                    return Ok(Value::Object(
+                        self.alloc_string(self.boxed_value_string(args, 0)?),
+                    ))
                 }
                 _ => {}
             }
@@ -3940,6 +3941,80 @@ impl<'a> Vm<'a> {
                 )),
             },
             _ => Err(self.error(0, 0, format!("framework argument {index} is not a string"))),
+        }
+    }
+
+    fn boxed_value(&self, args: &[Value], index: usize) -> Result<Value, VmError> {
+        match args.get(index) {
+            Some(Value::Object(id)) => match self.heap_object(*id) {
+                Some(HeapObject::Boxed(value)) => Ok(value.clone()),
+                Some(HeapObject::Instance { fields, .. }) => {
+                    if let Some(value) = fields.get("value") {
+                        return Ok(value.clone());
+                    }
+                    Err(self.error(
+                        0,
+                        0,
+                        format!(
+                            "framework argument {index} is object {id}, expected boxed primitive"
+                        ),
+                    ))
+                }
+                _ => Err(self.error(
+                    0,
+                    0,
+                    format!("framework argument {index} is object {id}, expected boxed primitive"),
+                )),
+            },
+            Some(value @ (Value::Int(_) | Value::Long(_) | Value::Float(_) | Value::Double(_))) => {
+                Ok(value.clone())
+            }
+            Some(Value::Null) | Some(Value::Void) | None => Ok(Value::Int(0)),
+            Some(value) => Err(self.error(
+                0,
+                0,
+                format!("framework argument {index} is not a boxed primitive: {value:?}"),
+            )),
+        }
+    }
+
+    fn boxed_int_arg(&self, args: &[Value], index: usize) -> Result<i32, VmError> {
+        match self.boxed_value(args, index)? {
+            Value::Int(value) => Ok(value),
+            Value::Long(value) => Ok(value as i32),
+            Value::Float(value) => Ok(value as i32),
+            Value::Double(value) => Ok(value as i32),
+            value => Err(self.error(0, 0, format!("boxed value is not numeric: {value:?}"))),
+        }
+    }
+
+    fn boxed_long_arg(&self, args: &[Value], index: usize) -> Result<i64, VmError> {
+        match self.boxed_value(args, index)? {
+            Value::Long(value) => Ok(value),
+            Value::Int(value) => Ok(value as i64),
+            Value::Float(value) => Ok(value as i64),
+            Value::Double(value) => Ok(value as i64),
+            value => Err(self.error(0, 0, format!("boxed value is not numeric: {value:?}"))),
+        }
+    }
+
+    fn boxed_float_arg(&self, args: &[Value], index: usize) -> Result<f32, VmError> {
+        match self.boxed_value(args, index)? {
+            Value::Float(value) => Ok(value),
+            Value::Double(value) => Ok(value as f32),
+            Value::Int(value) => Ok(value as f32),
+            Value::Long(value) => Ok(value as f32),
+            value => Err(self.error(0, 0, format!("boxed value is not numeric: {value:?}"))),
+        }
+    }
+
+    fn boxed_value_string(&self, args: &[Value], index: usize) -> Result<String, VmError> {
+        match self.boxed_value(args, index)? {
+            Value::Int(value) => Ok(value.to_string()),
+            Value::Long(value) => Ok(value.to_string()),
+            Value::Float(value) => Ok(value.to_string()),
+            Value::Double(value) => Ok(value.to_string()),
+            value => Err(self.error(0, 0, format!("boxed value is not numeric: {value:?}"))),
         }
     }
 
