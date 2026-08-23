@@ -1891,6 +1891,25 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
+        if class_name == "Landroid/util/Log;" {
+            let message = args
+                .iter()
+                .skip(1)
+                .find_map(|value| match value {
+                    Value::String(value) => Some(value.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            if method_name == "getStackTraceString" {
+                return Ok(Value::String(String::new()));
+            }
+            if matches!(method_name, "v" | "d" | "i" | "w" | "e" | "wtf") {
+                self.framework
+                    .logs
+                    .push(format!("Log/{method_name}: {message}"));
+            }
+            return Ok(Value::Int(0));
+        }
         if class_name == "Ljava/util/Collections;" && method_name == "sort" {
             return Ok(Value::Void);
         }

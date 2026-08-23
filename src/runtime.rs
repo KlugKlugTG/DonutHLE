@@ -57,6 +57,7 @@ pub struct Runtime {
 pub struct RuntimeSession {
     pub vm: Vm<'static>,
     listener: ObjectId,
+    legacy_canvas: bool,
 }
 
 impl RuntimeSession {
@@ -155,7 +156,7 @@ impl RuntimeSession {
     }
 
     pub fn render_current_frame(&mut self) -> Result<(usize, usize)> {
-        if self.listener == 0 {
+        if self.legacy_canvas {
             Ok(self.render_legacy_canvas_frame())
         } else {
             self.render_frame(0, 0)
@@ -351,7 +352,11 @@ impl Runtime {
             if let Some(listener) = listener {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                let mut session = RuntimeSession { vm, listener };
+                let mut session = RuntimeSession {
+                    vm,
+                    listener,
+                    legacy_canvas: false,
+                };
                 let (commands, pixels) = session.render_frame(320, 480)?;
                 frame_status = format!(
                     "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
@@ -360,7 +365,11 @@ impl Runtime {
                 self.session = Some(session);
                 self.framework = Framework::new();
             } else {
-                let mut session = RuntimeSession { vm, listener: 0 };
+                let mut session = RuntimeSession {
+                    vm,
+                    listener: 0,
+                    legacy_canvas: true,
+                };
                 let (commands, pixels) = session.render_legacy_canvas_frame();
                 frame_status = format!(
                     "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"

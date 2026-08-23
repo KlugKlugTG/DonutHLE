@@ -101,6 +101,12 @@ struct FrameSnapshot {
 static FRAME_SNAPSHOT: Mutex<Option<FrameSnapshot>> = Mutex::new(None);
 static RUNTIME: Mutex<Option<runtime::Runtime>> = Mutex::new(None);
 
+fn clear_framebuffer() {
+    if let Ok(mut snapshot) = FRAME_SNAPSHOT.lock() {
+        *snapshot = None;
+    }
+}
+
 pub(crate) fn publish_framebuffer(framebuffer: &Framebuffer) {
     let mut pixels = Vec::with_capacity(framebuffer.pixels().len().saturating_mul(4));
     for pixel in framebuffer.pixels() {
@@ -153,19 +159,25 @@ pub unsafe extern "C" fn donuthle_framebuffer_copy(output: *mut u8, output_len: 
 }
 
 #[no_mangle]
-pub extern "C" fn donuthle_render_frame(width: u32, height: u32) -> u32 {
+pub extern "C" fn donuthle_render_frame(_width: u32, _height: u32) -> u32 {
     let Ok(mut runtime) = RUNTIME.lock() else {
         return 0;
     };
     let Some(runtime) = runtime.as_mut() else {
         return 0;
     };
-    runtime
-        .session
-        .as_mut()
-        .and_then(|session| session.render_frame(width, height).ok())
-        .map(|(commands, _)| commands as u32)
-        .unwrap_or(0)
+    let Some(session) = runtime.session.as_mut() else {
+        clear_framebuffer();
+        return 0;
+    };
+    match session.render_current_frame() {
+        Ok((commands, _)) => commands as u32,
+        Err(error) => {
+            eprintln!("DonutHLE frame render failed: {error}");
+            clear_framebuffer();
+            0
+        }
+    }
 }
 
 #[no_mangle]
@@ -196,6 +208,10 @@ pub extern "C" fn donuthle_game_title() -> *mut std::os::raw::c_char {
 pub unsafe extern "C" fn donuthle_launch_report(
     path: *const std::os::raw::c_char,
 ) -> *mut std::os::raw::c_char {
+    clear_framebuffer();
+    if let Ok(mut runtime) = RUNTIME.lock() {
+        *runtime = None;
+    }
     let result = if path.is_null() {
         Err(anyhow::anyhow!("APK path is null"))
     } else {
