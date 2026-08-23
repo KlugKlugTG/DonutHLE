@@ -2043,10 +2043,39 @@ impl<'a> Vm<'a> {
             let clock = NANO_TIME_START.get_or_init(std::time::Instant::now);
             return Ok(Value::Long(clock.elapsed().as_nanos() as i64));
         }
+        if class_name == "Ljava/lang/System;" && matches!(method_name, "loadLibrary" | "load") {
+            self.framework
+                .logs
+                .push(format!("System.{method_name} ignored by HLE"));
+            return Ok(Value::Void);
+        }
         if class_name == "Ljava/util/Locale;" {
             return match method_name {
                 "getDefault" => Ok(Value::Object(self.alloc_instance("Ljava/util/Locale;"))),
                 "getCountry" => Ok(Value::String("EN".to_owned())),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/content/Intent;" {
+            let receiver = object_arg(args, 0)?;
+            return match method_name {
+                "addFlags" | "setFlags" => {
+                    let flags = int_arg(args, 1)?;
+                    let value = if method_name == "addFlags" {
+                        self.object_field_int(receiver, "flags").unwrap_or(0) | flags
+                    } else {
+                        flags
+                    };
+                    self.set_object_field(receiver, "flags", Value::Int(value));
+                    Ok(Value::Object(receiver))
+                }
+                "addCategory" | "setAction" | "setData" | "setType" | "setPackage"
+                | "setComponent" | "setClass" | "setClassName" | "putExtra" => {
+                    Ok(Value::Object(receiver))
+                }
+                "getFlags" => Ok(Value::Int(
+                    self.object_field_int(receiver, "flags").unwrap_or(0),
+                )),
                 _ => Ok(Value::Void),
             };
         }
