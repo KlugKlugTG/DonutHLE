@@ -397,9 +397,9 @@ impl Runtime {
                 let mut session = RuntimeSession {
                     vm,
                     listener,
-                    legacy_canvas: false,
+                    legacy_canvas: plan.package == "de.nurogames.android.tinysanta",
                 };
-                let (commands, pixels) = session.render_frame(320, 480)?;
+                let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
                     "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
                 );

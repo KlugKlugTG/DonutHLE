@@ -146,7 +146,7 @@ static bool drawSoftwareFrame(GLfloat width, GLfloat height) {
     const GLfloat vertices[] = {0.0f, 0.0f, width, 0.0f, 0.0f, height, width, height};
     const GLfloat u = static_cast<GLfloat>(frameWidth) / textureWidth;
     const GLfloat v = static_cast<GLfloat>(frameHeight) / textureHeight;
-    const GLfloat coordinates[] = {0.0f, 1.0f, u, 1.0f, 0.0f, 1.0f - v, u, 1.0f - v};
+    const GLfloat coordinates[] = {0.0f, 0.0f, u, 0.0f, 0.0f, v, u, v};
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);
