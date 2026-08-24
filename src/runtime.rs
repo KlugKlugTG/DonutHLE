@@ -57,85 +57,9 @@ pub struct Runtime {
 pub struct RuntimeSession {
     pub vm: Vm<'static>,
     pub listener: ObjectId,
-    legacy_canvas: bool,
 }
 
 impl RuntimeSession {
-    pub fn render_legacy_canvas_frame(&mut self) -> (usize, usize) {
-        let width = self.vm.framework.gles.framebuffer().width().max(1);
-        let height = self.vm.framework.gles.framebuffer().height().max(1);
-        self.vm.framework.surface_size = (width as i32, height as i32);
-        self.vm.framework.gles.begin_frame();
-        self.vm.framework.gles.viewport(0, 0, width, height);
-        self.vm.framework.gles.set_clear_color(crate::Rgba8 {
-            r: 17,
-            g: 24,
-            b: 31,
-            a: 255,
-        });
-        self.vm.framework.gles.clear();
-        let assets = self.vm.framework.assets.clone();
-        if let Some(assets) = assets {
-            if let Some(path) = assets.find_image(&["btn_bg", "hive", "abort_bg"]) {
-                if let Ok(image) = assets.image(&path) {
-                    let texture = self.vm.framework.gles.upload_texture(
-                        image.width,
-                        image.height,
-                        &image.pixels,
-                    );
-                    self.vm.framework.gles.draw_textured_quad_pixels(
-                        0.0,
-                        0.0,
-                        width as f32,
-                        height as f32,
-                        texture,
-                        crate::Rgba8 {
-                            r: 255,
-                            g: 255,
-                            b: 255,
-                            a: 255,
-                        },
-                    );
-                }
-            }
-            for (stems, x, y, w, h) in [
-                (&["btn_play_normal"][..], 68.0, 190.0, 184.0, 64.0),
-                (&["btn_options_normal"][..], 82.0, 270.0, 156.0, 52.0),
-                (&["btn_help_normal"][..], 82.0, 338.0, 156.0, 52.0),
-            ] {
-                let Some(path) = assets.find_image(stems) else {
-                    continue;
-                };
-                let Ok(image) = assets.image(&path) else {
-                    continue;
-                };
-                let texture =
-                    self.vm
-                        .framework
-                        .gles
-                        .upload_texture(image.width, image.height, &image.pixels);
-                self.vm.framework.gles.draw_textured_quad_pixels(
-                    x,
-                    y,
-                    w,
-                    h,
-                    texture,
-                    crate::Rgba8 {
-                        r: 255,
-                        g: 255,
-                        b: 255,
-                        a: 255,
-                    },
-                );
-            }
-        }
-        crate::publish_framebuffer(self.vm.framework.gles.framebuffer());
-        (
-            self.vm.framework.gles.command_count(),
-            self.vm.framework.gles.rendered_pixels(),
-        )
-    }
-
     pub fn render_frame(&mut self, _width: u32, _height: u32) -> Result<(usize, usize)> {
         let logical_width = self.vm.framework.gles.framebuffer().width().max(1);
         let logical_height = self.vm.framework.gles.framebuffer().height().max(1);
@@ -165,11 +89,7 @@ impl RuntimeSession {
     }
 
     pub fn render_current_frame(&mut self) -> Result<(usize, usize)> {
-        if self.legacy_canvas {
-            Ok(self.render_legacy_canvas_frame())
-        } else {
-            self.render_frame(0, 0)
-        }
+        self.render_frame(0, 0)
     }
 }
 
@@ -397,7 +317,6 @@ impl Runtime {
                 let mut session = RuntimeSession {
                     vm,
                     listener,
-                    legacy_canvas: false,
                 };
                 let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
@@ -410,9 +329,8 @@ impl Runtime {
                 let mut session = RuntimeSession {
                     vm,
                     listener: 0,
-                    legacy_canvas: true,
                 };
-                let (commands, pixels) = session.render_legacy_canvas_frame();
+                let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
                     "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"
                 );
