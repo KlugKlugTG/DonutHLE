@@ -1280,6 +1280,69 @@ impl<'a> Vm<'a> {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
                 }
+                0x2b | 0x2c => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    let payload_offset = (code_word(code, pc + 1, pc, opcode)? as u32)
+                        | ((code_word(code, pc + 2, pc, opcode)? as u32) << 16);
+                    let payload = (pc as i64 + payload_offset as i32 as i64) as usize;
+                    let signature = if opcode == 0x2b { 0x0100 } else { 0x0200 };
+                    if payload + 2 > code.instructions.len()
+                        || code.instructions[payload] != signature
+                    {
+                        return Err(self.error(pc, opcode, "invalid switch payload"));
+                    }
+                    let size = code.instructions[payload + 1] as usize;
+                    let key = as_int(get_register(&registers, register, pc, opcode)?, pc, opcode)?;
+                    let target_offset = if opcode == 0x2b {
+                        let first_key = (code.instructions[payload + 2] as u32)
+                            | ((code.instructions[payload + 3] as u32) << 16);
+                        let index = (key as i64)
+                            .checked_sub(first_key as i64)
+                            .filter(|index| *index >= 0)
+                            .map(|index| index as usize);
+                        let Some(index) = index.filter(|index| *index < size) else {
+                            pc += 3;
+                            continue;
+                        };
+                        let target = payload + 4 + index * 2;
+                        if target + 1 >= code.instructions.len() {
+                            return Err(self.error(
+                                pc,
+                                opcode,
+                                "packed switch target is truncated",
+                            ));
+                        }
+                        (code.instructions[target] as u32)
+                            | ((code.instructions[target + 1] as u32) << 16)
+                    } else {
+                        let mut found = None;
+                        for index in 0..size {
+                            let key_at = payload + 2 + index * 4;
+                            let value = (code.instructions[key_at] as u32)
+                                | ((code.instructions[key_at + 1] as u32) << 16);
+                            if value as i32 == key {
+                                let target = key_at + 2;
+                                found = Some(
+                                    (code.instructions[target] as u32)
+                                        | ((code.instructions[target + 1] as u32) << 16),
+                                );
+                                break;
+                            }
+                        }
+                        let Some(target) = found else {
+                            pc += 3;
+                            continue;
+                        };
+                        target
+                    };
+                    pc = branch_target(
+                        pc,
+                        target_offset as i32,
+                        code.instructions.len(),
+                        pc,
+                        opcode,
+                    )?;
+                }
                 0x2d..=0x31 => {
                     let (dest, left_reg, right_reg) =
                         three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
