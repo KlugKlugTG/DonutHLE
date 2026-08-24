@@ -57,6 +57,7 @@ pub struct Runtime {
 pub struct RuntimeSession {
     pub vm: Vm<'static>,
     pub listener: ObjectId,
+    pub render_method: String,
 }
 
 impl RuntimeSession {
@@ -69,17 +70,8 @@ impl RuntimeSession {
             .framework
             .gles
             .viewport(0, 0, logical_width, logical_height);
-        let method = if self
-            .vm
-            .heap_object(self.listener)
-            .is_some_and(|object| matches!(object, crate::vm::HeapObject::Instance { class_name, .. } if class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"))
-        {
-            "onDraw"
-        } else {
-            "render"
-        };
         self.vm
-            .render_frame(self.listener, method)
+            .render_frame(self.listener, &self.render_method)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         crate::publish_framebuffer(self.vm.framework.gles.framebuffer());
         Ok((
@@ -272,6 +264,8 @@ impl Runtime {
                 })
                 .ok_or_else(|| anyhow::anyhow!("launcher onCreate method is missing"))?;
             let activity_object = vm.alloc_instance(plan.class_name.clone());
+            vm.run_instance_method(activity_object, "<init>", Vec::new())
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             let value = vm
                 .run_method(
                     method_index,
@@ -286,7 +280,11 @@ impl Runtime {
             if let Some(listener) = listener {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                let mut session = RuntimeSession { vm, listener };
+                let mut session = RuntimeSession {
+                    vm,
+                    listener,
+                    render_method: "render".to_owned(),
+                };
                 let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
                     "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
@@ -295,7 +293,14 @@ impl Runtime {
                 self.session = Some(session);
                 self.framework = Framework::new();
             } else {
-                let mut session = RuntimeSession { vm, listener: 0 };
+                let listener = vm.find_render_view().ok_or_else(|| {
+                    anyhow::anyhow!("application launched but created no renderable View")
+                })?;
+                let mut session = RuntimeSession {
+                    vm,
+                    listener,
+                    render_method: "onDraw".to_owned(),
+                };
                 let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
                     "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"

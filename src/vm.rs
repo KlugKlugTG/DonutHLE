@@ -356,6 +356,17 @@ impl<'a> Vm<'a> {
             })
     }
 
+    pub fn find_render_view(&self) -> Option<ObjectId> {
+        self.heap.iter().enumerate().find_map(|(id, object)| {
+            let HeapObject::Instance { class_name, .. } = object else {
+                return None;
+            };
+            self.dex
+                .method_code(class_name, "onDraw")
+                .map(|_| id as ObjectId)
+        })
+    }
+
     fn instance_method_index(&self, object: ObjectId, referenced_index: usize) -> Option<usize> {
         let referenced = self.dex.method_id(referenced_index)?;
         if referenced.class_name == "Lcom/hyperkani/common/BaseObject;"
@@ -3287,6 +3298,40 @@ impl<'a> Vm<'a> {
             return Ok(Value::Object(
                 self.alloc_instance("Landroid/graphics/Typeface;"),
             ));
+        }
+        if class_name == "Ljava/util/Timer;" {
+            return match method_name {
+                "schedule" | "scheduleAtFixedRate" => {
+                    if let Some(Value::Object(task)) = args.get(1) {
+                        self.run_instance_method(*task, "run", Vec::new())?;
+                    }
+                    Ok(Value::Void)
+                }
+                "cancel" | "purge" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Ljava/util/TimerTask;" {
+            return match method_name {
+                "cancel" | "scheduledExecutionTime" => Ok(Value::Int(0)),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/os/Handler;" {
+            return match method_name {
+                "sendMessage" => {
+                    let handler = object_arg(args, 0)?;
+                    let message = args.get(1).cloned().unwrap_or(Value::Null);
+                    self.run_instance_method(handler, "handleMessage", vec![message])?;
+                    Ok(Value::Int(1))
+                }
+                "post" | "postDelayed" | "removeCallbacks" => Ok(Value::Int(1)),
+                "handleMessage" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/os/Message;" {
+            return Ok(Value::Void);
         }
         Err(self.error(
             0,
