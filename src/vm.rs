@@ -2465,6 +2465,45 @@ impl<'a> Vm<'a> {
                     Some(Value::Int(value)) => Value::Double((*value as f64).cos()),
                     _ => Value::Double(0.0),
                 }),
+                "acos" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.acos()),
+                    Some(Value::Double(value)) => Value::Double(value.acos()),
+                    Some(Value::Long(value)) => Value::Double((*value as f64).acos()),
+                    Some(Value::Int(value)) => Value::Double((*value as f64).acos()),
+                    _ => Value::Double(0.0),
+                }),
+                "asin" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.asin()),
+                    Some(Value::Double(value)) => Value::Double(value.asin()),
+                    Some(Value::Long(value)) => Value::Double((*value as f64).asin()),
+                    Some(Value::Int(value)) => Value::Double((*value as f64).asin()),
+                    _ => Value::Double(0.0),
+                }),
+                "atan" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.atan()),
+                    Some(Value::Double(value)) => Value::Double(value.atan()),
+                    Some(Value::Long(value)) => Value::Double((*value as f64).atan()),
+                    Some(Value::Int(value)) => Value::Double((*value as f64).atan()),
+                    _ => Value::Double(0.0),
+                }),
+                "tan" => Ok(match args.first() {
+                    Some(Value::Float(value)) => Value::Float(value.tan()),
+                    Some(Value::Double(value)) => Value::Double(value.tan()),
+                    Some(Value::Long(value)) => Value::Double((*value as f64).tan()),
+                    Some(Value::Int(value)) => Value::Double((*value as f64).tan()),
+                    _ => Value::Double(0.0),
+                }),
+                "atan2" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.atan2(
+                        as_double(args.get(1).cloned().unwrap_or(Value::Int(0)), 0, 0)?,
+                    ),
+                )),
+                "toRadians" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.to_radians(),
+                )),
+                "toDegrees" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.to_degrees(),
+                )),
                 "min" | "max" => {
                     let left = args.first().cloned().unwrap_or(Value::Int(0));
                     let right = args.get(1).cloned().unwrap_or(Value::Int(0));
@@ -2574,6 +2613,29 @@ impl<'a> Vm<'a> {
                 )),
                 "cos" => Ok(Value::Double(
                     as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.cos(),
+                )),
+                "acos" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.acos(),
+                )),
+                "asin" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.asin(),
+                )),
+                "atan" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.atan(),
+                )),
+                "tan" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.tan(),
+                )),
+                "atan2" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.atan2(
+                        as_double(args.get(1).cloned().unwrap_or(Value::Int(0)), 0, 0)?,
+                    ),
+                )),
+                "toRadians" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.to_radians(),
+                )),
+                "toDegrees" => Ok(Value::Double(
+                    as_double(args.first().cloned().unwrap_or(Value::Int(0)), 0, 0)?.to_degrees(),
                 )),
                 _ => Err(self.error(
                     0,
