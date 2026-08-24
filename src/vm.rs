@@ -2037,6 +2037,19 @@ impl<'a> Vm<'a> {
             return Ok(Value::Int(0));
         }
         if class_name == "Ljava/util/Collections;" && method_name == "sort" {
+            let list = object_arg(args, 0)?;
+            let mut values = match self.heap.get_mut(list as usize) {
+                Some(HeapObject::Collection(values)) => std::mem::take(values),
+                _ => return Err(self.error(0, 0, "Collections.sort target is not a collection")),
+            };
+            values.sort_by(|left, right| {
+                compare_values(left, right, 0, 0)
+                    .map(|value| value.cmp(&0))
+                    .unwrap_or_else(|_| value_sort_key(left).cmp(&value_sort_key(right)))
+            });
+            if let Some(HeapObject::Collection(target)) = self.heap.get_mut(list as usize) {
+                *target = values;
+            }
             return Ok(Value::Void);
         }
         if class_name == "Ljava/io/PrintStream;" {
@@ -2145,9 +2158,13 @@ impl<'a> Vm<'a> {
                     return Ok(Value::Object(object));
                 }
                 "getSharedPreferences" => {
-                    return Ok(Value::Object(
-                        self.alloc_instance("Landroid/content/SharedPreferences;"),
-                    ))
+                    let prefs = self.alloc_instance("Landroid/content/SharedPreferences;");
+                    self.set_object_field(
+                        prefs,
+                        "name",
+                        Value::String(self.string_arg(args, 1).unwrap_or_default()),
+                    );
+                    return Ok(Value::Object(prefs));
                 }
                 "registerReceiver" => return Ok(Value::Null),
                 "getMainLooper" => {
@@ -2176,15 +2193,52 @@ impl<'a> Vm<'a> {
             }
         }
         if class_name == "Landroid/content/SharedPreferences;" {
+            let prefs = object_arg(args, 0)?;
+            let name = self
+                .object_field_string(prefs, "name")
+                .unwrap_or_else(|| prefs.to_string());
             return match method_name {
-                "getBoolean" => Ok(Value::Int(int_arg(args, 2)?)),
-                "getInt" => Ok(Value::Int(int_arg(args, 2)?)),
-                "getLong" => Ok(Value::Long(int_arg(args, 2)? as i64)),
-                "getFloat" => Ok(Value::Float(float_arg(args, 2)?)),
-                "getString" => Ok(args.get(2).cloned().unwrap_or(Value::String(String::new()))),
-                "edit" => Ok(Value::Object(
-                    self.alloc_instance("Landroid/content/SharedPreferences$Editor;"),
+                "getBoolean" => Ok(Value::Int(i32::from(
+                    self.framework
+                        .preferences
+                        .get(&(name.clone(), self.string_arg(args, 1).unwrap_or_default()))
+                        .map(String::as_str)
+                        .unwrap_or(if int_arg(args, 2)? != 0 { "1" } else { "0" })
+                        == "1",
+                ))),
+                "getInt" => Ok(Value::Int(
+                    self.framework
+                        .preferences
+                        .get(&(name.clone(), self.string_arg(args, 1).unwrap_or_default()))
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(int_arg(args, 2)?),
                 )),
+                "getLong" => Ok(Value::Long(
+                    self.framework
+                        .preferences
+                        .get(&(name.clone(), self.string_arg(args, 1).unwrap_or_default()))
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(int_arg(args, 2)? as i64),
+                )),
+                "getFloat" => Ok(Value::Float(
+                    self.framework
+                        .preferences
+                        .get(&(name.clone(), self.string_arg(args, 1).unwrap_or_default()))
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(float_arg(args, 2)?),
+                )),
+                "getString" => Ok(Value::String(
+                    self.framework
+                        .preferences
+                        .get(&(name, self.string_arg(args, 1).unwrap_or_default()))
+                        .cloned()
+                        .unwrap_or_else(|| self.string_arg(args, 2).unwrap_or_default()),
+                )),
+                "edit" => {
+                    let editor = self.alloc_instance("Landroid/content/SharedPreferences$Editor;");
+                    self.set_object_field(editor, "prefs", Value::Object(prefs));
+                    Ok(Value::Object(editor))
+                }
                 _ => Ok(Value::Void),
             };
         }
@@ -2381,6 +2435,8 @@ impl<'a> Vm<'a> {
                 )),
                 "recycle" | "eraseColor" => Ok(Value::Void),
                 "isRecycled" => Ok(Value::Int(0)),
+                "getDensity" => Ok(Value::Int(160)),
+                "hasAlpha" => Ok(Value::Int(1)),
                 _ => Ok(Value::Void),
             };
         }
@@ -2396,9 +2452,22 @@ impl<'a> Vm<'a> {
             return Ok(Value::Void);
         }
         if class_name == "Landroid/content/SharedPreferences$Editor;" {
+            let editor = object_arg(args, 0)?;
+            let prefs = self.object_field_object(editor, "prefs").unwrap_or(editor);
+            let key = self.string_arg(args, 1).unwrap_or_default();
             return match method_name {
                 "putBoolean" | "putInt" | "putLong" | "putFloat" | "putString" => {
-                    Ok(Value::Object(object_arg(args, 0)?))
+                    let value = match args.get(2) {
+                        Some(Value::String(value)) => value.clone(),
+                        Some(Value::Int(value)) => value.to_string(),
+                        Some(Value::Long(value)) => value.to_string(),
+                        Some(Value::Float(value)) => value.to_string(),
+                        _ => String::new(),
+                    };
+                    self.framework
+                        .preferences
+                        .insert((prefs.to_string(), key), value);
+                    Ok(Value::Object(editor))
                 }
                 "commit" => Ok(Value::Int(1)),
                 "apply" => Ok(Value::Void),
@@ -2709,12 +2778,20 @@ impl<'a> Vm<'a> {
                 "getAction" => Ok(Value::Int(
                     self.object_field_int(receiver, "action").unwrap_or(0),
                 )),
+                "getActionMasked" => Ok(Value::Int(
+                    self.object_field_int(receiver, "action").unwrap_or(0) & 0xff,
+                )),
+                "getActionIndex" => Ok(Value::Int(
+                    (self.object_field_int(receiver, "action").unwrap_or(0) >> 8) & 0xff,
+                )),
                 "getX" => Ok(Value::Float(
                     self.object_field_float(receiver, "x").unwrap_or(0.0),
                 )),
                 "getY" => Ok(Value::Float(
                     self.object_field_float(receiver, "y").unwrap_or(0.0),
                 )),
+                "getPointerCount" => Ok(Value::Int(1)),
+                "getPointerId" | "findPointerIndex" => Ok(Value::Int(0)),
                 _ => Ok(Value::Void),
             };
         }
@@ -2786,6 +2863,7 @@ impl<'a> Vm<'a> {
                 "getWindowManager" => Ok(Value::Object(
                     self.alloc_instance("Landroid/view/WindowManager;"),
                 )),
+                "setFlags" | "clearFlags" | "addFlags" | "setFormat" => Ok(Value::Void),
                 _ => Ok(Value::Void),
             };
         }
@@ -2818,29 +2896,82 @@ impl<'a> Vm<'a> {
         }
         if class_name == "Landroid/view/Display;" {
             return match method_name {
-                "getWidth" | "getHeight" => Ok(Value::Int(320)),
-                "getMetrics" => Ok(Value::Void),
+                "getWidth" => Ok(Value::Int(self.framework.surface_size.0.max(1))),
+                "getHeight" => Ok(Value::Int(self.framework.surface_size.1.max(1))),
+                "getMetrics" => {
+                    if let Some(Value::Object(metrics)) = args.get(1) {
+                        self.set_object_field(
+                            *metrics,
+                            "widthPixels",
+                            Value::Int(self.framework.surface_size.0.max(1)),
+                        );
+                        self.set_object_field(
+                            *metrics,
+                            "heightPixels",
+                            Value::Int(self.framework.surface_size.1.max(1)),
+                        );
+                        self.set_object_field(*metrics, "density", Value::Float(1.0));
+                    }
+                    Ok(Value::Void)
+                }
                 _ => Ok(Value::Void),
             };
         }
         if class_name == "Landroid/media/MediaPlayer;" {
+            let player = object_arg(args, 0).unwrap_or(0);
+            let state = self.framework.media_players.entry(player).or_default();
             return match method_name {
-                "create" => Ok(Value::Object(
-                    self.alloc_instance("Landroid/media/MediaPlayer;"),
-                )),
-                "isPlaying" => Ok(Value::Int(0)),
-                "start"
-                | "pause"
-                | "stop"
-                | "reset"
-                | "release"
-                | "prepare"
-                | "prepareAsync"
-                | "setLooping"
-                | "setVolume"
-                | "seekTo"
-                | "setOnCompletionListener"
-                | "setOnPreparedListener" => Ok(Value::Void),
+                "create" => {
+                    let id = self.alloc_instance("Landroid/media/MediaPlayer;");
+                    self.framework.media_players.insert(
+                        id,
+                        crate::framework::MediaPlayerState {
+                            prepared: true,
+                            ..Default::default()
+                        },
+                    );
+                    Ok(Value::Object(id))
+                }
+                "prepare" | "prepareAsync" => {
+                    state.prepared = true;
+                    Ok(Value::Void)
+                }
+                "start" => {
+                    state.playing = true;
+                    Ok(Value::Void)
+                }
+                "pause" => {
+                    state.playing = false;
+                    Ok(Value::Void)
+                }
+                "stop" => {
+                    state.playing = false;
+                    state.position_ms = 0;
+                    Ok(Value::Void)
+                }
+                "reset" => {
+                    *state = Default::default();
+                    Ok(Value::Void)
+                }
+                "release" => {
+                    self.framework.media_players.remove(&player);
+                    Ok(Value::Void)
+                }
+                "isPlaying" => Ok(Value::Int(i32::from(state.playing))),
+                "isLooping" => Ok(Value::Int(i32::from(state.looping))),
+                "setLooping" => {
+                    state.looping = int_arg(args, 1)? != 0;
+                    Ok(Value::Void)
+                }
+                "seekTo" => {
+                    state.position_ms = int_arg(args, 1)?.max(0);
+                    Ok(Value::Void)
+                }
+                "getCurrentPosition" => Ok(Value::Int(state.position_ms)),
+                "getDuration" => Ok(Value::Int(0)),
+                "setVolume" | "setOnCompletionListener" | "setOnPreparedListener" => {
+                    Ok(Value::Void)
+                }
                 _ => Ok(Value::Void),
             };
         }
@@ -2872,10 +3003,22 @@ impl<'a> Vm<'a> {
         }
         if class_name == "Ljava/io/File;" {
             let receiver = object_arg(args, 0)?;
+            let path = self
+                .object_field_string(receiver, "path")
+                .unwrap_or_default();
             return Ok(match method_name {
-                "exists" => Value::Int(0),
-                "delete" => Value::Int(1),
-                "toString" => Value::Object(receiver),
+                "exists" => Value::Int(i32::from(self.framework.files.contains_key(&path))),
+                "length" => Value::Long(
+                    self.framework
+                        .files
+                        .get(&path)
+                        .map_or(0, |data| data.len() as i64),
+                ),
+                "delete" => Value::Int(i32::from(self.framework.files.remove(&path).is_some())),
+                "isFile" => Value::Int(i32::from(self.framework.files.contains_key(&path))),
+                "getPath" | "getAbsolutePath" | "toString" => {
+                    Value::Object(self.alloc_string(path))
+                }
                 _ => Value::Void,
             });
         }
@@ -4188,6 +4331,16 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn object_field_object(&self, object: ObjectId, name: &str) -> Option<ObjectId> {
+        match self.heap_object(object) {
+            Some(HeapObject::Instance { fields, .. }) => match fields.get(name) {
+                Some(Value::Object(value)) => Some(*value),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn copy_drawable_fields(&mut self, source: ObjectId, destination: ObjectId) {
         for field in [
             "asset_path",
@@ -4675,4 +4828,17 @@ fn branch_target(
         });
     }
     Ok(target as usize)
+}
+
+fn value_sort_key(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Int(value) => value.to_string(),
+        Value::Long(value) => value.to_string(),
+        Value::Float(value) => value.to_string(),
+        Value::Double(value) => value.to_string(),
+        Value::Object(value) => value.to_string(),
+        Value::Void => String::new(),
+        Value::Null => String::new(),
+    }
 }

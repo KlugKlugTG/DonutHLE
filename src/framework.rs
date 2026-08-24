@@ -330,6 +330,26 @@ pub enum FrameworkResult {
 
 impl Eq for FrameworkResult {}
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaPlayerState {
+    pub prepared: bool,
+    pub playing: bool,
+    pub looping: bool,
+    pub position_ms: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SensorState {
+    pub registered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkRequestState {
+    pub url: String,
+    pub completed: bool,
+    pub status: i32,
+}
+
 #[derive(Debug, Default)]
 pub struct Framework {
     pub activities: ActivityManager,
@@ -340,6 +360,12 @@ pub struct Framework {
     pub toasts: Vec<String>,
     pub content_views: HashMap<u32, u32>,
     pub preferences: HashMap<(String, String), String>,
+    pub preference_editors: HashMap<u32, HashMap<String, String>>,
+    pub media_players: HashMap<u32, MediaPlayerState>,
+    pub sensors: HashMap<u32, SensorState>,
+    pub network_requests: Vec<NetworkRequestState>,
+    pub files: HashMap<String, Vec<u8>>,
+    pub file_handles: HashMap<u32, String>,
     pub surface_events: Vec<String>,
     pub audio_writes: usize,
     pub system_services: HashMap<String, u32>,
@@ -422,22 +448,29 @@ impl Framework {
                 Ok(FrameworkResult::Object(handle))
             }
             FrameworkCall::GetSharedPreferences { name, .. } => {
+                if let Some(handle) = self.system_services.get(&format!("prefs:{name}")) {
+                    return Ok(FrameworkResult::Object(*handle));
+                }
                 let handle = self.next_handle;
                 self.next_handle = self.next_handle.saturating_add(1);
                 self.system_services.insert(format!("prefs:{name}"), handle);
                 Ok(FrameworkResult::Object(handle))
             }
-            FrameworkCall::SharedPreferencesGetString { key, default, .. } => {
+            FrameworkCall::SharedPreferencesGetString {
+                prefs,
+                key,
+                default,
+            } => {
+                let prefs_name = prefs.to_string();
                 Ok(FrameworkResult::String(
                     self.preferences
-                        .iter()
-                        .find(|((_, k), _)| k == &key)
-                        .map(|(_, v)| v.clone())
+                        .get(&(prefs_name, key))
+                        .cloned()
                         .unwrap_or(default),
                 ))
             }
-            FrameworkCall::SharedPreferencesPutString { key, value, .. } => {
-                self.preferences.insert(("default".to_owned(), key), value);
+            FrameworkCall::SharedPreferencesPutString { prefs, key, value } => {
+                self.preferences.insert((prefs.to_string(), key), value);
                 Ok(FrameworkResult::Void)
             }
             FrameworkCall::SurfaceCreated { surface } => {
@@ -458,16 +491,46 @@ impl Framework {
                 self.surface_events.push(format!("destroyed:{surface}"));
                 Ok(FrameworkResult::Void)
             }
-            FrameworkCall::AudioTrackWrite { samples, .. } => {
+            FrameworkCall::AudioTrackWrite { track, samples } => {
                 self.audio_writes = self.audio_writes.saturating_add(samples.max(0) as usize);
-                Ok(FrameworkResult::Int(samples))
+                self.system_services
+                    .entry(format!("audio-track:{track}"))
+                    .or_insert(track);
+                Ok(FrameworkResult::Int(samples.max(0)))
             }
-            FrameworkCall::MediaPlayerPrepare { .. }
-            | FrameworkCall::MediaPlayerStart { .. }
-            | FrameworkCall::MediaPlayerStop { .. }
-            | FrameworkCall::SoundPoolPlay { .. } => Ok(FrameworkResult::Void),
-            FrameworkCall::SensorRegister { .. } => Ok(FrameworkResult::Bool(true)),
-            FrameworkCall::NetworkRequest { .. } => Ok(FrameworkResult::Object(0)),
+            FrameworkCall::MediaPlayerPrepare { player } => {
+                self.media_players.entry(player).or_default().prepared = true;
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::MediaPlayerStart { player } => {
+                self.media_players.entry(player).or_default().playing = true;
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::MediaPlayerStop { player } => {
+                let state = self.media_players.entry(player).or_default();
+                state.playing = false;
+                state.position_ms = 0;
+                Ok(FrameworkResult::Void)
+            }
+            FrameworkCall::SoundPoolPlay { pool, sound, .. } => {
+                self.system_services
+                    .insert(format!("sound:{pool}:{sound}"), pool);
+                Ok(FrameworkResult::Int(1))
+            }
+            FrameworkCall::SensorRegister { sensor } => {
+                self.sensors.entry(sensor).or_default().registered = true;
+                Ok(FrameworkResult::Bool(true))
+            }
+            FrameworkCall::NetworkRequest { url } => {
+                let handle = self.next_handle;
+                self.next_handle = self.next_handle.saturating_add(1);
+                self.network_requests.push(NetworkRequestState {
+                    url,
+                    completed: true,
+                    status: 503,
+                });
+                Ok(FrameworkResult::Object(handle))
+            }
             FrameworkCall::NewView { class_name } => {
                 Ok(FrameworkResult::Object(self.alloc_view(class_name)))
             }
