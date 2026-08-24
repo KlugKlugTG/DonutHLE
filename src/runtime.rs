@@ -314,10 +314,7 @@ impl Runtime {
                     vm.run_instance_method(listener, "create", Vec::new())
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 }
-                let mut session = RuntimeSession {
-                    vm,
-                    listener,
-                };
+                let mut session = RuntimeSession { vm, listener };
                 let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
                     "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
@@ -326,10 +323,7 @@ impl Runtime {
                 self.session = Some(session);
                 self.framework = Framework::new();
             } else {
-                let mut session = RuntimeSession {
-                    vm,
-                    listener: 0,
-                };
+                let mut session = RuntimeSession { vm, listener: 0 };
                 let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
                     "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"
