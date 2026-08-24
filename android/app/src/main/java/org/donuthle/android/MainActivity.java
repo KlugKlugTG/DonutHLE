@@ -7,7 +7,6 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
-import android.view.Gravity;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -57,8 +56,15 @@ public final class MainActivity extends Activity {
         super.onPause();
     }
 
+    private void stopGameSurface() {
+        if (gameSurface != null) {
+            gameSurface.onPause();
+            gameSurface = null;
+        }
+    }
+
     private void showHome() {
-        gameSurface = null;
+        stopGameSurface();
         LinearLayout content = column();
         content.setPadding(dp(22), dp(20), dp(22), dp(28));
         TextView brand = label("DONUTHLE", 27, teal); brand.setTypeface(null, 1); content.addView(brand);
@@ -76,7 +82,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showLibrary() {
-        gameSurface = null;
+        stopGameSurface();
         StorageLayout.ensure(this);
         StorageLayout.importFromDefaultFolder(this);
         LinearLayout content = page("GAME LIBRARY", "Import APKs or scan an existing DonutHLE_apps folder.");
@@ -163,6 +169,7 @@ public final class MainActivity extends Activity {
         root.addView(overlay, overlayParams);
         StorageLayout.appendLog(this, "GAME_SURFACE_STARTED: " + apk.getName() + "\n" + report);
         setContentView(root);
+        gameSurface.onResume();
     }
 
     private void showOptions() { LinearLayout content = page("OPTIONS", "Portable settings and file locations."); TextView options = label(StorageLayout.readText(StorageLayout.options(this)), 15, text); options.setTextIsSelectable(true); options.setPadding(dp(14), dp(14), dp(14), dp(14)); options.setBackgroundColor(panel); content.addView(options, margins(0, 18, 0, 16)); content.addView(button("OPEN DONUTHLE FOLDER", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 8)); content.addView(button("‹  BACK", false, v -> showHome())); setContentView(scroll(content)); }
