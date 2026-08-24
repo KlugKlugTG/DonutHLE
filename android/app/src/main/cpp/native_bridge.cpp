@@ -1,15 +1,12 @@
 #include <GLES/gl.h>
 #include <jni.h>
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <string>
 #include <vector>
 
 extern "C" const char* donuthle_core_info();
 extern "C" char* donuthle_launch_report(const char* path);
 extern "C" void donuthle_free_string(char* value);
-extern "C" char* donuthle_game_title();
 extern "C" uint32_t donuthle_framebuffer_width();
 extern "C" uint32_t donuthle_framebuffer_height();
 extern "C" int32_t donuthle_touch(int32_t action, float x, float y);
@@ -49,12 +46,6 @@ Java_org_donuthle_android_MainActivity_nativeLaunchApk(JNIEnv* env, jobject, jst
 
 
 #ifndef DONUTHLE_NO_CORE
-static uint32_t nextPowerOfTwo(uint32_t value) {
-    uint32_t result = 1;
-    while (result < value && result < 4096) result <<= 1;
-    return result;
-}
-
 static void clearFrame(GLfloat width, GLfloat height) {
     glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
     glDisable(GL_TEXTURE_2D);
@@ -71,18 +62,9 @@ static bool drawSoftwareFrame(GLfloat width, GLfloat height) {
     const uint32_t frameHeight = donuthle_framebuffer_height();
     if (frameWidth == 0 || frameHeight == 0) return false;
 
-    const uint32_t textureWidth = nextPowerOfTwo(frameWidth);
-    const uint32_t textureHeight = nextPowerOfTwo(frameHeight);
-    std::vector<uint8_t> pixels(static_cast<size_t>(textureWidth) * textureHeight * 4u, 0);
     const size_t sourceLength = static_cast<size_t>(frameWidth) * frameHeight * 4u;
     std::vector<uint8_t> source(sourceLength);
     if (donuthle_framebuffer_copy(source.data(), source.size()) != source.size()) return false;
-    for (uint32_t row = 0; row < frameHeight; ++row) {
-        const size_t sourceOffset = static_cast<size_t>(row) * frameWidth * 4u;
-        const size_t destinationOffset = static_cast<size_t>(row) * textureWidth * 4u;
-        const size_t rowBytes = static_cast<size_t>(frameWidth) * 4u;
-        std::memcpy(pixels.data() + destinationOffset, source.data() + sourceOffset, rowBytes);
-    }
 
     static GLuint texture = 0;
     if (texture == 0) glGenTextures(1, &texture);
@@ -103,12 +85,10 @@ static bool drawSoftwareFrame(GLfloat width, GLfloat height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(textureWidth), static_cast<GLsizei>(textureHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(frameWidth), static_cast<GLsizei>(frameHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, source.data());
 
     const GLfloat vertices[] = {0.0f, 0.0f, width, 0.0f, 0.0f, height, width, height};
-    const GLfloat u = static_cast<GLfloat>(frameWidth) / textureWidth;
-    const GLfloat v = static_cast<GLfloat>(frameHeight) / textureHeight;
-    const GLfloat coordinates[] = {0.0f, 0.0f, u, 0.0f, 0.0f, v, u, v};
+    const GLfloat coordinates[] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);
