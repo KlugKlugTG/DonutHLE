@@ -1710,6 +1710,39 @@ impl<'a> Vm<'a> {
                         let object = match get_register(&registers, object_register, pc, opcode)? {
                             Value::Object(id) => id,
                             Value::Null => {
+                                if self
+                                    .dex
+                                    .field_id(field_index as usize)
+                                    .is_some_and(|field| {
+                                        matches!(
+                                            field.type_name.as_str(),
+                                            "I" | "Z" | "B" | "S" | "C" | "F" | "J" | "D"
+                                        )
+                                    })
+                                {
+                                    let field = self.dex.field_id(field_index as usize).unwrap();
+                                    if opcode == 0x53 {
+                                        set_wide_register(
+                                            &mut registers,
+                                            value_register,
+                                            default_value_for_type(&field.type_name),
+                                            self,
+                                            pc,
+                                            opcode,
+                                        )?;
+                                    } else {
+                                        set_register(
+                                            &mut registers,
+                                            value_register,
+                                            default_value_for_type(&field.type_name),
+                                            self,
+                                            pc,
+                                            opcode,
+                                        )?;
+                                    }
+                                    pc += 2;
+                                    continue;
+                                }
                                 return Err(self.error(
                                     pc,
                                     opcode,
@@ -1835,7 +1868,7 @@ impl<'a> Vm<'a> {
                                 return Err(self.error(
                                     pc,
                                     opcode,
-                                    format!("null instance field target: field={field_key} registers={registers:?}"),
+                                    format!("null instance field target: field={field_key} v{object_register} registers={registers:?}"),
                                 ));
                             }
                             value => {
