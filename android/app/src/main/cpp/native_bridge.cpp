@@ -10,6 +10,8 @@
 extern "C" const char* donuthle_core_info();
 extern "C" char* donuthle_launch_report(const char* path);
 extern "C" void donuthle_free_string(char* value);
+extern "C" int32_t donuthle_set_register_trace(int32_t enabled);
+extern "C" char* donuthle_drain_register_trace();
 extern "C" char* donuthle_game_title();
 extern "C" uint32_t donuthle_framebuffer_width();
 extern "C" uint32_t donuthle_framebuffer_height();
@@ -73,9 +75,29 @@ Java_org_donuthle_android_MainActivity_nativeLaunchApk(JNIEnv* env, jobject, jst
     const char* utfPath = env->GetStringUTFChars(path, nullptr);
     if (utfPath == nullptr) return makeString(env, "Runtime error: cannot read APK path");
     char* report = donuthle_launch_report(utfPath);
-    jstring result = makeString(env, report);
+    donuthle_set_register_trace(1);
+    char* trace = donuthle_drain_register_trace();
+    std::string result = report ? report : "Runtime error: native bridge returned no report";
+    if (trace != nullptr && trace[0] != '\0') {
+        result += "\nRegister trace (rN=0xVALUE):\n";
+        result += trace;
+    }
+    if (trace) donuthle_free_string(trace);
+    if (report) donuthle_free_string(report);
     env->ReleaseStringUTFChars(path, utfPath);
-    donuthle_free_string(report);
+    return env->NewStringUTF(result.c_str());
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_donuthle_android_MainActivity_registerTrace(JNIEnv* env, jobject) {
+#ifdef DONUTHLE_NO_CORE
+    return makeString(env, "register trace unavailable: Rust core is not linked");
+#else
+    donuthle_set_register_trace(1);
+    char* trace = donuthle_drain_register_trace();
+    jstring result = makeString(env, trace);
+    donuthle_free_string(trace);
     return result;
 #endif
 }

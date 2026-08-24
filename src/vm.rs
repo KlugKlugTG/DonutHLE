@@ -43,6 +43,7 @@ pub enum HeapObject {
 pub struct VmConfig {
     pub max_steps: usize,
     pub max_call_depth: usize,
+    pub trace_registers: bool,
 }
 
 impl Default for VmConfig {
@@ -50,6 +51,7 @@ impl Default for VmConfig {
         Self {
             max_steps: 1_000_000,
             max_call_depth: 256,
+            trace_registers: false,
         }
     }
 }
@@ -104,6 +106,7 @@ pub struct Vm<'a> {
     frame_mode: bool,
     frame_aborted: bool,
     frame_steps: usize,
+    trace: Vec<String>,
     canvas_stack: Vec<CanvasState>,
     canvas_state: CanvasState,
     view_touch_listeners: HashMap<ObjectId, ObjectId>,
@@ -123,6 +126,7 @@ impl<'a> Vm<'a> {
             frame_mode: false,
             frame_aborted: false,
             frame_steps: 0,
+            trace: Vec::new(),
             canvas_stack: Vec::new(),
             canvas_state: CanvasState::default(),
             view_touch_listeners: HashMap::new(),
@@ -131,6 +135,13 @@ impl<'a> Vm<'a> {
 
     pub fn heap_object(&self, id: ObjectId) -> Option<&HeapObject> {
         self.heap.get(id as usize)
+    }
+    pub fn drain_trace(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.trace)
+    }
+
+    pub fn enable_register_trace(&mut self, enabled: bool) {
+        self.config.trace_registers = enabled;
     }
 
     pub fn alloc_instance(&mut self, class_name: impl Into<String>) -> ObjectId {
@@ -453,6 +464,15 @@ impl<'a> Vm<'a> {
             .method_id(method_index)
             .ok_or_else(|| self.error(0, 0, format!("method index {method_index} is invalid")))?
             .clone();
+        if self.config.trace_registers {
+            self.trace.push(format!(
+                "enter {}->{}({}) args={}",
+                method.class_name,
+                method.name,
+                method.prototype,
+                format_call_args(&args)
+            ));
+        }
         if method.name != "<clinit>" {
             self.ensure_class_initialized(&method.class_name)?;
         }
@@ -626,6 +646,12 @@ impl<'a> Vm<'a> {
             }
             let instruction = code.instructions[pc];
             let opcode = (instruction & 0xff) as u8;
+            if self.config.trace_registers {
+                self.trace.push(format!(
+                    "pc={pc:04} opcode=0x{opcode:02x} {}",
+                    format_registers(&registers)
+                ));
+            }
             match opcode {
                 0x00 => pc += 1,
                 0x01 | 0x07 => {
@@ -4574,6 +4600,38 @@ impl<'a> Vm<'a> {
             opcode,
             message: message.into(),
         }
+    }
+}
+
+fn format_registers(registers: &[Value]) -> String {
+    registers
+        .iter()
+        .enumerate()
+        .map(|(index, value)| format!("r{index}=0x{:x}({value:?})", value_bits(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_call_args(args: &[Value]) -> String {
+    args.iter()
+        .enumerate()
+        .map(|(index, value)| format!("r{index}=0x{:x}({value:?})", value_bits(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn value_bits(value: &Value) -> u64 {
+    match value {
+        Value::Void => 0,
+        Value::Int(value) => *value as u32 as u64,
+        Value::Long(value) => *value as u64,
+        Value::Float(value) => value.to_bits() as u64,
+        Value::Double(value) => value.to_bits(),
+        Value::Object(value) => *value as u64,
+        Value::String(value) => value.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        }),
+        Value::Null => 0,
     }
 }
 

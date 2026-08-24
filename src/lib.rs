@@ -222,6 +222,33 @@ pub extern "C" fn donuthle_game_title() -> *mut std::os::raw::c_char {
         .into_raw()
 }
 
+#[no_mangle]
+pub extern "C" fn donuthle_set_register_trace(enabled: i32) -> i32 {
+    let Ok(mut runtime) = RUNTIME.lock() else {
+        return 0;
+    };
+    let Some(runtime) = runtime.as_mut() else {
+        return 0;
+    };
+    runtime.trace_registers(enabled != 0);
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn donuthle_drain_register_trace() -> *mut std::os::raw::c_char {
+    let lines = RUNTIME
+        .lock()
+        .ok()
+        .and_then(|mut runtime| runtime.as_mut().map(runtime::Runtime::drain_trace))
+        .unwrap_or_default();
+    let value = lines.join("\n");
+    std::ffi::CString::new(value)
+        .unwrap_or_else(|_| {
+            std::ffi::CString::new("register trace contained invalid text").unwrap()
+        })
+        .into_raw()
+}
+
 /// # Safety
 ///
 /// `path` must be a valid, NUL-terminated C string for the lifetime of this call.
