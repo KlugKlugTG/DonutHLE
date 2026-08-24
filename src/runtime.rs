@@ -69,11 +69,7 @@ impl RuntimeSession {
             .framework
             .gles
             .viewport(0, 0, logical_width, logical_height);
-        let method = if self
-            .vm
-            .heap_object(self.listener)
-            .is_some_and(|object| matches!(object, crate::vm::HeapObject::Instance { class_name, .. } if class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"))
-        {
+        let method = if self.vm.has_instance_method(self.listener, "onDraw") {
             "onDraw"
         } else {
             "render"
@@ -282,28 +278,24 @@ impl Runtime {
                 .framework
                 .gdx_listener
                 .or_else(|| vm.find_instance_by_class("Lcom/hyperkani/sliceice/Engine;"));
-            let frame_status;
-            if let Some(listener) = listener {
+            let listener = if let Some(listener) = listener {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                let mut session = RuntimeSession { vm, listener };
-                let (commands, pixels) = session.render_current_frame()?;
-                frame_status = format!(
-                    "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
-                );
-                activities = session.vm.framework.activities.clone();
-                self.session = Some(session);
-                self.framework = Framework::new();
+                listener
             } else {
-                let mut session = RuntimeSession { vm, listener: 0 };
-                let (commands, pixels) = session.render_current_frame()?;
-                frame_status = format!(
-                    "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"
-                );
-                activities = session.vm.framework.activities.clone();
-                self.session = Some(session);
-                self.framework = Framework::new();
-            }
+                vm.find_instance_by_class("Lde/nurogames/android/tinysanta/views/TinySantaView;")
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("application has no ApplicationListener or TinySantaView")
+                    })?
+            };
+            let mut session = RuntimeSession { vm, listener };
+            let (commands, pixels) = session.render_current_frame()?;
+            let frame_status = format!(
+                "application frame completed; GLES commands: {commands}, rendered pixels: {pixels}"
+            );
+            activities = session.vm.framework.activities.clone();
+            self.session = Some(session);
+            self.framework = Framework::new();
             return Ok(BootState {
                 result: match value {
                     VmValue::Void => ExecutionResult::ReturnVoid,
