@@ -190,6 +190,8 @@ impl RuntimeSession {
             a: 255,
         });
         self.vm.framework.gles.clear();
+        self.vm.framework.gles.enable(0x0BE2);
+        self.vm.framework.gles.blend_func(0x0302, 0x0303);
         let Some(assets) = self.vm.framework.assets.clone() else {
             return;
         };
@@ -330,6 +332,15 @@ impl RuntimeSession {
             player_y - 44.0,
             65.0,
             57.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["honey_big_double_41px"],
+            148.0,
+            214.0 + (elapsed * 1.8).cos() * 13.0,
+            41.0,
+            41.0,
         );
         draw(
             &mut self.vm.framework.gles,
