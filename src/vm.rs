@@ -4253,23 +4253,8 @@ impl<'a> Vm<'a> {
                         b: 255,
                         a: 255,
                     });
-                let rendered = texture_path.and_then(|path| {
-                    self.render_asset(&path, x, y, width, height, region, color)
-                        .then_some(())
-                });
-                if rendered.is_none() {
-                    self.framework.gles.draw_quad_pixels(
-                        x,
-                        y,
-                        width,
-                        height,
-                        Rgba8 {
-                            r: 220,
-                            g: 235,
-                            b: 240,
-                            a: 255,
-                        },
-                    );
+                if let Some(path) = texture_path {
+                    self.render_asset(&path, x, y, width, height, region, color);
                 }
                 FrameworkResult::Void
             }
