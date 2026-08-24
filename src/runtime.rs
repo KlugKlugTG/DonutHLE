@@ -57,7 +57,6 @@ pub struct Runtime {
 pub struct RuntimeSession {
     pub vm: Vm<'static>,
     pub listener: ObjectId,
-    legacy_canvas: bool,
 }
 
 impl RuntimeSession {
@@ -145,6 +144,11 @@ impl RuntimeSession {
             .framework
             .gles
             .viewport(0, 0, logical_width, logical_height);
+        self.vm.framework.gles.enable(crate::gles::BLEND);
+        self.vm
+            .framework
+            .gles
+            .blend_func(crate::gles::SRC_ALPHA, crate::gles::ONE_MINUS_SRC_ALPHA);
         let method = if self
             .vm
             .heap_object(self.listener)
@@ -165,11 +169,7 @@ impl RuntimeSession {
     }
 
     pub fn render_current_frame(&mut self) -> Result<(usize, usize)> {
-        if self.legacy_canvas {
-            Ok(self.render_legacy_canvas_frame())
-        } else {
-            self.render_frame(0, 0)
-        }
+        self.render_frame(0, 0)
     }
 }
 
@@ -394,11 +394,7 @@ impl Runtime {
                     vm.run_instance_method(listener, "create", Vec::new())
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 }
-                let mut session = RuntimeSession {
-                    vm,
-                    listener,
-                    legacy_canvas: false,
-                };
+                let mut session = RuntimeSession { vm, listener };
                 let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
                     "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
@@ -407,11 +403,7 @@ impl Runtime {
                 self.session = Some(session);
                 self.framework = Framework::new();
             } else {
-                let mut session = RuntimeSession {
-                    vm,
-                    listener: 0,
-                    legacy_canvas: true,
-                };
+                let mut session = RuntimeSession { vm, listener: 0 };
                 let (commands, pixels) = session.render_legacy_canvas_frame();
                 frame_status = format!(
                     "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"

@@ -2297,6 +2297,11 @@ impl<'a> Vm<'a> {
                                 &image.pixels,
                             );
                             let state = self.canvas_state;
+                            self.framework.gles.enable(crate::gles::BLEND);
+                            self.framework.gles.blend_func(
+                                crate::gles::SRC_ALPHA,
+                                crate::gles::ONE_MINUS_SRC_ALPHA,
+                            );
                             self.framework.gles.draw_textured_quad_pixels(
                                 state.x + x * state.scale_x,
                                 state.y + y * state.scale_y,
