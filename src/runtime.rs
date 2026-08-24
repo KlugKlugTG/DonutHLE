@@ -63,7 +63,6 @@ pub struct RuntimeSession {
     last_tick: Instant,
 }
 
-
 impl RuntimeSession {
     pub fn render_legacy_canvas_frame(&mut self) -> (usize, usize) {
         let width = self.vm.framework.gles.framebuffer().width().max(1);
@@ -178,39 +177,169 @@ impl RuntimeSession {
         let height = self.vm.framework.gles.framebuffer().height().max(1);
         let elapsed = self.last_tick.elapsed().as_secs_f32();
         let offset = elapsed * 34.0;
-        let player_x = (width as f32 * 0.34 + (elapsed * 1.7).sin() * 32.0).clamp(38.0, width as f32 - 38.0);
+        let player_x =
+            (width as f32 * 0.34 + (elapsed * 1.7).sin() * 32.0).clamp(38.0, width as f32 - 38.0);
         let player_y = 280.0 - (elapsed * 2.4).sin().abs() * 42.0;
         self.vm.framework.surface_size = (width as i32, height as i32);
         self.vm.framework.gles.begin_frame();
         self.vm.framework.gles.viewport(0, 0, width, height);
-        self.vm.framework.gles.set_clear_color(crate::Rgba8 { r: 18, g: 45, b: 74, a: 255 });
+        self.vm.framework.gles.set_clear_color(crate::Rgba8 {
+            r: 18,
+            g: 45,
+            b: 74,
+            a: 255,
+        });
         self.vm.framework.gles.clear();
-        let Some(assets) = self.vm.framework.assets.clone() else { return };
-        let draw = |gles: &mut HostGles, assets: &crate::assets::AssetStore, names: &[&str], x: f32, y: f32, w: f32, h: f32| {
-            let Some(path) = assets.find_image(names) else { return };
-            let Ok(image) = assets.image(&path) else { return };
-            let texture = gles.upload_texture(image.width, image.height, &image.pixels);
-            gles.draw_textured_quad_pixels(x, y, w, h, texture, crate::Rgba8 { r: 255, g: 255, b: 255, a: 255 });
+        let Some(assets) = self.vm.framework.assets.clone() else {
+            return;
         };
-        let draw_tiled = |gles: &mut HostGles, assets: &crate::assets::AssetStore, names: &[&str], y: f32, tile: f32, shift: f32| {
+        let draw = |gles: &mut HostGles,
+                    assets: &crate::assets::AssetStore,
+                    names: &[&str],
+                    x: f32,
+                    y: f32,
+                    w: f32,
+                    h: f32| {
+            let Some(path) = assets.find_image(names) else {
+                return;
+            };
+            let Ok(image) = assets.image(&path) else {
+                return;
+            };
+            let texture = gles.upload_texture(image.width, image.height, &image.pixels);
+            gles.draw_textured_quad_pixels(
+                x,
+                y,
+                w,
+                h,
+                texture,
+                crate::Rgba8 {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                    a: 255,
+                },
+            );
+        };
+        let draw_tiled = |gles: &mut HostGles,
+                          assets: &crate::assets::AssetStore,
+                          names: &[&str],
+                          y: f32,
+                          tile: f32,
+                          shift: f32| {
             let mut x = -(shift % tile) - tile;
             while x < width as f32 {
                 draw(gles, assets, names, x, y, tile, tile);
                 x += tile;
             }
         };
-        draw(&mut self.vm.framework.gles, &assets, &["sky_bg_320px"], 0.0, 0.0, width as f32, 240.0);
-        draw(&mut self.vm.framework.gles, &assets, &["cloud_with_stripes_320px"], -(offset * 0.2 % 320.0), 44.0, 320.0, 67.0);
-        draw(&mut self.vm.framework.gles, &assets, &["cloud_with_stripes_320px"], 320.0 - (offset * 0.2 % 320.0), 44.0, 320.0, 67.0);
-        draw_tiled(&mut self.vm.framework.gles, &assets, &["texture_9_96"], 240.0, 96.0, offset * 0.5);
-        draw(&mut self.vm.framework.gles, &assets, &["house_level_1_low", "house_level_1"], 92.0, 104.0, 128.0, 126.0);
-        draw(&mut self.vm.framework.gles, &assets, &["level1_asset2_low", "level1_asset2"], 24.0, 302.0, 68.0, 85.0);
-        draw(&mut self.vm.framework.gles, &assets, &["level1_asset3_low", "level1_asset3"], 242.0, 290.0, 50.0, 77.0);
-        draw(&mut self.vm.framework.gles, &assets, &["honey_small_22px"], 154.0, 244.0 + (elapsed * 2.0).sin() * 10.0, 22.0, 22.0);
-        draw(&mut self.vm.framework.gles, &assets, &["bee_slow_fly_1_usml", "bee_slow_fly_1"], 218.0 + (elapsed * 0.7).sin() * 28.0, 198.0 + (elapsed * 1.4).sin() * 28.0, 33.0, 29.0);
-        draw(&mut self.vm.framework.gles, &assets, &["bee_fast_fly_1_usml", "bee_fast_fly_1"], 66.0 + (elapsed * 0.9).cos() * 32.0, 152.0 + (elapsed * 1.1).cos() * 20.0, 33.0, 29.0);
-        draw(&mut self.vm.framework.gles, &assets, &["bee_anim_1"], player_x - 32.0, player_y - 44.0, 65.0, 57.0);
-        draw(&mut self.vm.framework.gles, &assets, &["btn_pause_usml", "btn_pause"], width as f32 - 43.0, 10.0, 33.0, 33.0);
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["sky_bg_320px"],
+            0.0,
+            0.0,
+            width as f32,
+            240.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["cloud_with_stripes_320px"],
+            -(offset * 0.2 % 320.0),
+            44.0,
+            320.0,
+            67.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["cloud_with_stripes_320px"],
+            320.0 - (offset * 0.2 % 320.0),
+            44.0,
+            320.0,
+            67.0,
+        );
+        draw_tiled(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["texture_9_96"],
+            240.0,
+            96.0,
+            offset * 0.5,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["house_level_1_low", "house_level_1"],
+            92.0,
+            104.0,
+            128.0,
+            126.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["level1_asset2_low", "level1_asset2"],
+            24.0,
+            302.0,
+            68.0,
+            85.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["level1_asset3_low", "level1_asset3"],
+            242.0,
+            290.0,
+            50.0,
+            77.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["honey_small_22px"],
+            154.0,
+            244.0 + (elapsed * 2.0).sin() * 10.0,
+            22.0,
+            22.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["bee_slow_fly_1_usml", "bee_slow_fly_1"],
+            218.0 + (elapsed * 0.7).sin() * 28.0,
+            198.0 + (elapsed * 1.4).sin() * 28.0,
+            33.0,
+            29.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["bee_fast_fly_1_usml", "bee_fast_fly_1"],
+            66.0 + (elapsed * 0.9).cos() * 32.0,
+            152.0 + (elapsed * 1.1).cos() * 20.0,
+            33.0,
+            29.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["bee_anim_1"],
+            player_x - 32.0,
+            player_y - 44.0,
+            65.0,
+            57.0,
+        );
+        draw(
+            &mut self.vm.framework.gles,
+            &assets,
+            &["btn_pause_usml", "btn_pause"],
+            width as f32 - 43.0,
+            10.0,
+            33.0,
+            33.0,
+        );
     }
 
     pub fn render_current_frame(&mut self) -> Result<(usize, usize)> {
@@ -455,7 +584,9 @@ impl Runtime {
                     last_tick: Instant::now(),
                 };
                 if plan.package != "de.nurogames.android.tinysanta" {
-                    session.vm.run_instance_method(listener, "create", Vec::new())
+                    session
+                        .vm
+                        .run_instance_method(listener, "create", Vec::new())
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 }
                 let (commands, pixels) = if plan.package == "de.nurogames.android.tinysanta" {
