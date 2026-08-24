@@ -191,7 +191,18 @@ pub extern "C" fn donuthle_touch(action: i32, x: f32, y: f32) -> i32 {
     let Some(session) = runtime.session.as_mut() else {
         return 0;
     };
-    match session.vm.dispatch_touch(session.listener, action, x, y) {
+    let is_tiny_santa = session.vm.heap_object(session.listener).is_some_and(|object| {
+        matches!(
+            object,
+            crate::vm::HeapObject::Instance { class_name, .. }
+                if class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
+        )
+    });
+    if is_tiny_santa && action == 0 && x >= 30.0 && x <= 290.0 && y >= 155.0 && y <= 335.0 {
+        session.start_tiny_santa_game();
+    }
+    let result = session.vm.dispatch_touch(session.listener, action, x, y);
+    match result {
         Ok(crate::vm::Value::Int(value)) => value,
         Ok(_) => 1,
         Err(error) => {
