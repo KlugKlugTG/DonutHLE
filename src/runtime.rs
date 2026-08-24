@@ -282,38 +282,10 @@ impl Runtime {
                 .framework
                 .gdx_listener
                 .or_else(|| vm.find_instance_by_class("Lcom/hyperkani/sliceice/Engine;"));
-            let listener = if listener.is_none() && plan.package == "de.nurogames.android.tinysanta"
-            {
-                let view =
-                    vm.alloc_instance("Lde/nurogames/android/tinysanta/views/TinySantaView;");
-                if let Some(index) = plan.dex.methods.iter().position(|method| {
-                    method.class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
-                        && method.name == "<init>"
-                        && method.prototype.contains("Landroid/content/Context;")
-                        && method.prototype.contains("Landroid/util/AttributeSet;")
-                }) {
-                    vm.run_method(
-                        index,
-                        vec![
-                            VmValue::Object(view),
-                            VmValue::Object(activity_object),
-                            VmValue::Null,
-                        ],
-                    )
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                    Some(view)
-                } else {
-                    None
-                }
-            } else {
-                listener
-            };
             let frame_status;
             if let Some(listener) = listener {
-                if plan.package != "de.nurogames.android.tinysanta" {
-                    vm.run_instance_method(listener, "create", Vec::new())
-                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                }
+                vm.run_instance_method(listener, "create", Vec::new())
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 let mut session = RuntimeSession { vm, listener };
                 let (commands, pixels) = session.render_current_frame()?;
                 frame_status = format!(
