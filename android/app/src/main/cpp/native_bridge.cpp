@@ -53,18 +53,6 @@ Java_org_donuthle_android_MainActivity_nativeRuntimeInfo(JNIEnv* env, jobject) {
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_org_donuthle_android_MainActivity_nativeGameTitle(JNIEnv* env, jobject) {
-#ifdef DONUTHLE_NO_CORE
-    return makeString(env, "Unknown game");
-#else
-    char* title = donuthle_game_title();
-    jstring result = makeString(env, title);
-    donuthle_free_string(title);
-    return result;
-#endif
-}
-
-extern "C" JNIEXPORT jstring JNICALL
 Java_org_donuthle_android_MainActivity_nativeLaunchApk(JNIEnv* env, jobject, jstring path) {
 #ifdef DONUTHLE_NO_CORE
     return makeString(env, "Rust core is not linked in this local build.");

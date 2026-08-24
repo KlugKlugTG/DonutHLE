@@ -22,7 +22,6 @@ import java.io.IOException;
 public final class MainActivity extends Activity {
     static { System.loadLibrary("donuthle"); }
     private native String nativeRuntimeInfo();
-    private native String nativeGameTitle();
     private native String nativeLaunchApk(String path);
     native void nativeRenderFrame(int width, int height);
     native int nativeTouchEvent(int action, float x, float y);
@@ -54,6 +53,14 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         if (gameSurface != null) gameSurface.onPause();
         super.onPause();
+    }
+
+    @Override public void onBackPressed() {
+        if (gameSurface != null) {
+            showLibrary();
+            return;
+        }
+        super.onBackPressed();
     }
 
     private void stopGameSurface() {
@@ -150,23 +157,6 @@ public final class MainActivity extends Activity {
         root.setBackgroundColor(Color.BLACK);
         gameSurface = new Gles1SurfaceView(this, this);
         root.addView(gameSurface, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout overlay = new LinearLayout(this);
-        overlay.setOrientation(LinearLayout.HORIZONTAL);
-        overlay.setGravity(Gravity.CENTER_VERTICAL);
-        overlay.setPadding(dp(10), dp(6), dp(10), dp(6));
-        overlay.setBackgroundColor(Color.argb(176, 14, 18, 22));
-        String gameTitle = nativeGameTitle();
-        if (gameTitle == null || gameTitle.trim().isEmpty() || "Unknown game".equals(gameTitle)) {
-            gameTitle = apk.getName().replaceFirst("(?i)\\.apk$", "");
-        }
-        TextView title = label(gameTitle + "  •  Android 1.x  •  GLES 1.1", 13, teal);
-        title.setTypeface(null, 1);
-        overlay.addView(title, new LinearLayout.LayoutParams(0, -2, 1.0f));
-        Button back = button("BACK", false, v -> showLibrary());
-        back.setMinHeight(dp(40));
-        overlay.addView(back, new LinearLayout.LayoutParams(-2, -2));
-        FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
-        root.addView(overlay, overlayParams);
         StorageLayout.appendLog(this, "GAME_SURFACE_STARTED: " + apk.getName() + "\n" + report);
         setContentView(root);
         gameSurface.onResume();
