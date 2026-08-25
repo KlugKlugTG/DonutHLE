@@ -1827,7 +1827,7 @@ impl<'a> Vm<'a> {
                     let (dest, array_reg, index_reg) =
                         three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
                     let array = get_object(&registers, array_reg, self, pc, opcode)?;
-                                        let raw_index = get_register(&registers, index_reg, pc, opcode)?;
+                    let raw_index = get_register(&registers, index_reg, pc, opcode)?;
                     let index = match raw_index {
                         Value::Int(value) if value >= 0 => value as usize,
                         Value::Int(value) => {
@@ -2211,14 +2211,7 @@ impl<'a> Vm<'a> {
                         .dex
                         .method_id(method_index)
                         .map(|method| method.prototype.as_str());
-                    let args = invoke_range_args(
-                        &registers,
-                        first,
-                        count,
-                        pc,
-                        opcode,
-                        prototype,
-                    )?;
+                    let args = invoke_range_args(&registers, first, count, pc, opcode, prototype)?;
                     pending_result = self.call_method(method_index, args)?;
                     pc += 3;
                 }
@@ -5213,7 +5206,9 @@ fn invoke_range_args(
     opcode: u8,
     prototype: Option<&str>,
 ) -> Result<Vec<Value>, VmError> {
-    let types = prototype.and_then(parse_prototype_parameters).unwrap_or_default();
+    let types = prototype
+        .and_then(parse_prototype_parameters)
+        .unwrap_or_default();
     let mut args = Vec::with_capacity(count);
     let mut register = first;
     for index in 0..count {
@@ -5241,14 +5236,15 @@ fn invoke_args(
         ((word >> 12) & 0x0f) as usize,
         ((instruction >> 8) & 0x0f) as usize,
     ];
-    let types = prototype.and_then(parse_prototype_parameters).unwrap_or_default();
+    let types = prototype
+        .and_then(parse_prototype_parameters)
+        .unwrap_or_default();
     candidates[..count.min(candidates.len())]
         .iter()
         .enumerate()
         .map(|(position, index)| {
-            get_register(registers, *index, pc, opcode).map(|value| {
-                normalize_wide_value(value, types.get(position).map(String::as_str))
-            })
+            get_register(registers, *index, pc, opcode)
+                .map(|value| normalize_wide_value(value, types.get(position).map(String::as_str)))
         })
         .collect()
 }
