@@ -4112,7 +4112,7 @@ impl<'a> Vm<'a> {
                 );
                 FrameworkResult::Void
             }
-            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexImage2D")
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexImage2D")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexImage2D")
             | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexParameterf")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexParameterf")

@@ -233,7 +233,12 @@ impl GlesContext {
         self.blend_src = ONE;
         self.blend_dst = ZERO;
         self.depth_mask_enabled = true;
-        self.clear_color = Rgba8 { r: 0, g: 0, b: 0, a: 255 };
+        self.clear_color = Rgba8 {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
         self.framebuffer.clear(self.clear_color);
         self.depth_buffer.fill(1.0);
     }
