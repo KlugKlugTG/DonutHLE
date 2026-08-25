@@ -4052,12 +4052,66 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glGetString") => {
                 FrameworkResult::String("DonutHLE GLES 1.0 software renderer".to_owned())
             }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glPushMatrix")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPushMatrix") => {
+                self.framework.gles.push_matrix();
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glPopMatrix")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPopMatrix") => {
+                self.framework.gles.pop_matrix();
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadIdentity")
-            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadIdentity")
-            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadMatrixf")
-            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadMatrixf")
-            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glMatrixMode")
-            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMatrixMode")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadIdentity") => {
+                self.framework.gles.load_identity();
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glMatrixMode")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMatrixMode") => {
+                self.framework.gles.matrix_mode(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTranslatef")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTranslatef") => {
+                self.framework.gles.translate(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glScalef")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glScalef") => {
+                self.framework.gles.scale(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glRotatef")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glRotatef") => {
+                self.framework.gles.rotate(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                    float_arg(args, 4)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glOrthof")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glOrthof") => {
+                self.framework.gles.ortho(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                    float_arg(args, 4)?,
+                    float_arg(args, 5)?,
+                    float_arg(args, 6)?,
+                );
+                FrameworkResult::Void
+            }
             | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexImage2D")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexImage2D")
             | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexParameterf")

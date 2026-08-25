@@ -88,7 +88,7 @@ static bool drawSoftwareFrame(GLfloat width, GLfloat height) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(frameWidth), static_cast<GLsizei>(frameHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, source.data());
 
     const GLfloat vertices[] = {0.0f, 0.0f, width, 0.0f, 0.0f, height, width, height};
-    const GLfloat coordinates[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+    const GLfloat coordinates[] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);

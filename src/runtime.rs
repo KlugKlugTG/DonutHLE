@@ -64,6 +64,7 @@ impl RuntimeSession {
         let logical_width = self.vm.framework.gles.framebuffer().width().max(1);
         let logical_height = self.vm.framework.gles.framebuffer().height().max(1);
         self.vm.framework.surface_size = (logical_width as i32, logical_height as i32);
+        self.vm.framework.gles.reset_frame_state();
         self.vm.framework.gles.begin_frame();
         self.vm
             .framework
