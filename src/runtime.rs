@@ -180,6 +180,7 @@ impl Runtime {
             compatibility,
         })
     }
+
     pub fn trace_registers(&mut self, enabled: bool) -> Vec<String> {
         if let Some(session) = self.session.as_mut() {
             session.vm.enable_register_trace(enabled);
@@ -330,7 +331,6 @@ impl Runtime {
             );
             activities = session.vm.framework.activities.clone();
             self.session = Some(session);
-            self.framework = Framework::new();
             return Ok(BootState {
                 result: match value {
                     VmValue::Void => ExecutionResult::ReturnVoid,
@@ -450,13 +450,8 @@ fn read_dex(archive: &mut zip::ZipArchive<File>) -> Result<DexFile> {
     DexFile::parse(&bytes)
 }
 
-fn read_entry<R: Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Result<Vec<u8>> {
-    let mut entry = archive
-        .by_name(name)
-        .with_context(|| format!("missing APK entry {name}"))?;
+fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
+    let mut entry = archive.by_name(name)?;
     let mut bytes = Vec::new();
     entry.read_to_end(&mut bytes)?;
     Ok(bytes)

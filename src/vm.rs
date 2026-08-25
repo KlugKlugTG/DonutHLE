@@ -1175,7 +1175,7 @@ impl<'a> Vm<'a> {
                             | "Ljava/util/LinkedList;"
                             | "Ljava/util/HashMap;"
                             | "Ljava/util/Hashtable;"
-                            | "Ljava/util/Vector;"
+                            | "Ljava/util/Properties;"
                     ) {
                         self.alloc(HeapObject::Collection(Vec::new()))
                     } else {
@@ -2880,6 +2880,7 @@ impl<'a> Vm<'a> {
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
                 || class_name == "Ljava/util/Hashtable;"
+                || class_name == "Ljava/util/Properties;"
                 || class_name == "Ljava/util/Vector;"
                 || class_name == "Ljava/lang/StringBuilder;")
         {
@@ -2887,6 +2888,7 @@ impl<'a> Vm<'a> {
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
                 || class_name == "Ljava/util/Hashtable;"
+                || class_name == "Ljava/util/Properties;"
                 || class_name == "Ljava/util/Vector;"
             {
                 if let Some(Value::Object(receiver)) = args.first() {
@@ -3477,10 +3479,9 @@ impl<'a> Vm<'a> {
             || class_name == "Ljava/util/LinkedList;"
             || class_name == "Ljava/util/HashMap;"
             || class_name == "Ljava/util/Hashtable;"
+            || class_name == "Ljava/util/Properties;"
             || class_name == "Ljava/util/Vector;"
             || class_name == "Ljava/util/Collection;"
-            || class_name == "Ljava/util/Map;"
-            || class_name == "Ljava/util/AbstractMap;"
             || class_name == "Ljava/util/List;"
             || class_name == "Ljava/util/AbstractList;"
             || class_name == "Ljava/util/AbstractCollection;"
@@ -3514,24 +3515,7 @@ impl<'a> Vm<'a> {
                         Value::Void
                     });
                 }
-                "get" => {
-                    if matches!(
-                        class_name,
-                        "Ljava/util/HashMap;"
-                            | "Ljava/util/Hashtable;"
-                            | "Ljava/util/Map;"
-                            | "Ljava/util/AbstractMap;"
-                    ) {
-                        let key = args.get(1).unwrap_or(&Value::Null);
-                        return Ok(match self.heap_object(receiver) {
-                            Some(HeapObject::Collection(values)) => values
-                                .chunks_exact(2)
-                                .find(|pair| &pair[0] == key)
-                                .map(|pair| pair[1].clone())
-                                .unwrap_or(Value::Null),
-                            _ => Value::Null,
-                        });
-                    }
+                "get" | "elementAt" => {
                     let index = int_arg(args, 1)? as usize;
                     return Ok(match self.heap_object(receiver) {
                         Some(HeapObject::Collection(values)) => {
@@ -3539,39 +3523,6 @@ impl<'a> Vm<'a> {
                         }
                         _ => Value::Null,
                     });
-                }
-                "elementAt" => {
-                    let index = int_arg(args, 1)? as usize;
-                    return Ok(match self.heap_object(receiver) {
-                        Some(HeapObject::Collection(values)) => {
-                            values.get(index).cloned().unwrap_or(Value::Null)
-                        }
-                        _ => Value::Null,
-                    });
-                }
-                "put" => {
-                    let key = args.get(1).cloned().unwrap_or(Value::Null);
-                    let value = args.get(2).cloned().unwrap_or(Value::Null);
-                    if let Some(HeapObject::Collection(values)) =
-                        self.heap.get_mut(receiver as usize)
-                    {
-                        if let Some(slot) = values.chunks_exact_mut(2).find(|pair| pair[0] == key) {
-                            slot[1] = value.clone();
-                        } else {
-                            values.push(key);
-                            values.push(value.clone());
-                        }
-                    }
-                    return Ok(value);
-                }
-                "containsKey" => {
-                    let key = args.get(1).unwrap_or(&Value::Null);
-                    return Ok(Value::Int(i32::from(match self.heap_object(receiver) {
-                        Some(HeapObject::Collection(values)) => {
-                            values.chunks_exact(2).any(|pair| &pair[0] == key)
-                        }
-                        _ => false,
-                    })));
                 }
                 "clear" => {
                     if let Some(HeapObject::Collection(values)) =
@@ -3581,9 +3532,64 @@ impl<'a> Vm<'a> {
                     }
                     return Ok(Value::Void);
                 }
+                "put"
+                    if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/Hashtable;"
+                        || class_name == "Ljava/util/Properties;" =>
+                {
+                    let key = args.get(1).cloned().unwrap_or(Value::Null);
+                    let value = args.get(2).cloned().unwrap_or(Value::Null);
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        if let Some(index) = values.iter().position(|entry| *entry == key) {
+                            let previous = std::mem::replace(&mut values[index + 1], value);
+                            return Ok(previous);
+                        }
+                        values.push(key);
+                        values.push(value);
+                    }
+                    return Ok(Value::Null);
+                }
+                "get" | "containsKey" | "remove"
+                    if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/Hashtable;"
+                        || class_name == "Ljava/util/Properties;" =>
+                {
+                    let key = args.get(1).cloned().unwrap_or(Value::Null);
+                    let index = self.heap_object(receiver).and_then(|object| match object {
+                        HeapObject::Collection(values) => values
+                            .chunks_exact(2)
+                            .position(|pair| pair[0] == key)
+                            .map(|pair| pair * 2),
+                        _ => None,
+                    });
+                    if method_name == "containsKey" {
+                        return Ok(Value::Int(i32::from(index.is_some())));
+                    }
+                    if let Some(index) = index {
+                        if method_name == "remove" {
+                            if let Some(HeapObject::Collection(values)) =
+                                self.heap.get_mut(receiver as usize)
+                            {
+                                values.remove(index);
+                                return Ok(values.remove(index));
+                            }
+                        }
+                        return Ok(self
+                            .heap_object(receiver)
+                            .and_then(|object| match object {
+                                HeapObject::Collection(values) => values.get(index + 1).cloned(),
+                                _ => None,
+                            })
+                            .unwrap_or(Value::Null));
+                    }
+                    return Ok(Value::Null);
+                }
                 _ => return Ok(Value::Void),
             }
         }
+
         if class_name == "Ljava/lang/Class;" && method_name == "getMethod" {
             return Ok(Value::Object(
                 self.alloc_instance("Ljava/lang/reflect/Method;"),
