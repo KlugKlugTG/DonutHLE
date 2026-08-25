@@ -22,7 +22,8 @@ impl CompatibilityReport {
 }
 
 const FEATURES: &[(&str, &str, bool)] = &[
-    ("android/opengl", "GLES 1.x graphics backend", true),
+    ("android/opengl", "Android OpenGL API bridge", true),
+    ("android/opengl/GLES20", "GLES 2.0 API surface", true),
     ("android/graphics/Canvas", "legacy Canvas renderer", true),
     (
         "javax/microedition/khronos",
@@ -63,6 +64,11 @@ const FEATURES: &[(&str, &str, bool)] = &[
     ("android/bluetooth", "Bluetooth services", false),
     ("android/webkit", "WebView compatibility layer", true),
     ("android/net/", "Android network services", true),
+    (
+        "android/os/Build$VERSION",
+        "Android 2.x platform profile",
+        true,
+    ),
     (
         "android/view/MotionEvent",
         "touch and motion input bridge",

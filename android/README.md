@@ -1,6 +1,6 @@
 # DonutHLE Android app
 
-DonutHLE is an experimental **Android 1.x high-level emulator**. This Android project is the modern host shell: it loads the Rust core through JNI, presents the emulated framebuffer, forwards touch input, and provides the APK library and compatibility log.
+DonutHLE is an experimental **Android 1.x-2.x high-level emulator**. This Android project is the modern host shell: it loads the Rust core through JNI, presents the emulated framebuffer on a GLES 2.0 surface, forwards touch input, and provides the APK library and compatibility log.
 
 ## Use the app
 
@@ -27,6 +27,9 @@ adb shell am start -n org.donuthle.android/.MainActivity
 Android Studio can open the `android/` directory directly.
 
 The Android build supports:
+
+- Android 1.x–2.x application profiles (API levels 1–8)
+- GLES 2.0 host presentation for the legacy GLES compatibility renderer
 
 - `arm64-v8a`
 - `armeabi-v7a`

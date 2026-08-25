@@ -12,7 +12,9 @@ final class CompatibilityLog {
         StorageLayout.appendLog(context, "IMPLEMENTED: Rust core is linked through the Android native bridge");
         StorageLayout.appendLog(context, "IMPLEMENTED: AXML manifest and resources.arsc decoding");
         StorageLayout.appendLog(context, "IMPLEMENTED: Dalvik DEX 035 VM and Android framework shim");
-        StorageLayout.appendLog(context, "IMPLEMENTED: software framebuffer, GLES rasterizer, audio queue, and input queue");
+        StorageLayout.appendLog(context, "IMPLEMENTED: software framebuffer and GLES 1.0 compatibility renderer");
+        StorageLayout.appendLog(context, "IMPLEMENTED: GLES 2.0 Android presentation surface");
+        StorageLayout.appendLog(context, "IMPLEMENTED: audio queue and input queue");
         StorageLayout.appendLog(context, "STATUS: compatibility is app-dependent; unsupported calls are reported during launch");
     }
 

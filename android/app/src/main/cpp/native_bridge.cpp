@@ -1,4 +1,4 @@
-#include <GLES/gl.h>
+#include <GLES2/gl2.h>
 #include <jni.h>
 #include <cstdint>
 #include <cstring>
@@ -46,12 +46,66 @@ Java_org_donuthle_android_MainActivity_nativeLaunchApk(JNIEnv* env, jobject, jst
 
 
 #ifndef DONUTHLE_NO_CORE
+static const char* kVertexShader =
+        "attribute vec2 aPosition;"
+        "attribute vec2 aTexCoord;"
+        "varying vec2 vTexCoord;"
+        "uniform vec2 uViewport;"
+        "void main() {"
+        "  vec2 clip = vec2(aPosition.x / uViewport.x * 2.0 - 1.0, 1.0 - aPosition.y / uViewport.y * 2.0);"
+        "  gl_Position = vec4(clip, 0.0, 1.0);"
+        "  vTexCoord = aTexCoord;"
+        "}";
+
+static const char* kFragmentShader =
+        "precision mediump float;"
+        "varying vec2 vTexCoord;"
+        "uniform sampler2D uTexture;"
+        "void main() { gl_FragColor = texture2D(uTexture, vTexCoord); }";
+
+static GLuint compileShader(GLenum type, const char* source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (compiled != GL_TRUE) {
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static GLuint createProgram() {
+    GLuint vertex = compileShader(GL_VERTEX_SHADER, kVertexShader);
+    GLuint fragment = compileShader(GL_FRAGMENT_SHADER, kFragmentShader);
+    if (vertex == 0 || fragment == 0) {
+        if (vertex != 0) glDeleteShader(vertex);
+        if (fragment != 0) glDeleteShader(fragment);
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glBindAttribLocation(program, 0, "aPosition");
+    glBindAttribLocation(program, 1, "aTexCoord");
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
 static void clearFrame(GLfloat width, GLfloat height) {
     glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
-    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_SCISSOR_TEST);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
-    glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -67,43 +121,38 @@ static bool drawSoftwareFrame(GLfloat width, GLfloat height) {
     if (donuthle_framebuffer_copy(source.data(), source.size()) != source.size()) return false;
 
     static GLuint texture = 0;
+    static GLuint program = 0;
     if (texture == 0) glGenTextures(1, &texture);
+    if (program == 0) program = createProgram();
+    if (program == 0) return false;
     glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
-    glDisable(GL_LIGHTING);
-    glDisable(GL_FOG);
-    glDisable(GL_ALPHA_TEST);
-    glDisableClientState(GL_COLOR_ARRAY);
-    glDisableClientState(GL_NORMAL_ARRAY);
     glBindTexture(GL_TEXTURE_2D, texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(frameWidth), static_cast<GLsizei>(frameHeight), 0, GL_RGBA, GL_UNSIGNED_BYTE, source.data());
 
     const GLfloat vertices[] = {0.0f, 0.0f, width, 0.0f, 0.0f, height, width, height};
     const GLfloat coordinates[] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrthof(0.0f, width, height, 0.0f, -1.0f, 1.0f);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glEnable(GL_TEXTURE_2D);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    glVertexPointer(2, GL_FLOAT, 0, vertices);
-    glTexCoordPointer(2, GL_FLOAT, 0, coordinates);
+    glUseProgram(program);
+    glUniform2f(glGetUniformLocation(program, "uViewport"), width, height);
+    glUniform1i(glGetUniformLocation(program, "uTexture"), 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, coordinates);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glDisableClientState(GL_VERTEX_ARRAY);
-    glDisable(GL_TEXTURE_2D);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(0);
+    glUseProgram(0);
     return true;
 }
 #endif

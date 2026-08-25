@@ -126,9 +126,9 @@ public final class MainActivity extends Activity {
         TextView brand = label("DONUTHLE", 25, TEXT);
         brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         names.addView(brand);
-        names.addView(label("ANDROID 1.x COMPATIBILITY LAB", 11, TEAL), margins(0, 3, 0, 0));
+        names.addView(label("ANDROID 1.x-2.x COMPATIBILITY LAB", 11, TEAL), margins(0, 3, 0, 0));
         header.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView version = label("0.1.1", 11, MUTED);
+        TextView version = label("0.1.3", 11, MUTED);
         version.setGravity(Gravity.CENTER);
         version.setBackground(round(PANEL_LIGHT, 30));
         version.setPadding(dp(10), dp(7), dp(10), dp(7));
@@ -274,8 +274,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showAbout() {
-        LinearLayout content = page("ABOUT DONUTHLE", "A clean-room Android 1.x HLE project.");
-        content.addView(infoBlock("WHAT IT DOES", "DonutHLE inspects APKs, runs a growing subset of Dalvik and Android 1.x APIs, loads selected libGDX assets, and presents the emulated framebuffer on Android."), margins(0, 18, 0, 10));
+        LinearLayout content = page("ABOUT DONUTHLE", "A clean-room Android 1.x-2.x HLE project.");
+        content.addView(infoBlock("WHAT IT DOES", "DonutHLE inspects APKs, runs a growing subset of Dalvik and Android 1.x-2.x APIs, loads selected libGDX assets, and presents the emulated framebuffer through GLES 2.0 on Android."), margins(0, 18, 0, 10));
         content.addView(infoBlock("WHAT THE LOG MEANS", "The emulator reports unsupported APIs and incomplete paths instead of hiding them. A visible frame is useful evidence, but does not mean an application is fully playable."), margins(0, 0, 0, 18));
         content.addView(button("‹  BACK TO HOME", true, v -> showHome()));
         setContentView(scroll(content));

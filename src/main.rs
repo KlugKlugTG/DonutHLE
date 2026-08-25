@@ -8,7 +8,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use donuthle::{apk, runtime::Runtime};
 
 #[derive(Parser, Debug)]
-#[command(name = "donuthle", version, about = "Android 1.x HLE prototype")]
+#[command(name = "donuthle", version, about = "Android 1.x-2.x HLE prototype")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
             }
             Command::Validate { apk: path } => {
                 let report = runtime.validate_apk(&path)?;
-                println!("valid Android 1.x package");
+                println!("valid Android 1.x-2.x package");
                 println!("package: {}", report.package);
                 println!(
                     "application: {}",

@@ -39,7 +39,8 @@ final class ApkCompatibility {
     private static void detectRequests(Report report) {
         String dex = new String(report.dexBytes, StandardCharsets.ISO_8859_1);
         String[][] features = {
-                {"android/opengl", "GLES 1.x graphics backend"},
+                {"android/opengl", "Android OpenGL API bridge"},
+                {"android/opengl/GLES20", "GLES 2.0 API surface"},
                 {"javax/microedition/khronos", "OpenGL ES EGL/Khronos bridge"},
                 {"android/media/AudioTrack", "AudioTrack PCM mixer"},
                 {"android/media/MediaPlayer", "MediaPlayer backend"},
@@ -57,7 +58,8 @@ final class ApkCompatibility {
                 {"android/net/", "Android network services"},
                 {"android/view/MotionEvent", "touch and motion input bridge"},
                 {"System.loadLibrary", "JNI/native library loader"},
-                {"dalvik/system", "Dalvik system APIs"}
+                {"dalvik/system", "Dalvik system APIs"},
+                {"android/os/Build$VERSION", "Android 2.x platform profile"}
         };
         for (String[] feature : features) {
             if (dex.contains(feature[0])) report.requestedGaps.add(feature[1]);

@@ -376,6 +376,9 @@ pub struct Framework {
     pub gdx_audio: Option<u32>,
     pub gdx_files: Option<u32>,
     pub gdx_input: Option<u32>,
+    pub gles2_next_handle: u32,
+    pub gles2_shaders: HashMap<u32, i32>,
+    pub gles2_programs: HashMap<u32, Vec<u32>>,
     pub assets: Option<AssetStore>,
     pub resource_images: HashMap<u32, String>,
     pub surface_size: (i32, i32),
@@ -386,10 +389,25 @@ impl Framework {
     pub fn new() -> Self {
         Self {
             next_handle: 1,
+            gles2_next_handle: 1,
             gles: HostGles::default(),
             assets: Some(AssetStore::default()),
             ..Self::default()
         }
+    }
+
+    pub fn alloc_gles2_handle(&mut self) -> u32 {
+        let handle = self.gles2_next_handle;
+        self.gles2_next_handle = self.gles2_next_handle.saturating_add(1);
+        handle
+    }
+
+    pub fn record_gles2_shader(&mut self, shader: u32, shader_type: i32) {
+        self.gles2_shaders.insert(shader, shader_type);
+    }
+
+    pub fn record_gles2_program_shader(&mut self, program: u32, shader: u32) {
+        self.gles2_programs.entry(program).or_default().push(shader);
     }
 
     pub fn alloc_view(&mut self, class_name: impl Into<String>) -> u32 {

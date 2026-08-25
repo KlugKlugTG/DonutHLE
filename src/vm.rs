@@ -2136,9 +2136,12 @@ impl<'a> Vm<'a> {
                                     "height" => {
                                         Value::Float(self.framework.surface_size.1.max(480) as f32)
                                     }
-                                    "RELEASE" => Value::String("1.6".to_owned()),
+                                    "RELEASE" => Value::String("2.2".to_owned()),
+                                    "SDK_INT" => Value::Int(8),
                                     "DEVICE" => Value::String("donuthle".to_owned()),
-                                    "MODEL" => Value::String("DonutHLE Linux".to_owned()),
+                                    "MODEL" => Value::String("DonutHLE".to_owned()),
+                                    "MANUFACTURER" => Value::String("DonutHLE".to_owned()),
+                                    "PRODUCT" => Value::String("donuthle".to_owned()),
                                     _ => default_value_for_type(&field.type_name),
                                 })
                             })
@@ -2227,6 +2230,16 @@ impl<'a> Vm<'a> {
         method_name: &str,
         args: &[Value],
     ) -> Result<Value, VmError> {
+        if class_name == "Landroid/os/Build$VERSION;" {
+            return match method_name {
+                "toString" => Ok(Value::String("DonutHLE Android 2.2 (API 8)".to_owned())),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/opengl/GLES20;" {
+            return self.dispatch_gles20(method_name, args);
+        }
+
         if class_name == "Landroid/util/Log;" {
             let message = args
                 .iter()
@@ -4355,7 +4368,7 @@ impl<'a> Vm<'a> {
             }
             ("Lcom/badlogic/gdx/graphics/GLCommon;", "glGetString")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glGetString") => {
-                FrameworkResult::String("DonutHLE GLES 1.0 software renderer".to_owned())
+                FrameworkResult::String("DonutHLE GLES 2.0 software-compatible renderer".to_owned())
             }
             ("Lcom/badlogic/gdx/graphics/GLCommon;", "glPushMatrix")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glPushMatrix") => {
@@ -4660,6 +4673,86 @@ impl<'a> Vm<'a> {
         self.framework
             .dispatch(call)
             .map_err(|message| self.error(0, 0, message))
+    }
+    fn dispatch_gles20(&mut self, method_name: &str, args: &[Value]) -> Result<Value, VmError> {
+        match method_name {
+            "glCreateShader" => {
+                let shader = self.framework.alloc_gles2_handle();
+                self.framework
+                    .record_gles2_shader(shader, int_arg(args, 0)?);
+                Ok(Value::Int(shader as i32))
+            }
+            "glCreateProgram" => {
+                let program = self.framework.alloc_gles2_handle();
+                self.framework.gles2_programs.entry(program).or_default();
+                Ok(Value::Int(program as i32))
+            }
+            "glAttachShader" => {
+                self.framework.record_gles2_program_shader(
+                    int_arg(args, 0)? as u32,
+                    int_arg(args, 1)? as u32,
+                );
+                Ok(Value::Void)
+            }
+            "glCompileShader"
+            | "glLinkProgram"
+            | "glUseProgram"
+            | "glDeleteShader"
+            | "glDeleteProgram"
+            | "glBindAttribLocation"
+            | "glShaderSource"
+            | "glEnableVertexAttribArray"
+            | "glDisableVertexAttribArray"
+            | "glVertexAttribPointer"
+            | "glUniform1i"
+            | "glUniform1f"
+            | "glUniform2f"
+            | "glUniform4f"
+            | "glActiveTexture"
+            | "glBindTexture"
+            | "glTexParameteri"
+            | "glTexImage2D"
+            | "glViewport"
+            | "glClearColor"
+            | "glClear"
+            | "glEnable"
+            | "glDisable"
+            | "glBlendFunc"
+            | "glDrawArrays"
+            | "glDrawElements" => Ok(Value::Void),
+            "glGetShaderiv" | "glGetProgramiv" => {
+                let output = object_arg(args, 2)?;
+                self.set_array_int(output, 0, 1)?;
+                Ok(Value::Void)
+            }
+            "glGetUniformLocation" | "glGetAttribLocation" => Ok(Value::Int(0)),
+            "glGetError" => Ok(Value::Int(0)),
+            "glGetString" => Ok(Value::String(
+                "DonutHLE GLES 2.0 software-compatible renderer".to_owned(),
+            )),
+            _ => Err(self.error(
+                0,
+                0,
+                format!("GLES20 method {method_name} is not implemented"),
+            )),
+        }
+    }
+
+    fn set_array_int(&mut self, array: ObjectId, index: usize, value: i32) -> Result<(), VmError> {
+        let too_small = match self.heap.get(array as usize) {
+            Some(HeapObject::Array { values, .. }) => index >= values.len(),
+            _ => return Err(self.error(0, 0, "GLES20 output argument is not an array")),
+        };
+        if too_small {
+            return Err(self.error(0, 0, "GLES20 output array is too small"));
+        }
+        match self.heap.get_mut(array as usize) {
+            Some(HeapObject::Array { values, .. }) => {
+                values[index] = Value::Int(value);
+                Ok(())
+            }
+            _ => Err(self.error(0, 0, "GLES20 output argument is not an array")),
+        }
     }
 
     fn string_arg(&self, args: &[Value], index: usize) -> Result<String, VmError> {

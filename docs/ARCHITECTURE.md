@@ -12,17 +12,17 @@ loader -> manifest/package model -> launch plan
 Dalvik 035 interpreter <-> heap / class registry
         |
         v
-Android 1.x API shims (API 1–4)
+Android 1.x-2.x API shims (API 1–8)
   Activity + Context + View + Looper + services
         |
         +--> GLES 1.x API
                 |
                 v
-          GLES1-on-GL2 adapter
+          GLES1 compatibility adapter
           fixed-point conversion / client arrays / palette skinning
                 |
                 v
-          software GL2-style rasterizer + framebuffer
+          software rasterizer + GLES 2.0 Android presentation framebuffer
         +--> input
         +--> audio
         +--> host filesystem and network policy

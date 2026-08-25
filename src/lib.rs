@@ -1,4 +1,4 @@
-//! DonutHLE core: an explicit foundation for Android 1.x HLE work.
+//! DonutHLE core: an explicit foundation for Android 1.x-2.x HLE work.
 
 pub mod apk;
 pub mod assets;
@@ -17,13 +17,15 @@ pub mod resources;
 pub mod runtime;
 pub mod vm;
 
-/// Single host graphics entry point: GLES 1.x is always adapted to the GL2-style renderer.
+/// Single host graphics entry point. Legacy GLES 1.x and GLES 2.0 calls share the
+/// software framebuffer; Android presents that framebuffer through a GLES 2.0 surface.
 pub type HostGles = gles1_on_gl2::Gles1OnGl2;
 
 pub const ANDROID_X_MIN_API_LEVEL: u32 = 1;
-pub const ANDROID_X_MAX_API_LEVEL: u32 = 4;
+pub const ANDROID_X_MAX_API_LEVEL: u32 = 8;
 pub const API_LEVEL: u32 = ANDROID_X_MAX_API_LEVEL;
-pub const RELEASE: &str = "Android 1.x";
+pub const RELEASE: &str = "Android 1.x-2.x";
+pub const GLES_VERSION: &str = "GLES 1.0 compatibility + GLES 2.0 presentation";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VirtualScreen {
@@ -203,7 +205,7 @@ pub extern "C" fn donuthle_touch(action: i32, x: f32, y: f32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn donuthle_core_info() -> *const std::os::raw::c_char {
-    c"Rust DonutHLE core: Android 1.x APK parsing, AXML, resources, Dalvik VM, framework, GLES, and audio subsystems".as_ptr()
+    c"Rust DonutHLE core: Android 1.x-2.x APK parsing, AXML, resources, Dalvik VM, framework, GLES 1.0 compatibility, GLES 2.0 presentation, and audio subsystems".as_ptr()
 }
 
 #[no_mangle]

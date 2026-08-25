@@ -2,9 +2,9 @@
 
 ![DonutHLE app icon](docs/images/donuthle-logo.png)
 
-**DonutHLE** is an experimental high-level emulator for applications built for Android 1.x (API levels 1–4). It replaces selected historical Android APIs with host-side implementations instead of emulating a complete phone. The core is written in Rust; the Android app is a modern shell connected through JNI.
+**DonutHLE** is an experimental high-level emulator for applications built for Android 1.x-2.x (API levels 1–8). It replaces selected historical Android APIs with host-side implementations instead of emulating a complete phone. The core is written in Rust; the Android app is a modern shell connected through JNI.
 
-> **Status: research prototype.** DonutHLE can inspect APKs, resolve launchers, execute a growing subset of Dalvik 035 bytecode, boot selected activity paths, load common libGDX assets, record and rasterize a GLES 1.x-style command stream, and present the framebuffer on Android. Compatibility remains application-specific and incomplete.
+> **Status: research prototype.** DonutHLE can inspect APKs, resolve launchers, execute a growing subset of Dalvik 035 bytecode, boot selected activity paths, load common libGDX assets, record and rasterize a legacy GLES command stream, and present the framebuffer through an Android GLES 2.0 surface. Compatibility remains application-specific and incomplete.
 
 ## Start here
 
@@ -66,14 +66,14 @@ DonutHLE-windows-x86_64.exe run path\to\game.apk
 - Safe ZIP/APK inspection with deterministic file listing.
 - Android binary XML manifest parsing and launcher resolution.
 - Dalvik 035 header parsing and a guarded interpreter with register bounds checks, call-depth/step limits, and unsupported-call diagnostics.
-- Android 1.x target profile covering API levels 1–4, with API 4 as the default and a 320×480 virtual screen.
+- Android 1.x–2.x target profile covering API levels 1–8, with API 8 as the default and a 320×480 virtual screen.
 - Partial resource-table discovery and `resources.arsc` decoding.
 - Activity, Context, View, lifecycle, message queue, input, audio, and resource framework shims.
 
 ### Graphics and libGDX compatibility
 
 - Software framebuffer with viewport, scissor, depth, matrix, blending, and clear-state support.
-- GLES 1.x compatibility modeled on a fixed-function GLES1-on-GL2 adapter.
+- Legacy GLES compatibility modeled on a fixed-function adapter, with Android presentation on a GLES 2.0 context.
 - Client-array staging, fixed-point conversion, matrix stacks, OES matrix-palette CPU skinning, indexed and array draws.
 - PNG/JPEG APK asset decoding and normalized `assets/` paths.
 - libGDX-style textures, `TextureRegion`, `TextureAtlas`, atlas lookup, and `SpriteBatch` textured quad rendering.
@@ -119,9 +119,9 @@ APK
  │
  ├── Rust HLE core
  │   ├── guarded Dalvik interpreter
- │   ├── Android 1.x framework shims
+ │   ├── Android 1.x–2.x framework shims
  │   ├── libGDX compatibility layer
- │   └── GLES 1.x command stream + software framebuffer
+ │   └── Legacy GLES command stream + GLES 2.0 presentation + software framebuffer
  │
  └── Android shell + JNI
      ├── APK library and storage
@@ -133,7 +133,7 @@ APK
 ## Roadmap
 
 1. Expand Dalvik 035 opcode coverage and improve method dispatch, class initialization, exceptions, and arrays.
-2. Complete the Android 1.x framework surface needed by real applications.
+2. Complete the Android 1.x–2.x framework surface needed by real applications.
 3. Harden libGDX constructors, overloads, texture filtering/wrapping, atlas metadata, transforms, and resource lifetime.
 4. Improve fixed-function GLES correctness, clipping, blending factors, depth behavior, and indexed rendering.
 5. Connect Android touch/key events and audio output to emulated applications instead of placeholders.

@@ -10,7 +10,9 @@ final class CompatFeatures {
                 "Rust core is linked through the Android native bridge",
                 "AXML manifest and resources.arsc decoding",
                 "Dalvik DEX 035 VM and Android framework shim",
-                "software framebuffer, GLES rasterizer, audio queue, and input queue"
+                "software framebuffer and GLES 1.0 compatibility renderer",
+                "GLES 2.0 Android presentation surface",
+                "audio queue and input queue"
         };
         for (String feature : features) StorageLayout.appendLog(context, "IMPLEMENTED: " + feature);
         StorageLayout.appendLog(context, "STATUS: compatibility is app-dependent; unsupported calls are reported during launch");

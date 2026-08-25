@@ -13,7 +13,8 @@ final class Gles1SurfaceView extends GLSurfaceView {
     Gles1SurfaceView(Context context, MainActivity activity) {
         super(context);
         this.activity = activity;
-        setEGLContextClientVersion(1);
+        setEGLContextClientVersion(2);
+        setEGLConfigChooser(8, 8, 8, 8, 16, 0);
         setRenderer(new Renderer());
         setRenderMode(RENDERMODE_CONTINUOUSLY);
     }
