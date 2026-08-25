@@ -1171,7 +1171,11 @@ impl<'a> Vm<'a> {
                     })?;
                     let object = if matches!(
                         class_name.as_str(),
-                        "Ljava/util/ArrayList;" | "Ljava/util/LinkedList;" | "Ljava/util/HashMap;"
+                        "Ljava/util/ArrayList;"
+                            | "Ljava/util/LinkedList;"
+                            | "Ljava/util/HashMap;"
+                            | "Ljava/util/Hashtable;"
+                            | "Ljava/util/Properties;"
                     ) {
                         self.alloc(HeapObject::Collection(Vec::new()))
                     } else {
@@ -2875,12 +2879,16 @@ impl<'a> Vm<'a> {
                 || class_name == "Ljava/util/ArrayList;"
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/util/Hashtable;"
+                || class_name == "Ljava/util/Properties;"
                 || class_name == "Ljava/util/Vector;"
                 || class_name == "Ljava/lang/StringBuilder;")
         {
             if class_name == "Ljava/util/ArrayList;"
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/util/Hashtable;"
+                || class_name == "Ljava/util/Properties;"
                 || class_name == "Ljava/util/Vector;"
             {
                 if let Some(Value::Object(receiver)) = args.first() {
@@ -3470,6 +3478,8 @@ impl<'a> Vm<'a> {
         if class_name == "Ljava/util/ArrayList;"
             || class_name == "Ljava/util/LinkedList;"
             || class_name == "Ljava/util/HashMap;"
+            || class_name == "Ljava/util/Hashtable;"
+            || class_name == "Ljava/util/Properties;"
             || class_name == "Ljava/util/Vector;"
             || class_name == "Ljava/util/Collection;"
             || class_name == "Ljava/util/List;"
@@ -3522,9 +3532,64 @@ impl<'a> Vm<'a> {
                     }
                     return Ok(Value::Void);
                 }
+                "put"
+                    if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/Hashtable;"
+                        || class_name == "Ljava/util/Properties;" =>
+                {
+                    let key = args.get(1).cloned().unwrap_or(Value::Null);
+                    let value = args.get(2).cloned().unwrap_or(Value::Null);
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        if let Some(index) = values.iter().position(|entry| *entry == key) {
+                            let previous = std::mem::replace(&mut values[index + 1], value);
+                            return Ok(previous);
+                        }
+                        values.push(key);
+                        values.push(value);
+                    }
+                    return Ok(Value::Null);
+                }
+                "get" | "containsKey" | "remove"
+                    if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/Hashtable;"
+                        || class_name == "Ljava/util/Properties;" =>
+                {
+                    let key = args.get(1).cloned().unwrap_or(Value::Null);
+                    let index = self.heap_object(receiver).and_then(|object| match object {
+                        HeapObject::Collection(values) => values
+                            .chunks_exact(2)
+                            .position(|pair| pair[0] == key)
+                            .map(|pair| pair * 2),
+                        _ => None,
+                    });
+                    if method_name == "containsKey" {
+                        return Ok(Value::Int(i32::from(index.is_some())));
+                    }
+                    if let Some(index) = index {
+                        if method_name == "remove" {
+                            if let Some(HeapObject::Collection(values)) =
+                                self.heap.get_mut(receiver as usize)
+                            {
+                                values.remove(index);
+                                return Ok(values.remove(index));
+                            }
+                        }
+                        return Ok(self
+                            .heap_object(receiver)
+                            .and_then(|object| match object {
+                                HeapObject::Collection(values) => values.get(index + 1).cloned(),
+                                _ => None,
+                            })
+                            .unwrap_or(Value::Null));
+                    }
+                    return Ok(Value::Null);
+                }
                 _ => return Ok(Value::Void),
             }
         }
+
         if class_name == "Ljava/lang/Class;" && method_name == "getMethod" {
             return Ok(Value::Object(
                 self.alloc_instance("Ljava/lang/reflect/Method;"),
