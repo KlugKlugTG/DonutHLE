@@ -299,10 +299,34 @@ impl Runtime {
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 listener
             } else {
-                vm.find_instance_by_class("Lde/nurogames/android/tinysanta/views/TinySantaView;")
+                let listener = vm
+                    .find_instance_by_class("Lde/nurogames/android/tinysanta/views/TinySantaView;")
                     .ok_or_else(|| {
                         anyhow::anyhow!("application has no ApplicationListener or TinySantaView")
-                    })?
+                    })?;
+                let start_game = plan.class_name == "Lde/nurogames/android/tinysanta/tinysanta;"
+                    && plan.package == "de.nurogames.android.tinysanta";
+                if start_game {
+                    let method_index = plan
+                        .dex
+                        .methods
+                        .iter()
+                        .position(|method| {
+                            method.class_name
+                                == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
+                                && method.name == "a"
+                                && method.prototype == "(I)V"
+                        })
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("TinySantaView game activation method is missing")
+                        })?;
+                    vm.run_method(
+                        method_index,
+                        vec![VmValue::Object(listener), VmValue::Int(1)],
+                    )
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                }
+                listener
             };
             let mut session = RuntimeSession { vm, listener };
             let (commands, pixels) = session.render_current_frame()?;
