@@ -218,6 +218,31 @@ impl GlesContext {
         self.commands.push(GlesCommand::Clear(self.clear_color));
     }
 
+    pub fn reset_frame_state(&mut self) {
+        self.enabled.clear();
+        self.scissor = None;
+        self.bound_texture = 0;
+        self.matrix_mode = MODELVIEW;
+        self.projection_matrix = identity();
+        self.modelview_matrix = identity();
+        self.texture_matrix = identity();
+        self.matrix_stacks.clear();
+        self.vertex_pointer = None;
+        self.color_pointer = None;
+        self.texcoord_pointer = None;
+        self.blend_src = ONE;
+        self.blend_dst = ZERO;
+        self.depth_mask_enabled = true;
+        self.clear_color = Rgba8 {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        self.framebuffer.clear(self.clear_color);
+        self.depth_buffer.fill(1.0);
+    }
+
     pub fn clear_color(&mut self, color: Rgba8) {
         self.clear_color = color;
         self.commands.push(GlesCommand::ClearColor(color));

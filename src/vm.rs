@@ -250,34 +250,50 @@ impl<'a> Vm<'a> {
             Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
             _ => return Err(self.error(0, 0, "listener is not an object instance")),
         };
-        let method_index = self
-            .dex
-            .methods
-            .iter()
-            .enumerate()
-            .find(|(index, method)| {
-                method.class_name == class_name
-                    && method.name == method_name
-                    && self.dex.method_code_by_index(*index).is_some()
-            })
-            .map(|(index, _)| index)
-            .or_else(|| {
-                self.dex
-                    .methods
-                    .iter()
-                    .enumerate()
-                    .find(|(_, method)| {
-                        method.class_name == class_name && method.name == method_name
-                    })
-                    .map(|(index, _)| index)
-            })
-            .ok_or_else(|| {
-                self.error(
-                    0,
-                    0,
-                    format!("method {class_name}->{method_name} not found"),
-                )
-            })?;
+        let mut current = class_name.as_str();
+        let mut visited = std::collections::BTreeSet::new();
+        let method_index = loop {
+            if !visited.insert(current.to_owned()) {
+                break None;
+            }
+            if let Some(index) = self
+                .dex
+                .methods
+                .iter()
+                .enumerate()
+                .find(|(index, method)| {
+                    method.class_name == current
+                        && method.name == method_name
+                        && self.dex.method_code_by_index(*index).is_some()
+                })
+                .map(|(index, _)| index)
+            {
+                break Some(index);
+            }
+            current = match self
+                .dex
+                .find_class(current)
+                .and_then(|class| class.super_class.as_deref())
+            {
+                Some(super_class) => super_class,
+                None => break None,
+            };
+        }
+        .or_else(|| {
+            self.dex
+                .methods
+                .iter()
+                .enumerate()
+                .find(|(_, method)| method.class_name == class_name && method.name == method_name)
+                .map(|(index, _)| index)
+        })
+        .ok_or_else(|| {
+            self.error(
+                0,
+                0,
+                format!("method {class_name}->{method_name} not found"),
+            )
+        })?;
         args.insert(0, Value::Object(object));
         self.call_method(method_index, args)
     }
@@ -365,6 +381,31 @@ impl<'a> Vm<'a> {
                 } if value_class == class_name => Some(id as ObjectId),
                 _ => None,
             })
+    }
+    pub fn has_instance_method(&self, object: ObjectId, method_name: &str) -> bool {
+        let Some(HeapObject::Instance { class_name, .. }) = self.heap_object(object) else {
+            return false;
+        };
+        let mut current = class_name.as_str();
+        let mut visited = std::collections::BTreeSet::new();
+        while visited.insert(current.to_owned()) {
+            if self.dex.methods.iter().enumerate().any(|(index, method)| {
+                method.class_name == current
+                    && method.name == method_name
+                    && self.dex.method_code_by_index(index).is_some()
+            }) {
+                return true;
+            }
+            let Some(super_class) = self
+                .dex
+                .find_class(current)
+                .and_then(|class| class.super_class.as_deref())
+            else {
+                break;
+            };
+            current = super_class;
+        }
+        false
     }
 
     pub fn find_render_view(&self) -> Option<ObjectId> {
@@ -2136,6 +2177,23 @@ impl<'a> Vm<'a> {
             }
             return Ok(Value::Int(0));
         }
+        if class_name == "Landroid/os/Handler;" {
+            let receiver = object_arg(args, 0)?;
+            return match method_name {
+                "<init>" => Ok(Value::Void),
+                "removeMessages" | "removeCallbacks" | "removeCallbacksAndMessages" => {
+                    self.framework.messages = crate::framework::MessageQueue::default();
+                    Ok(Value::Void)
+                }
+                "obtainMessage" => Ok(Value::Object(self.alloc_instance("Landroid/os/Message;"))),
+                "sendMessage" | "sendMessageDelayed" | "sendEmptyMessage" => {
+                    self.set_object_field(receiver, "last_sent", Value::Int(1));
+                    Ok(Value::Int(1))
+                }
+                "post" | "postDelayed" | "sendMessageAtTime" => Ok(Value::Int(1)),
+                _ => Ok(Value::Void),
+            };
+        }
         if class_name == "Ljava/util/Collections;" && method_name == "sort" {
             let list = object_arg(args, 0)?;
             let mut values = match self.heap.get_mut(list as usize) {
@@ -2270,15 +2328,63 @@ impl<'a> Vm<'a> {
                 "getMainLooper" => {
                     return Ok(Value::Object(self.alloc_instance("Landroid/os/Looper;")))
                 }
-                "setContentView" => return Ok(Value::Void),
+                "setContentView" => {
+                    let activity = object_arg(args, 0)?;
+                    let layout_id = int_arg(args, 1)? as u32;
+                    let root = self.framework.alloc_view("Landroid/widget/RelativeLayout;");
+                    self.set_object_field(activity, "content_view", Value::Object(root));
+                    self.set_object_field(activity, "content_layout", Value::Int(layout_id as i32));
+                    self.framework.content_views.insert(activity, root);
+                    return Ok(Value::Void);
+                }
                 "findViewById" => {
+                    let activity = object_arg(args, 0)?;
                     let id = int_arg(args, 1)?;
-                    let class_name = match id {
+                    let view = self.alloc_instance(match id {
                         2131492892 => "Landroid/widget/ViewFlipper;",
                         2131492894 => "Lcom/mobclix/android/sdk/MobclixMMABannerXLAdView;",
                         _ => "Landroid/view/View;",
-                    };
-                    return Ok(Value::Object(self.alloc_instance(class_name)));
+                    });
+                    self.set_object_field(view, "view_id", Value::Int(id));
+                    if let Some(root) = self.object_field_object(activity, "content_view") {
+                        self.set_object_field(view, "root_view", Value::Object(root));
+                        if id == 2131492892 {
+                            for (index, class_name) in [
+                                "Lde/nurogames/android/tinysanta/views/SplashView;",
+                                "Lde/nurogames/android/tinysanta/views/MenuView;",
+                                "Lde/nurogames/android/tinysanta/views/TinySantaView;",
+                                "Lde/nurogames/android/tinysanta/views/ShopView;",
+                                "Lde/nurogames/android/tinysanta/views/ScoresView;",
+                                "Lde/nurogames/android/tinysanta/views/HelpView;",
+                                "Lde/nurogames/android/tinysanta/views/CreditsView;",
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                let child = self.alloc_instance(class_name);
+                                self.set_object_field(
+                                    view,
+                                    &format!("child_{index}"),
+                                    Value::Object(child),
+                                );
+                                let constructor = self.dex.methods.iter().position(|method| {
+                                    method.class_name == class_name && method.name == "<init>"
+                                });
+                                if let Some(constructor) = constructor {
+                                    self.run_method(
+                                        constructor,
+                                        vec![
+                                            Value::Object(child),
+                                            Value::Object(activity),
+                                            Value::Null,
+                                        ],
+                                    )?;
+                                }
+                            }
+                            self.set_object_field(view, "displayed_child", Value::Int(0));
+                        }
+                    }
+                    return Ok(Value::Object(view));
                 }
                 "setRequestedOrientation" | "requestWindowFeature" => return Ok(Value::Int(1)),
                 "getWindow" => {
@@ -2344,9 +2450,24 @@ impl<'a> Vm<'a> {
         }
         if class_name == "Landroid/content/res/Resources;" {
             return match method_name {
-                "getDisplayMetrics" => Ok(Value::Object(
-                    self.alloc_instance("Landroid/util/DisplayMetrics;"),
-                )),
+                "getDisplayMetrics" => {
+                    let metrics = self.alloc_instance("Landroid/util/DisplayMetrics;");
+                    self.set_object_field(
+                        metrics,
+                        "widthPixels",
+                        Value::Int(self.framework.surface_size.0.max(1)),
+                    );
+                    self.set_object_field(
+                        metrics,
+                        "heightPixels",
+                        Value::Int(self.framework.surface_size.1.max(1)),
+                    );
+                    self.set_object_field(metrics, "density", Value::Float(1.0));
+                    self.set_object_field(metrics, "scaledDensity", Value::Float(1.0));
+                    self.set_object_field(metrics, "xdpi", Value::Float(160.0));
+                    self.set_object_field(metrics, "ydpi", Value::Float(160.0));
+                    Ok(Value::Object(metrics))
+                }
                 "getStringArray" => {
                     let id = int_arg(args, 1).unwrap_or(0) as u32;
                     let resource_value = self.framework.resources.get(id).cloned();
@@ -2912,16 +3033,38 @@ impl<'a> Vm<'a> {
             }
             return match method_name {
                 "getCurrentView" => {
-                    let view =
-                        self.alloc_instance("Lde/nurogames/android/tinysanta/views/ViewPlus;");
+                    let flipper = object_arg(args, 0)?;
+                    let index = self
+                        .object_field_int(flipper, "displayed_child")
+                        .unwrap_or(0)
+                        .max(0);
+                    let view = self
+                        .object_field_object(flipper, &format!("child_{index}"))
+                        .unwrap_or_else(|| {
+                            self.alloc_instance("Lde/nurogames/android/tinysanta/views/ViewPlus;")
+                        });
                     Ok(Value::Object(view))
                 }
                 "getChildAt" => {
-                    let view =
-                        self.alloc_instance("Lde/nurogames/android/tinysanta/views/ViewPlus;");
+                    let flipper = object_arg(args, 0)?;
+                    let index = int_arg(args, 1)?.max(0);
+                    let view = self
+                        .object_field_object(flipper, &format!("child_{index}"))
+                        .unwrap_or_else(|| {
+                            self.alloc_instance("Lde/nurogames/android/tinysanta/views/ViewPlus;")
+                        });
                     Ok(Value::Object(view))
                 }
-                "setDisplayedChild" | "startAnimation" | "setAnimation" => Ok(Value::Void),
+                "setDisplayedChild" => {
+                    let flipper = object_arg(args, 0)?;
+                    self.set_object_field(
+                        flipper,
+                        "displayed_child",
+                        Value::Int(int_arg(args, 1)?.max(0)),
+                    );
+                    Ok(Value::Void)
+                }
+                "startAnimation" | "setAnimation" => Ok(Value::Void),
                 _ => Ok(Value::Void),
             };
         }
@@ -3017,6 +3160,29 @@ impl<'a> Vm<'a> {
                         );
                         self.set_object_field(*metrics, "density", Value::Float(1.0));
                     }
+                    Ok(Value::Void)
+                }
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/util/DisplayMetrics;" {
+            let receiver = object_arg(args, 0)?;
+            return match method_name {
+                "<init>" => {
+                    self.set_object_field(
+                        receiver,
+                        "widthPixels",
+                        Value::Int(self.framework.surface_size.0.max(1)),
+                    );
+                    self.set_object_field(
+                        receiver,
+                        "heightPixels",
+                        Value::Int(self.framework.surface_size.1.max(1)),
+                    );
+                    self.set_object_field(receiver, "density", Value::Float(1.0));
+                    self.set_object_field(receiver, "scaledDensity", Value::Float(1.0));
+                    self.set_object_field(receiver, "xdpi", Value::Float(160.0));
+                    self.set_object_field(receiver, "ydpi", Value::Float(160.0));
                     Ok(Value::Void)
                 }
                 _ => Ok(Value::Void),
@@ -4020,13 +4186,67 @@ impl<'a> Vm<'a> {
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glGetString") => {
                 FrameworkResult::String("DonutHLE GLES 1.0 software renderer".to_owned())
             }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glPushMatrix")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPushMatrix") => {
+                self.framework.gles.push_matrix();
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glPopMatrix")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glPopMatrix") => {
+                self.framework.gles.pop_matrix();
+                FrameworkResult::Void
+            }
             ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadIdentity")
-            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadIdentity")
-            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glLoadMatrixf")
-            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadMatrixf")
-            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glMatrixMode")
-            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMatrixMode")
-            | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexImage2D")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glLoadIdentity") => {
+                self.framework.gles.load_identity();
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glMatrixMode")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glMatrixMode") => {
+                self.framework.gles.matrix_mode(int_arg(args, 1)? as u32);
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTranslatef")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glTranslatef") => {
+                self.framework.gles.translate(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glScalef")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glScalef") => {
+                self.framework.gles.scale(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glRotatef")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glRotatef") => {
+                self.framework.gles.rotate(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                    float_arg(args, 4)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glOrthof")
+            | ("Lcom/badlogic/gdx/graphics/GL10;", "glOrthof") => {
+                self.framework.gles.ortho(
+                    float_arg(args, 1)?,
+                    float_arg(args, 2)?,
+                    float_arg(args, 3)?,
+                    float_arg(args, 4)?,
+                    float_arg(args, 5)?,
+                    float_arg(args, 6)?,
+                );
+                FrameworkResult::Void
+            }
+            ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexImage2D")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexImage2D")
             | ("Lcom/badlogic/gdx/graphics/GLCommon;", "glTexParameterf")
             | ("Lcom/badlogic/gdx/graphics/GL10;", "glTexParameterf")
@@ -4221,23 +4441,8 @@ impl<'a> Vm<'a> {
                         b: 255,
                         a: 255,
                     });
-                let rendered = texture_path.and_then(|path| {
-                    self.render_asset(&path, x, y, width, height, region, color)
-                        .then_some(())
-                });
-                if rendered.is_none() {
-                    self.framework.gles.draw_quad_pixels(
-                        x,
-                        y,
-                        width,
-                        height,
-                        Rgba8 {
-                            r: 220,
-                            g: 235,
-                            b: 240,
-                            a: 255,
-                        },
-                    );
+                if let Some(path) = texture_path {
+                    self.render_asset(&path, x, y, width, height, region, color);
                 }
                 FrameworkResult::Void
             }

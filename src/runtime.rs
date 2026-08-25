@@ -57,7 +57,6 @@ pub struct Runtime {
 pub struct RuntimeSession {
     pub vm: Vm<'static>,
     pub listener: ObjectId,
-    pub render_method: String,
 }
 
 impl RuntimeSession {
@@ -65,13 +64,19 @@ impl RuntimeSession {
         let logical_width = self.vm.framework.gles.framebuffer().width().max(1);
         let logical_height = self.vm.framework.gles.framebuffer().height().max(1);
         self.vm.framework.surface_size = (logical_width as i32, logical_height as i32);
+        self.vm.framework.gles.reset_frame_state();
         self.vm.framework.gles.begin_frame();
         self.vm
             .framework
             .gles
             .viewport(0, 0, logical_width, logical_height);
+        let method = if self.vm.has_instance_method(self.listener, "onDraw") {
+            "onDraw"
+        } else {
+            "render"
+        };
         self.vm
-            .render_frame(self.listener, &self.render_method)
+            .render_frame(self.listener, method)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         crate::publish_framebuffer(self.vm.framework.gles.framebuffer());
         Ok((
@@ -82,10 +87,6 @@ impl RuntimeSession {
 
     pub fn render_current_frame(&mut self) -> Result<(usize, usize)> {
         self.render_frame(0, 0)
-    }
-
-    pub fn drain_register_trace(&mut self) -> Vec<String> {
-        self.vm.drain_trace()
     }
 }
 
@@ -180,21 +181,6 @@ impl Runtime {
         })
     }
 
-    pub fn trace_registers(&mut self, enabled: bool) -> Vec<String> {
-        if let Some(session) = self.session.as_mut() {
-            session.vm.enable_register_trace(enabled);
-            return session.drain_register_trace();
-        }
-        Vec::new()
-    }
-
-    pub fn drain_trace(&mut self) -> Vec<String> {
-        self.session
-            .as_mut()
-            .map(RuntimeSession::drain_register_trace)
-            .unwrap_or_default()
-    }
-
     pub fn parse_dex(&self, bytes: &[u8]) -> Result<DexHeader> {
         DexHeader::parse(bytes)
     }
@@ -272,7 +258,6 @@ impl Runtime {
                 VmConfig {
                     max_steps: self.config.max_steps,
                     max_call_depth: 256,
-                    trace_registers: false,
                 },
             );
             let method_index = plan
@@ -284,8 +269,6 @@ impl Runtime {
                 })
                 .ok_or_else(|| anyhow::anyhow!("launcher onCreate method is missing"))?;
             let activity_object = vm.alloc_instance(plan.class_name.clone());
-            vm.run_instance_method(activity_object, "<init>", Vec::new())
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             let value = vm
                 .run_method(
                     method_index,
@@ -296,39 +279,24 @@ impl Runtime {
                 .framework
                 .gdx_listener
                 .or_else(|| vm.find_instance_by_class("Lcom/hyperkani/sliceice/Engine;"));
-            let frame_status;
-            if let Some(listener) = listener {
+            let listener = if let Some(listener) = listener {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                let mut session = RuntimeSession {
-                    vm,
-                    listener,
-                    render_method: "render".to_owned(),
-                };
-                let (commands, pixels) = session.render_current_frame()?;
-                frame_status = format!(
-                    "application create/render completed; GLES commands: {commands}, rendered pixels: {pixels}"
-                );
-                activities = session.vm.framework.activities.clone();
-                self.session = Some(session);
-                self.framework = Framework::new();
+                listener
             } else {
-                let listener = vm.find_render_view().ok_or_else(|| {
-                    anyhow::anyhow!("application launched but created no renderable View")
-                })?;
-                let mut session = RuntimeSession {
-                    vm,
-                    listener,
-                    render_method: "onDraw".to_owned(),
-                };
-                let (commands, pixels) = session.render_current_frame()?;
-                frame_status = format!(
-                    "legacy Canvas view rendered; GLES commands: {commands}, rendered pixels: {pixels}"
-                );
-                activities = session.vm.framework.activities.clone();
-                self.session = Some(session);
-                self.framework = Framework::new();
-            }
+                vm.find_instance_by_class("Lde/nurogames/android/tinysanta/views/TinySantaView;")
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("application has no ApplicationListener or TinySantaView")
+                    })?
+            };
+            let mut session = RuntimeSession { vm, listener };
+            let (commands, pixels) = session.render_current_frame()?;
+            let frame_status = format!(
+                "application frame completed; GLES commands: {commands}, rendered pixels: {pixels}"
+            );
+            activities = session.vm.framework.activities.clone();
+            self.session = Some(session);
+            self.framework = Framework::new();
             return Ok(BootState {
                 result: match value {
                     VmValue::Void => ExecutionResult::ReturnVoid,
