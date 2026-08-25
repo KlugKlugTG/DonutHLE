@@ -2450,6 +2450,24 @@ impl<'a> Vm<'a> {
         }
         if class_name == "Landroid/content/res/Resources;" {
             return match method_name {
+                "getDrawable" => {
+                    let drawable =
+                        self.alloc_instance("Landroid/graphics/drawable/BitmapDrawable;");
+                    let id = int_arg(args, 1).unwrap_or(0) as u32;
+                    if let Some(path) = self.framework.resource_images.get(&id).cloned() {
+                        self.set_object_field(drawable, "path", Value::String(path.clone()));
+                        if let Some((width, height)) = self
+                            .framework
+                            .assets
+                            .as_ref()
+                            .and_then(|assets| assets.image_size(&path))
+                        {
+                            self.set_object_field(drawable, "width", Value::Int(width as i32));
+                            self.set_object_field(drawable, "height", Value::Int(height as i32));
+                        }
+                    }
+                    Ok(Value::Object(drawable))
+                }
                 "getDisplayMetrics" => {
                     let metrics = self.alloc_instance("Landroid/util/DisplayMetrics;");
                     self.set_object_field(
@@ -2500,6 +2518,12 @@ impl<'a> Vm<'a> {
         if class_name == "Landroid/graphics/Canvas;" {
             let _receiver = object_arg(args, 0)?;
             match method_name {
+                "drawColor" => {
+                    self.framework
+                        .gles
+                        .clear_color(unpack_argb_color(int_arg(args, 1)? as u32));
+                    self.framework.gles.clear_mask(0x4000);
+                }
                 "drawBitmap" => {
                     let bitmap = object_arg(args, 1)?;
                     let x = float_arg(args, 2)?;

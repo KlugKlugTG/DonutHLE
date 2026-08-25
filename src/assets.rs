@@ -78,7 +78,11 @@ impl AssetStore {
         if let Some(image) = self.images.get(&key) {
             return Ok(image.clone());
         }
-        let bytes = self.files.get(&key).context("asset is missing")?;
+        let bytes = self
+            .files
+            .get(&key)
+            .or_else(|| self.files.get(key.trim_start_matches("res/")))
+            .context("asset is missing")?;
         AssetImage::decode(Path::new(&key), bytes)
     }
 
@@ -96,15 +100,7 @@ impl AssetStore {
                             .and_then(|value| value.to_str())
                             .is_some_and(|value| value.eq_ignore_ascii_case(&stem))
                 })
-                .min_by_key(|path| {
-                    if path.contains("drawable-mdpi") {
-                        0
-                    } else if path.contains("drawable") {
-                        1
-                    } else {
-                        2
-                    }
-                })
+                .min_by_key(|path| image_variant_priority(path))
                 .cloned()
         })
     }
@@ -201,6 +197,19 @@ impl AssetStore {
             }
             self.atlases.insert(normalize(&atlas_path), regions);
         }
+    }
+}
+
+fn image_variant_priority(path: &str) -> u8 {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("drawable-nodpi") {
+        0
+    } else if lower.contains("drawable-mdpi") {
+        1
+    } else if lower.contains("drawable") {
+        2
+    } else {
+        3
     }
 }
 
