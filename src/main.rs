@@ -93,7 +93,7 @@ fn main() -> Result<()> {
                 }
                 #[cfg(target_os = "linux")]
                 if std::env::var_os("DISPLAY").is_some() {
-                    donuthle::desktop::present(runtime)?;
+                    donuthle::desktop::present(&mut runtime)?;
                 } else {
                     println!("Linux framebuffer rendered; no X11 DISPLAY is available for a native window");
                 }
@@ -102,6 +102,11 @@ fn main() -> Result<()> {
         Ok(())
     })();
     if let Err(error) = result {
+        if std::env::var_os("DONUTHLE_TRACE").is_some() {
+            for line in runtime.drain_trace() {
+                eprintln!("TRACE {line}");
+            }
+        }
         if implicit_launch {
             eprintln!("Runtime error: {error}");
             #[cfg(windows)]

@@ -273,7 +273,7 @@ impl Runtime {
                 VmConfig {
                     max_steps: self.config.max_steps,
                     max_call_depth: 256,
-                    trace_registers: false,
+                    trace_registers: std::env::var_os("DONUTHLE_TRACE").is_some(),
                 },
             );
             let method_index = plan

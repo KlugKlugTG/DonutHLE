@@ -113,14 +113,14 @@ const STRUCTURE_NOTIFY_MASK: c_long = 1 << 17;
 const CLIENT_MESSAGE: c_int = 33;
 const ZPIXMAP: c_int = 2;
 
-pub fn present(mut runtime: Runtime) -> Result<()> {
+pub fn present(runtime: &mut Runtime) -> Result<()> {
     let display = unsafe { XOpenDisplay(ptr::null()) };
     if display.is_null() {
         anyhow::bail!(
             "cannot open X11 display; use `validate` or run under a graphical Linux session"
         );
     }
-    let result = present_window(display, &mut runtime);
+    let result = present_window(display, runtime);
     unsafe {
         XCloseDisplay(display);
     }

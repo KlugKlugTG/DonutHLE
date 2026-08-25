@@ -569,7 +569,7 @@ impl<'a> Vm<'a> {
             }
             if let Some(code) = self.dex.method_code_by_index(method_index).cloned() {
                 self.call_depth += 1;
-                let result = self.execute_code(&code, args);
+                let result = self.execute_code(&code, args, Some(&method.prototype));
                 self.call_depth -= 1;
                 return result;
             }
@@ -641,7 +641,7 @@ impl<'a> Vm<'a> {
             self.frame_aborted = false;
         }
         self.call_depth += 1;
-        let result = self.execute_code(&code, args);
+        let result = self.execute_code(&code, args, Some(&method.prototype));
         self.call_depth -= 1;
         if is_render_method {
             self.frame_mode = previous_frame_mode;
@@ -656,7 +656,12 @@ impl<'a> Vm<'a> {
         })
     }
 
-    fn execute_code(&mut self, code: &CodeItem, args: Vec<Value>) -> Result<Value, VmError> {
+    fn execute_code(
+        &mut self,
+        code: &CodeItem,
+        args: Vec<Value>,
+        prototype: Option<&str>,
+    ) -> Result<Value, VmError> {
         if self.frame_mode && self.frame_aborted {
             return Ok(Value::Void);
         }
@@ -665,12 +670,25 @@ impl<'a> Vm<'a> {
         }
         let mut registers = vec![Value::Null; code.registers_size as usize];
         let first_input = code.registers_size as usize - code.ins_size as usize;
+        let mut register = first_input;
+        let parameter_types = prototype
+            .and_then(parse_prototype_parameters)
+            .unwrap_or_default();
+        let parameter_registers: usize = parameter_types
+            .iter()
+            .map(|type_name| usize::from(type_name == "J" || type_name == "D"))
+            .sum::<usize>()
+            + parameter_types.len();
+        let has_receiver = code.ins_size as usize == parameter_registers + 1;
         for (index, value) in args.into_iter().enumerate() {
-            let register = first_input + index;
             if register >= registers.len() {
                 return Err(self.error(0, 0, "method argument exceeds input registers"));
             }
-            registers[register] = value;
+            let parameter_index = index.checked_sub(usize::from(has_receiver));
+            let type_name = parameter_index.and_then(|index| parameter_types.get(index));
+            registers[register] = normalize_wide_value(value, type_name.map(String::as_str));
+            let wide = type_name.is_some_and(|type_name| type_name == "J" || type_name == "D");
+            register += if wide { 2 } else { 1 };
         }
         let mut pc = 0usize;
         let mut pending_result = Value::Void;
@@ -763,7 +781,7 @@ impl<'a> Vm<'a> {
                     let dest = ((instruction >> 8) & 0xff) as usize;
                     let value = match pending_result.clone() {
                         Value::Long(value) => Value::Int((value >> 32) as i32),
-                        Value::Double(value) => Value::Int(value.to_bits() as u32 as i32),
+                        Value::Double(value) => Value::Int((value.to_bits() >> 32) as i32),
                         value => value,
                     };
                     set_register(&mut registers, dest, value, self, pc, opcode)?;
@@ -1262,6 +1280,7 @@ impl<'a> Vm<'a> {
                             code_word(code, pc + 2, pc, opcode)?,
                             pc,
                             opcode,
+                            None,
                         )?
                     } else {
                         let count = ((instruction >> 8) & 0xff) as usize;
@@ -1808,17 +1827,51 @@ impl<'a> Vm<'a> {
                     let (dest, array_reg, index_reg) =
                         three_registers(instruction, code_word(code, pc + 1, pc, opcode)?);
                     let array = get_object(&registers, array_reg, self, pc, opcode)?;
-                    let index =
-                        as_int(get_register(&registers, index_reg, pc, opcode)?, pc, opcode)?
-                            as usize;
+                                        let raw_index = get_register(&registers, index_reg, pc, opcode)?;
+                    let index = match raw_index {
+                        Value::Int(value) if value >= 0 => value as usize,
+                        Value::Int(value) => {
+                            self.trace.push(format!(
+                                "recovering negative array index {value} in v{index_reg} at pc {pc}; clamping to zero"
+                            ));
+                            0
+                        }
+                        value => {
+                            return Err(self.error(
+                                pc,
+                                opcode,
+                                format!("array index register v{index_reg} is not an integer: {value:?}"),
+                            ));
+                        }
+                    };
                     let value = match self.heap_object(array) {
                         Some(HeapObject::Array { values, .. }) => values
                             .get(index)
                             .cloned()
-                            .ok_or_else(|| self.error(pc, opcode, "array index out of bounds"))?,
+                            .ok_or_else(|| {
+                                self.error(
+                                    pc,
+                                    opcode,
+                                    format!(
+                                        "array index {index} out of bounds for length {} (array v{array_reg}=o{array}) registers={}",
+                                        values.len(),
+                                        format_registers(&registers),
+                                    ),
+                                )
+                            })?,
                         _ => return Err(self.error(pc, opcode, "array target is not an array")),
                     };
-                    if opcode == 0x45 {
+                    let value = match opcode {
+                        0x44 => value,
+                        0x45 => normalize_wide_value(value, Some("J")),
+                        0x46 => normalize_wide_value(value, Some("F")),
+                        0x47 => normalize_wide_value(value, Some("D")),
+                        0x48 => normalize_wide_value(value, Some("B")),
+                        0x49 => normalize_wide_value(value, Some("S")),
+                        0x4a => normalize_wide_value(value, Some("C")),
+                        _ => normalize_wide_value(value, Some("Z")),
+                    };
+                    if opcode == 0x45 || opcode == 0x47 {
                         set_wide_register(&mut registers, dest, value, self, pc, opcode)?;
                     } else {
                         set_register(&mut registers, dest, value, self, pc, opcode)?;
@@ -2107,12 +2160,17 @@ impl<'a> Vm<'a> {
                 }
                 0x6e | 0x6f | 0x71 | 0x72 => {
                     let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let prototype = self
+                        .dex
+                        .method_id(method_index)
+                        .map(|method| method.prototype.as_str());
                     let args = invoke_args(
                         &registers,
                         instruction,
                         code_word(code, pc + 2, pc, opcode)?,
                         pc,
                         opcode,
+                        prototype,
                     )?;
                     let target = if opcode == 0x6e || opcode == 0x72 {
                         args.first()
@@ -2130,12 +2188,17 @@ impl<'a> Vm<'a> {
                 }
                 0x70 => {
                     let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    let prototype = self
+                        .dex
+                        .method_id(method_index)
+                        .map(|method| method.prototype.as_str());
                     let args = invoke_args(
                         &registers,
                         instruction,
                         code_word(code, pc + 2, pc, opcode)?,
                         pc,
                         opcode,
+                        prototype,
                     )?;
                     pending_result = self.call_method(method_index, args)?;
                     pc += 3;
@@ -2144,9 +2207,18 @@ impl<'a> Vm<'a> {
                     let method_index = code_word(code, pc + 1, pc, opcode)? as usize;
                     let count = ((instruction >> 8) & 0xff) as usize;
                     let first = code_word(code, pc + 2, pc, opcode)? as usize;
-                    let args = (0..count)
-                        .map(|offset| get_register(&registers, first + offset, pc, opcode))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let prototype = self
+                        .dex
+                        .method_id(method_index)
+                        .map(|method| method.prototype.as_str());
+                    let args = invoke_range_args(
+                        &registers,
+                        first,
+                        count,
+                        pc,
+                        opcode,
+                        prototype,
+                    )?;
                     pending_result = self.call_method(method_index, args)?;
                     pc += 3;
                 }
@@ -3515,8 +3587,22 @@ impl<'a> Vm<'a> {
                         Value::Void
                     });
                 }
-                "get" | "elementAt" => {
-                    let index = int_arg(args, 1)? as usize;
+                "get" => {
+                    if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/Hashtable;"
+                        || class_name == "Ljava/util/Properties;"
+                    {
+                        let key = args.get(1).unwrap_or(&Value::Null);
+                        return Ok(match self.heap_object(receiver) {
+                            Some(HeapObject::Collection(values)) => values
+                                .chunks_exact(2)
+                                .find(|pair| &pair[0] == key)
+                                .map(|pair| pair[1].clone())
+                                .unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        });
+                    }
+                    let index = int_arg(args, 1).unwrap_or(0).max(0) as usize;
                     return Ok(match self.heap_object(receiver) {
                         Some(HeapObject::Collection(values)) => {
                             values.get(index).cloned().unwrap_or(Value::Null)
@@ -3524,13 +3610,14 @@ impl<'a> Vm<'a> {
                         _ => Value::Null,
                     });
                 }
-                "clear" => {
-                    if let Some(HeapObject::Collection(values)) =
-                        self.heap.get_mut(receiver as usize)
-                    {
-                        values.clear();
-                    }
-                    return Ok(Value::Void);
+                "elementAt" => {
+                    let index = int_arg(args, 1)? as usize;
+                    return Ok(match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => {
+                            values.get(index).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => Value::Null,
+                    });
                 }
                 "put"
                     if class_name == "Ljava/util/HashMap;"
@@ -3542,49 +3629,51 @@ impl<'a> Vm<'a> {
                     if let Some(HeapObject::Collection(values)) =
                         self.heap.get_mut(receiver as usize)
                     {
-                        if let Some(index) = values.iter().position(|entry| *entry == key) {
-                            let previous = std::mem::replace(&mut values[index + 1], value);
-                            return Ok(previous);
+                        if let Some(index) = values
+                            .chunks_exact(2)
+                            .position(|pair| pair[0] == key)
+                            .map(|index| index * 2)
+                        {
+                            return Ok(std::mem::replace(&mut values[index + 1], value));
                         }
                         values.push(key);
                         values.push(value);
                     }
                     return Ok(Value::Null);
                 }
-                "get" | "containsKey" | "remove"
+                "containsKey" | "remove"
                     if class_name == "Ljava/util/HashMap;"
                         || class_name == "Ljava/util/Hashtable;"
                         || class_name == "Ljava/util/Properties;" =>
                 {
-                    let key = args.get(1).cloned().unwrap_or(Value::Null);
+                    let key = args.get(1).unwrap_or(&Value::Null);
                     let index = self.heap_object(receiver).and_then(|object| match object {
                         HeapObject::Collection(values) => values
                             .chunks_exact(2)
-                            .position(|pair| pair[0] == key)
-                            .map(|pair| pair * 2),
+                            .position(|pair| &pair[0] == key)
+                            .map(|index| index * 2),
                         _ => None,
                     });
                     if method_name == "containsKey" {
                         return Ok(Value::Int(i32::from(index.is_some())));
                     }
                     if let Some(index) = index {
-                        if method_name == "remove" {
-                            if let Some(HeapObject::Collection(values)) =
-                                self.heap.get_mut(receiver as usize)
-                            {
-                                values.remove(index);
-                                return Ok(values.remove(index));
-                            }
+                        if let Some(HeapObject::Collection(values)) =
+                            self.heap.get_mut(receiver as usize)
+                        {
+                            values.remove(index);
+                            return Ok(values.remove(index));
                         }
-                        return Ok(self
-                            .heap_object(receiver)
-                            .and_then(|object| match object {
-                                HeapObject::Collection(values) => values.get(index + 1).cloned(),
-                                _ => None,
-                            })
-                            .unwrap_or(Value::Null));
                     }
                     return Ok(Value::Null);
+                }
+                "clear" => {
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        values.clear();
+                    }
+                    return Ok(Value::Void);
                 }
                 _ => return Ok(Value::Void),
             }
@@ -5082,12 +5171,67 @@ fn three_registers(instruction: u16, word: u16) -> (usize, usize, usize) {
     )
 }
 
+fn normalize_wide_value(value: Value, type_name: Option<&str>) -> Value {
+    match (type_name, value) {
+        (Some("J"), Value::Int(value)) => Value::Long(value as i64),
+        (Some("D"), Value::Long(value)) => Value::Double(f64::from_bits(value as u64)),
+        (Some("D"), Value::Float(value)) => Value::Double(value as f64),
+        (Some("F"), Value::Int(value)) => Value::Float(f32::from_bits(value as u32)),
+        (_, value) => value,
+    }
+}
+
+fn parse_prototype_parameters(prototype: &str) -> Option<Vec<String>> {
+    let start = prototype.find('(')? + 1;
+    let end = prototype[start..].find(")->")? + start;
+    let mut parameters = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        let bytes = prototype.as_bytes();
+        let begin = cursor;
+        while cursor < end && bytes[cursor] == b'[' {
+            cursor += 1;
+        }
+        if cursor >= end {
+            return None;
+        }
+        if bytes[cursor] == b'L' {
+            cursor = prototype[cursor..end].find(';')? + cursor + 1;
+        } else {
+            cursor += 1;
+        }
+        parameters.push(prototype[begin..cursor].to_owned());
+    }
+    Some(parameters)
+}
+
+fn invoke_range_args(
+    registers: &[Value],
+    first: usize,
+    count: usize,
+    pc: usize,
+    opcode: u8,
+    prototype: Option<&str>,
+) -> Result<Vec<Value>, VmError> {
+    let types = prototype.and_then(parse_prototype_parameters).unwrap_or_default();
+    let mut args = Vec::with_capacity(count);
+    let mut register = first;
+    for index in 0..count {
+        let type_name = types.get(index).map(String::as_str);
+        let value = get_register(registers, register, pc, opcode)?;
+        args.push(normalize_wide_value(value, type_name));
+        register += usize::from(matches!(type_name, Some("J" | "D"))) + 1;
+    }
+    Ok(args)
+}
+
 fn invoke_args(
     registers: &[Value],
     instruction: u16,
     word: u16,
     pc: usize,
     opcode: u8,
+    prototype: Option<&str>,
 ) -> Result<Vec<Value>, VmError> {
     let count = ((instruction >> 12) & 0x0f) as usize;
     let candidates = [
@@ -5097,9 +5241,15 @@ fn invoke_args(
         ((word >> 12) & 0x0f) as usize,
         ((instruction >> 8) & 0x0f) as usize,
     ];
+    let types = prototype.and_then(parse_prototype_parameters).unwrap_or_default();
     candidates[..count.min(candidates.len())]
         .iter()
-        .map(|index| get_register(registers, *index, pc, opcode))
+        .enumerate()
+        .map(|(position, index)| {
+            get_register(registers, *index, pc, opcode).map(|value| {
+                normalize_wide_value(value, types.get(position).map(String::as_str))
+            })
+        })
         .collect()
 }
 
@@ -5200,7 +5350,7 @@ fn as_double(value: Value, pc: usize, opcode: u8) -> Result<f64, VmError> {
         Value::Double(value) => Ok(value),
         Value::Float(value) => Ok(value as f64),
         Value::Int(value) => Ok(value as f64),
-        Value::Long(value) => Ok(value as f64),
+        Value::Long(value) => Ok(f64::from_bits(value as u64)),
         Value::Void | Value::Null => Ok(0.0),
         Value::Object(_) | Value::String(_) => Err(VmError {
             pc,
