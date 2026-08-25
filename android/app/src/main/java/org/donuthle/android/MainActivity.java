@@ -3,6 +3,8 @@ package org.donuthle.android;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -11,6 +13,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -26,13 +29,16 @@ public final class MainActivity extends Activity {
     private native String registerTrace();
     native void nativeRenderFrame(int width, int height);
     native int nativeTouchEvent(int action, float x, float y);
+
     private static final int PICK_APK = 42;
     private static final int PICK_DONUTHLE_FOLDER = 43;
-    private final int teal = Color.rgb(128, 203, 196);
-    private final int text = Color.rgb(232, 240, 242);
-    private final int muted = Color.rgb(158, 174, 180);
-    private final int panel = Color.rgb(27, 33, 38);
-    private final int background = Color.rgb(14, 18, 22);
+    private static final int TEAL = Color.rgb(128, 203, 196);
+    private static final int TEXT = Color.rgb(239, 246, 247);
+    private static final int MUTED = Color.rgb(164, 181, 187);
+    private static final int PANEL = Color.rgb(28, 37, 43);
+    private static final int PANEL_LIGHT = Color.rgb(36, 48, 55);
+    private static final int BACKGROUND = Color.rgb(10, 15, 19);
+    private static final int SUCCESS = Color.rgb(112, 214, 164);
     private Gles1SurfaceView gameSurface;
 
     @Override protected void onCreate(Bundle state) {
@@ -48,7 +54,6 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (gameSurface != null) gameSurface.onResume();
-        if (findViewById(7001) != null) showLibrary();
     }
 
     @Override protected void onPause() {
@@ -73,54 +78,133 @@ public final class MainActivity extends Activity {
 
     private void showHome() {
         stopGameSurface();
+        StorageLayout.ensure(this);
+        StorageLayout.importFromDefaultFolder(this);
         LinearLayout content = column();
-        content.setPadding(dp(22), dp(20), dp(22), dp(28));
-        TextView brand = label("DONUTHLE", 27, teal); brand.setTypeface(null, 1); content.addView(brand);
-        content.addView(label("Android 1.x • API 1–4 • HLE prototype", 14, muted), margins(0, 2, 0, 22));
-        TextView status = label("READY TO EXPLORE", 12, Color.rgb(112, 214, 164)); status.setTypeface(null, 1); content.addView(status);
-        TextView title = label("Your games,\nyour sandbox.", 31, text); title.setTypeface(null, 1); content.addView(title, margins(0, 5, 0, 8));
-        content.addView(label("Import APKs or place them in DonutHLE_apps.", 15, muted), margins(0, 0, 0, 22));
-        content.addView(card("▣", "GAME LIBRARY", "Scan, inspect, and launch an APK", "Open library", v -> showLibrary()), margins(0, 0, 0, 10));
-        content.addView(card("⌁", "GAME SANDBOX", "Browse per-game writable data", "Open sandbox", v -> openFolder(StorageLayout.sandbox(this))), margins(0, 0, 0, 10));
-        content.addView(card("≡", "EMULATOR LOG", "See every compatibility gap", "View log", v -> showLog()), margins(0, 0, 0, 10));
-        TextView paths = label("FILES LIVE IN\n" + StorageLayout.publicRoot(this).getAbsolutePath(), 12, muted); paths.setPadding(dp(14), dp(13), dp(14), dp(13)); paths.setBackgroundColor(panel); content.addView(paths, margins(0, 12, 0, 18));
+        content.setPadding(dp(20), dp(18), dp(20), dp(28));
+        content.addView(header(), margins(0, 0, 0, 22));
+
+        LinearLayout hero = surface(PANEL, 22);
+        hero.setPadding(dp(20), dp(21), dp(20), dp(20));
+        TextView status = label("●  READY TO EXPLORE", 12, SUCCESS);
+        status.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        hero.addView(status);
+        TextView title = label("Your games,\nyour sandbox.", 31, TEXT);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        hero.addView(title, margins(0, 9, 0, 8));
+        hero.addView(label("Import an APK, inspect its compatibility, and launch it through the DonutHLE runtime.", 15, MUTED), margins(0, 0, 0, 18));
+        hero.addView(button("OPEN GAME LIBRARY  ›", true, v -> showLibrary()));
+        content.addView(hero, margins(0, 0, 0, 18));
+
+        content.addView(sectionTitle("QUICK ACCESS", "Everything you need is one tap away."), margins(2, 0, 0, 10));
+        content.addView(actionCard("▣", "Game Library", "Import, inspect, and launch APKs", v -> showLibrary()), margins(0, 0, 0, 10));
+        content.addView(actionCard("⌂", "Game Sandbox", "Browse writable game data", v -> showFolderInfo(StorageLayout.sandbox(this))), margins(0, 0, 0, 10));
+        content.addView(actionCard("≡", "Emulator Log", "See compatibility gaps and runtime events", v -> showLog()), margins(0, 0, 0, 18));
+
+        LinearLayout files = surface(PANEL_LIGHT, 16);
+        files.setPadding(dp(16), dp(14), dp(16), dp(14));
+        files.addView(label("YOUR DONUTHLE FOLDER", 11, TEAL));
+        TextView folderPath = label(StorageLayout.publicRoot(this).getAbsolutePath(), 12, MUTED);
+        folderPath.setTextIsSelectable(true);
+        files.addView(folderPath, margins(0, 5, 0, 0));
+        content.addView(files, margins(0, 0, 0, 16));
         content.addView(button("OPTIONS  ›", false, v -> showOptions()), margins(0, 0, 0, 8));
         content.addView(button("ABOUT DONUTHLE  ›", false, v -> showAbout()));
         setContentView(scroll(content));
+    }
+
+    private View header() {
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(R.mipmap.ic_launcher);
+        icon.setContentDescription("DonutHLE icon");
+        header.addView(icon, new LinearLayout.LayoutParams(dp(58), dp(58)));
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
+        names.setPadding(dp(13), 0, 0, 0);
+        TextView brand = label("DONUTHLE", 25, TEXT);
+        brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        names.addView(brand);
+        names.addView(label("ANDROID 1.x COMPATIBILITY LAB", 11, TEAL), margins(0, 3, 0, 0));
+        header.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView version = label("0.1.1", 11, MUTED);
+        version.setGravity(Gravity.CENTER);
+        version.setBackground(round(PANEL_LIGHT, 30));
+        version.setPadding(dp(10), dp(7), dp(10), dp(7));
+        header.addView(version);
+        return header;
     }
 
     private void showLibrary() {
         stopGameSurface();
         StorageLayout.ensure(this);
         StorageLayout.importFromDefaultFolder(this);
-        LinearLayout content = page("GAME LIBRARY", "Import APKs or scan an existing DonutHLE_apps folder.");
+        LinearLayout content = page("GAME LIBRARY", "Your imported APKs appear here. Choose an APK you own to inspect or run it.");
         content.setId(7001);
         content.addView(button("＋  IMPORT APK", true, v -> pickApk()), margins(0, 18, 0, 8));
-        content.addView(button("↻  REFRESH LIBRARY", false, v -> showLibrary()), margins(0, 0, 0, 14));
+        content.addView(button("↻  REFRESH LIBRARY", false, v -> showLibrary()), margins(0, 0, 0, 16));
         File[] apks = StorageLayout.apks(this);
         if (apks.length == 0) {
-            TextView empty = label("No APKs found.\n\nUse IMPORT APK or copy a legal .apk into DonutHLE_apps, then press REFRESH LIBRARY.", 16, muted); empty.setPadding(dp(16), dp(18), dp(16), dp(18)); empty.setBackgroundColor(panel); content.addView(empty, margins(0, 0, 0, 14));
-        } else for (File apk : apks) content.addView(gameRow(apk), margins(0, 0, 0, 10));
-        content.addView(button("OPEN DONUTHLE_APPS  ›", false, v -> openFolder(StorageLayout.apps(this))), margins(0, 8, 0, 8));
-        content.addView(button("‹  BACK", false, v -> showHome()));
+            LinearLayout empty = surface(PANEL, 18);
+            empty.setGravity(Gravity.CENTER_HORIZONTAL);
+            empty.setPadding(dp(20), dp(26), dp(20), dp(26));
+            TextView glyph = label("＋", 34, TEAL);
+            glyph.setGravity(Gravity.CENTER);
+            empty.addView(glyph, new LinearLayout.LayoutParams(-1, dp(45)));
+            TextView title = label("Your library is empty", 18, TEXT);
+            title.setGravity(Gravity.CENTER);
+            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            empty.addView(title, margins(0, 7, 0, 5));
+            TextView hint = label("Import an APK or copy one into DonutHLE_apps, then refresh.", 14, MUTED);
+            hint.setGravity(Gravity.CENTER);
+            empty.addView(hint);
+            content.addView(empty, margins(0, 0, 0, 16));
+        } else {
+            content.addView(sectionTitle("INSTALLED APKs", apks.length + (apks.length == 1 ? " package" : " packages")), margins(2, 0, 0, 10));
+            for (File apk : apks) content.addView(gameRow(apk), margins(0, 0, 0, 10));
+        }
+        content.addView(button("OPEN DONUTHLE_APPS  ›", false, v -> chooseDonutHleFolder()), margins(0, 8, 0, 8));
+        content.addView(button("‹  BACK TO HOME", false, v -> showHome()));
         setContentView(scroll(content));
     }
 
     private View gameRow(File apk) {
-        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.VERTICAL); row.setPadding(dp(16), dp(14), dp(16), dp(14)); row.setBackgroundColor(panel);
-        TextView name = label(apk.getName(), 16, text); name.setTypeface(null, 1); row.addView(name);
-        row.addView(label(formatBytes(apk.length()) + "  •  Android package", 13, muted), margins(0, 4, 0, 8));
+        LinearLayout row = surface(PANEL, 18);
+        row.setPadding(dp(16), dp(15), dp(16), dp(15));
+        LinearLayout titleLine = new LinearLayout(this);
+        titleLine.setGravity(Gravity.CENTER_VERTICAL);
+        TextView glyph = label("▣", 23, TEAL);
+        titleLine.addView(glyph, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        TextView name = label(apk.getName(), 16, TEXT);
+        name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        name.setMaxLines(2);
+        titleLine.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+        row.addView(titleLine);
+        row.addView(label(formatBytes(apk.length()) + "  •  Android package", 13, MUTED), margins(34, 5, 0, 11));
         row.addView(button("▶  RUN / INSPECT", true, v -> launchApk(apk)));
         return row;
     }
 
     private void pickApk() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/vnd.android.package-archive", "application/octet-stream", "*/*"}); startActivityForResult(intent, PICK_APK);
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/vnd.android.package-archive", "application/octet-stream", "*/*"});
+        startActivityForResult(intent, PICK_APK);
     }
 
     private void importApk(Uri uri) {
-        try { File apk = StorageLayout.copyApk(this, uri); StorageLayout.appendLog(this, "APK_IMPORTED: " + apk.getName()); CompatibilityLog.recordApk(this, apk); Toast.makeText(this, "Added " + apk.getName(), Toast.LENGTH_SHORT).show(); showLibrary(); }
-        catch (IOException error) { StorageLayout.appendLog(this, "APK_IMPORT_FAILED: " + error.getMessage()); Toast.makeText(this, "Could not add APK: " + error.getMessage(), Toast.LENGTH_LONG).show(); }
+        try {
+            File apk = StorageLayout.copyApk(this, uri);
+            StorageLayout.appendLog(this, "APK_IMPORTED: " + apk.getName());
+            CompatibilityLog.recordApk(this, apk);
+            Toast.makeText(this, "Added " + apk.getName(), Toast.LENGTH_SHORT).show();
+            showLibrary();
+        } catch (IOException error) {
+            StorageLayout.appendLog(this, "APK_IMPORT_FAILED: " + error.getMessage());
+            Toast.makeText(this, "Could not add APK: " + error.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -163,26 +247,179 @@ public final class MainActivity extends Activity {
         gameSurface.onResume();
     }
 
-    private void showOptions() { LinearLayout content = page("OPTIONS", "Portable settings and file locations."); TextView options = label(StorageLayout.readText(StorageLayout.options(this)), 15, text); options.setTextIsSelectable(true); options.setPadding(dp(14), dp(14), dp(14), dp(14)); options.setBackgroundColor(panel); content.addView(options, margins(0, 18, 0, 16)); content.addView(button("OPEN DONUTHLE FOLDER", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 8)); content.addView(button("‹  BACK", false, v -> showHome())); setContentView(scroll(content)); }
-    private void showLog() { StorageLayout.appendLog(this, "LOG_VIEW_OPENED"); LinearLayout content = page("EMULATOR LOG", "UTF-8 compatibility log with unimplemented features."); TextView log = label(nativeRuntimeInfo() + "\n\n" + StorageLayout.readText(StorageLayout.logFile(this)), 14, text); log.setTextIsSelectable(true); log.setPadding(dp(14), dp(14), dp(14), dp(14)); log.setTypeface(android.graphics.Typeface.MONOSPACE); log.setBackgroundColor(panel); content.addView(log, margins(0, 16, 0, 16)); content.addView(button("‹  BACK", true, v -> showHome())); setContentView(scroll(content)); }
-    private void showAbout() { LinearLayout content = page("ABOUT DONUTHLE", "A clean-room Android 1.x HLE project."); content.addView(label("The current APK pipeline emulates Android 1.x APIs (API 1–4), scans packages, reports requested APIs, and prepares the compatibility log. Dalvik execution, Android framework shims, graphics, audio, input, and activity launching remain active development milestones.", 16, text), margins(0, 18, 0, 20)); content.addView(button("‹  BACK", true, v -> showHome())); setContentView(scroll(content)); }
-    private void showMessage(String heading, String message) { LinearLayout content = page(heading, "Compatibility inspection"); content.addView(label(message, 16, text), margins(0, 18, 0, 20)); content.addView(button("‹  BACK TO LIBRARY", false, v -> showLibrary())); setContentView(scroll(content)); }
+    private void showOptions() {
+        LinearLayout content = page("OPTIONS", "Portable storage and emulator information.");
+        TextView options = label(StorageLayout.readText(StorageLayout.options(this)), 14, TEXT);
+        options.setTextIsSelectable(true);
+        options.setPadding(dp(16), dp(16), dp(16), dp(16));
+        options.setTypeface(Typeface.MONOSPACE);
+        options.setBackground(round(PANEL, 16));
+        content.addView(options, margins(0, 18, 0, 16));
+        content.addView(button("OPEN FOLDER PICKER", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 8));
+        content.addView(button("‹  BACK TO HOME", false, v -> showHome()));
+        setContentView(scroll(content));
+    }
+
+    private void showLog() {
+        StorageLayout.appendLog(this, "LOG_VIEW_OPENED");
+        LinearLayout content = page("EMULATOR LOG", "UTF-8 diagnostics for compatibility gaps, warnings, and runtime events.");
+        TextView log = label(nativeRuntimeInfo() + "\n\n" + StorageLayout.readText(StorageLayout.logFile(this)), 13, TEXT);
+        log.setTextIsSelectable(true);
+        log.setPadding(dp(16), dp(16), dp(16), dp(16));
+        log.setTypeface(Typeface.MONOSPACE);
+        log.setBackground(round(PANEL, 16));
+        content.addView(log, margins(0, 16, 0, 16));
+        content.addView(button("‹  BACK TO HOME", true, v -> showHome()));
+        setContentView(scroll(content));
+    }
+
+    private void showAbout() {
+        LinearLayout content = page("ABOUT DONUTHLE", "A clean-room Android 1.x HLE project.");
+        content.addView(infoBlock("WHAT IT DOES", "DonutHLE inspects APKs, runs a growing subset of Dalvik and Android 1.x APIs, loads selected libGDX assets, and presents the emulated framebuffer on Android."), margins(0, 18, 0, 10));
+        content.addView(infoBlock("WHAT THE LOG MEANS", "The emulator reports unsupported APIs and incomplete paths instead of hiding them. A visible frame is useful evidence, but does not mean an application is fully playable."), margins(0, 0, 0, 18));
+        content.addView(button("‹  BACK TO HOME", true, v -> showHome()));
+        setContentView(scroll(content));
+    }
+
+    private View infoBlock(String heading, String body) {
+        LinearLayout block = surface(PANEL, 16);
+        block.setPadding(dp(16), dp(15), dp(16), dp(15));
+        TextView h = label(heading, 11, TEAL);
+        h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        block.addView(h);
+        block.addView(label(body, 15, TEXT), margins(0, 7, 0, 0));
+        return block;
+    }
+
+    private void showFolderInfo(File folder) {
+        LinearLayout content = page("GAME SANDBOX", "Writable storage for the selected game runtime.");
+        LinearLayout block = surface(PANEL, 16);
+        block.setPadding(dp(16), dp(16), dp(16), dp(16));
+        block.addView(label("FOLDER LOCATION", 11, TEAL));
+        block.addView(label(folder.getAbsolutePath(), 14, TEXT), margins(0, 7, 0, 12));
+        File[] files = folder.listFiles();
+        int count = files == null ? 0 : files.length;
+        block.addView(label(count == 0 ? "This sandbox is empty." : count + " item(s) in this sandbox.", 14, MUTED));
+        content.addView(block, margins(0, 18, 0, 14));
+        content.addView(button("OPEN FOLDER PICKER", false, v -> chooseDonutHleFolder()), margins(0, 0, 0, 8));
+        content.addView(button("‹  BACK TO HOME", false, v -> showHome()));
+        setContentView(scroll(content));
+    }
+
     private void chooseDonutHleFolder() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(intent, PICK_DONUTHLE_FOLDER);
     }
 
-    private void openFolder(File folder) {
-        chooseDonutHleFolder();
+    private LinearLayout page(String heading, String description) {
+        LinearLayout content = column();
+        content.setPadding(dp(20), dp(18), dp(20), dp(28));
+        content.addView(header(), margins(0, 0, 0, 23));
+        TextView h = label(heading, 28, TEXT);
+        h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        content.addView(h, margins(0, 0, 0, 5));
+        content.addView(label(description, 15, MUTED));
+        return content;
     }
-    private LinearLayout page(String heading, String description) { LinearLayout content = column(); content.setPadding(dp(22), dp(20), dp(22), dp(28)); content.addView(label("DONUTHLE", 22, teal)); TextView h = label(heading, 28, text); h.setTypeface(null, 1); content.addView(h, margins(0, 28, 0, 4)); content.addView(label(description, 15, muted)); return content; }
-    private LinearLayout card(String icon, String heading, String description, String action, View.OnClickListener listener) { LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackgroundColor(panel); card.addView(label(icon, 26, teal)); TextView h = label(heading, 15, text); h.setTypeface(null, 1); card.addView(h, margins(0, 6, 0, 3)); card.addView(label(description, 14, muted), margins(0, 0, 0, 10)); card.addView(button(action, false, listener)); return card; }
-    private LinearLayout column() { LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); layout.setBackgroundColor(background); return layout; }
-    private ScrollView scroll(View child) { ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setBackgroundColor(background); scroll.addView(child); return scroll; }
-    private TextView label(String value, int size, int color) { TextView view = new TextView(this); view.setText(value); view.setTextSize(size); view.setTextColor(color); return view; }
-    private Button button(String title, boolean filled, View.OnClickListener listener) { Button button = new Button(this); button.setText(title); button.setTextSize(13); button.setTextColor(filled ? background : teal); button.setAllCaps(false); button.setGravity(Gravity.CENTER); button.setMinHeight(dp(48)); button.setBackgroundColor(filled ? teal : panel); if (listener != null) button.setOnClickListener(listener); return button; }
-    private LinearLayout.LayoutParams margins(int left, int top, int right, int bottom) { LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(dp(left), dp(top), dp(right), dp(bottom)); return params; }
-    private String formatBytes(long bytes) { if (bytes < 1024) return bytes + " B"; if (bytes < 1024 * 1024) return (bytes / 1024) + " KB"; return (bytes / (1024 * 1024)) + " MB"; }
-    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    private TextView sectionTitle(String heading, String description) {
+        TextView title = label(heading + "  ·  " + description, 11, TEAL);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return title;
+    }
+
+    private LinearLayout actionCard(String icon, String heading, String description, View.OnClickListener listener) {
+        LinearLayout card = surface(PANEL, 16);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(15), dp(13), dp(13), dp(13));
+        TextView glyph = label(icon, 26, TEAL);
+        glyph.setGravity(Gravity.CENTER);
+        card.addView(glyph, new LinearLayout.LayoutParams(dp(43), dp(43)));
+        LinearLayout text = new LinearLayout(this);
+        text.setOrientation(LinearLayout.VERTICAL);
+        TextView h = label(heading, 16, TEXT);
+        h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        text.addView(h);
+        text.addView(label(description, 13, MUTED), margins(0, 4, 0, 0));
+        card.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView arrow = label("›", 28, MUTED);
+        card.addView(arrow, new LinearLayout.LayoutParams(dp(24), -2));
+        card.setOnClickListener(listener);
+        card.setClickable(true);
+        card.setContentDescription(heading + ": " + description);
+        return card;
+    }
+
+    private LinearLayout column() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setBackgroundColor(BACKGROUND);
+        return layout;
+    }
+
+    private ScrollView scroll(View child) {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(BACKGROUND);
+        scroll.addView(child);
+        return scroll;
+    }
+
+    private LinearLayout surface(int color, int radius) {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setBackground(round(color, radius));
+        layout.setElevation(dp(2));
+        return layout;
+    }
+
+    private TextView label(String value, int size, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        view.setIncludeFontPadding(true);
+        return view;
+    }
+
+    private Button button(String title, boolean filled, View.OnClickListener listener) {
+        Button button = new Button(this);
+        button.setText(title);
+        button.setTextSize(13);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setTextColor(filled ? BACKGROUND : TEAL);
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER);
+        button.setMinHeight(dp(50));
+        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setBackground(round(filled ? TEAL : PANEL_LIGHT, 14));
+        button.setOnClickListener(listener);
+        button.setContentDescription(title);
+        return button;
+    }
+
+    private GradientDrawable round(int color, int radius) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(radius));
+        return drawable;
+    }
+
+    private LinearLayout.LayoutParams margins(int left, int top, int right, int bottom) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(dp(left), dp(top), dp(right), dp(bottom));
+        return params;
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024) + " KB";
+        return (bytes / (1024 * 1024)) + " MB";
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
 }
