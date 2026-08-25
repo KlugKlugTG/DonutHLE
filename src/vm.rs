@@ -3588,8 +3588,8 @@ impl<'a> Vm<'a> {
                         let key = args.get(1).unwrap_or(&Value::Null);
                         return Ok(match self.heap_object(receiver) {
                             Some(HeapObject::Collection(values)) => values
-                                .chunks_exact(2)
-                                .find(|pair| &pair[0] == key)
+                                .chunks(2)
+                                .find(|pair| pair.len() == 2 && &pair[0] == key)
                                 .map(|pair| pair[1].clone())
                                 .unwrap_or(Value::Null),
                             _ => Value::Null,
@@ -3623,8 +3623,8 @@ impl<'a> Vm<'a> {
                         self.heap.get_mut(receiver as usize)
                     {
                         if let Some(index) = values
-                            .chunks_exact(2)
-                            .position(|pair| pair[0] == key)
+                            .chunks(2)
+                            .position(|pair| pair.len() == 2 && pair[0] == key)
                             .map(|index| index * 2)
                         {
                             return Ok(std::mem::replace(&mut values[index + 1], value));
@@ -3642,8 +3642,8 @@ impl<'a> Vm<'a> {
                     let key = args.get(1).unwrap_or(&Value::Null);
                     let index = self.heap_object(receiver).and_then(|object| match object {
                         HeapObject::Collection(values) => values
-                            .chunks_exact(2)
-                            .position(|pair| &pair[0] == key)
+                            .chunks(2)
+                            .position(|pair| pair.len() == 2 && &pair[0] == key)
                             .map(|index| index * 2),
                         _ => None,
                     });
