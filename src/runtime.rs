@@ -311,12 +311,7 @@ impl Runtime {
                         .dex
                         .methods
                         .iter()
-                        .position(|method| {
-                            method.class_name
-                                == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
-                                && method.name == "a"
-                                && method.prototype == "(I)V"
-                        })
+                        .position(|method| is_tiny_santa_activation_method(method))
                         .ok_or_else(|| {
                             anyhow::anyhow!("TinySantaView game activation method is missing")
                         })?;
@@ -422,6 +417,12 @@ fn resolve_application_label(
         }
     }
     Some(label.to_owned())
+}
+
+fn is_tiny_santa_activation_method(method: &crate::dalvik::MethodId) -> bool {
+    method.class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
+        && method.name == "a"
+        && method.prototype == "V(I)->V"
 }
 
 fn read_manifest(archive: &mut zip::ZipArchive<File>) -> Result<AppManifest> {
