@@ -180,6 +180,20 @@ impl Runtime {
             compatibility,
         })
     }
+    pub fn trace_registers(&mut self, enabled: bool) -> Vec<String> {
+        if let Some(session) = self.session.as_mut() {
+            session.vm.enable_register_trace(enabled);
+            return session.vm.drain_trace();
+        }
+        Vec::new()
+    }
+
+    pub fn drain_trace(&mut self) -> Vec<String> {
+        self.session
+            .as_mut()
+            .map(|session| session.vm.drain_trace())
+            .unwrap_or_default()
+    }
 
     pub fn parse_dex(&self, bytes: &[u8]) -> Result<DexHeader> {
         DexHeader::parse(bytes)
@@ -258,6 +272,7 @@ impl Runtime {
                 VmConfig {
                     max_steps: self.config.max_steps,
                     max_call_depth: 256,
+                    trace_registers: false,
                 },
             );
             let method_index = plan

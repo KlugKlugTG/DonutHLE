@@ -43,6 +43,7 @@ pub enum HeapObject {
 pub struct VmConfig {
     pub max_steps: usize,
     pub max_call_depth: usize,
+    pub trace_registers: bool,
 }
 
 impl Default for VmConfig {
@@ -50,6 +51,7 @@ impl Default for VmConfig {
         Self {
             max_steps: 1_000_000,
             max_call_depth: 256,
+            trace_registers: false,
         }
     }
 }
@@ -104,6 +106,7 @@ pub struct Vm<'a> {
     frame_mode: bool,
     frame_aborted: bool,
     frame_steps: usize,
+    trace: Vec<String>,
     canvas_stack: Vec<CanvasState>,
     canvas_state: CanvasState,
     view_touch_listeners: HashMap<ObjectId, ObjectId>,
@@ -123,6 +126,7 @@ impl<'a> Vm<'a> {
             frame_mode: false,
             frame_aborted: false,
             frame_steps: 0,
+            trace: Vec::new(),
             canvas_stack: Vec::new(),
             canvas_state: CanvasState::default(),
             view_touch_listeners: HashMap::new(),
@@ -131,6 +135,13 @@ impl<'a> Vm<'a> {
 
     pub fn heap_object(&self, id: ObjectId) -> Option<&HeapObject> {
         self.heap.get(id as usize)
+    }
+    pub fn drain_trace(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.trace)
+    }
+
+    pub fn enable_register_trace(&mut self, enabled: bool) {
+        self.config.trace_registers = enabled;
     }
 
     pub fn alloc_instance(&mut self, class_name: impl Into<String>) -> ObjectId {
@@ -397,6 +408,17 @@ impl<'a> Vm<'a> {
         false
     }
 
+    pub fn find_render_view(&self) -> Option<ObjectId> {
+        self.heap.iter().enumerate().find_map(|(id, object)| {
+            let HeapObject::Instance { class_name, .. } = object else {
+                return None;
+            };
+            self.dex
+                .method_code(class_name, "onDraw")
+                .map(|_| id as ObjectId)
+        })
+    }
+
     fn instance_method_index(&self, object: ObjectId, referenced_index: usize) -> Option<usize> {
         let referenced = self.dex.method_id(referenced_index)?;
         if referenced.class_name == "Lcom/hyperkani/common/BaseObject;"
@@ -483,6 +505,15 @@ impl<'a> Vm<'a> {
             .method_id(method_index)
             .ok_or_else(|| self.error(0, 0, format!("method index {method_index} is invalid")))?
             .clone();
+        if self.config.trace_registers {
+            self.trace.push(format!(
+                "enter {}->{}({}) args={}",
+                method.class_name,
+                method.name,
+                method.prototype,
+                format_call_args(&args)
+            ));
+        }
         if method.name != "<clinit>" {
             self.ensure_class_initialized(&method.class_name)?;
         }
@@ -656,6 +687,12 @@ impl<'a> Vm<'a> {
             }
             let instruction = code.instructions[pc];
             let opcode = (instruction & 0xff) as u8;
+            if self.config.trace_registers {
+                self.trace.push(format!(
+                    "pc={pc:04} opcode=0x{opcode:02x} {}",
+                    format_registers(&registers)
+                ));
+            }
             match opcode {
                 0x00 => pc += 1,
                 0x01 | 0x07 => {
@@ -1309,6 +1346,69 @@ impl<'a> Vm<'a> {
                 0x2a => {
                     let offset = code_word(code, pc + 1, pc, opcode)? as i16 as i32;
                     pc = branch_target(pc, offset, code.instructions.len(), pc, opcode)?;
+                }
+                0x2b | 0x2c => {
+                    let register = ((instruction >> 8) & 0xff) as usize;
+                    let payload_offset = (code_word(code, pc + 1, pc, opcode)? as u32)
+                        | ((code_word(code, pc + 2, pc, opcode)? as u32) << 16);
+                    let payload = (pc as i64 + payload_offset as i32 as i64) as usize;
+                    let signature = if opcode == 0x2b { 0x0100 } else { 0x0200 };
+                    if payload + 2 > code.instructions.len()
+                        || code.instructions[payload] != signature
+                    {
+                        return Err(self.error(pc, opcode, "invalid switch payload"));
+                    }
+                    let size = code.instructions[payload + 1] as usize;
+                    let key = as_int(get_register(&registers, register, pc, opcode)?, pc, opcode)?;
+                    let target_offset = if opcode == 0x2b {
+                        let first_key = (code.instructions[payload + 2] as u32)
+                            | ((code.instructions[payload + 3] as u32) << 16);
+                        let index = (key as i64)
+                            .checked_sub(first_key as i64)
+                            .filter(|index| *index >= 0)
+                            .map(|index| index as usize);
+                        let Some(index) = index.filter(|index| *index < size) else {
+                            pc += 3;
+                            continue;
+                        };
+                        let target = payload + 4 + index * 2;
+                        if target + 1 >= code.instructions.len() {
+                            return Err(self.error(
+                                pc,
+                                opcode,
+                                "packed switch target is truncated",
+                            ));
+                        }
+                        (code.instructions[target] as u32)
+                            | ((code.instructions[target + 1] as u32) << 16)
+                    } else {
+                        let mut found = None;
+                        for index in 0..size {
+                            let key_at = payload + 2 + index * 4;
+                            let value = (code.instructions[key_at] as u32)
+                                | ((code.instructions[key_at + 1] as u32) << 16);
+                            if value as i32 == key {
+                                let target = key_at + 2;
+                                found = Some(
+                                    (code.instructions[target] as u32)
+                                        | ((code.instructions[target + 1] as u32) << 16),
+                                );
+                                break;
+                            }
+                        }
+                        let Some(target) = found else {
+                            pc += 3;
+                            continue;
+                        };
+                        target
+                    };
+                    pc = branch_target(
+                        pc,
+                        target_offset as i32,
+                        code.instructions.len(),
+                        pc,
+                        opcode,
+                    )?;
                 }
                 0x2d..=0x31 => {
                     let (dest, left_reg, right_reg) =
@@ -3454,6 +3554,40 @@ impl<'a> Vm<'a> {
                 self.alloc_instance("Landroid/graphics/Typeface;"),
             ));
         }
+        if class_name == "Ljava/util/Timer;" {
+            return match method_name {
+                "schedule" | "scheduleAtFixedRate" => {
+                    if let Some(Value::Object(task)) = args.get(1) {
+                        self.run_instance_method(*task, "run", Vec::new())?;
+                    }
+                    Ok(Value::Void)
+                }
+                "cancel" | "purge" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Ljava/util/TimerTask;" {
+            return match method_name {
+                "cancel" | "scheduledExecutionTime" => Ok(Value::Int(0)),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/os/Handler;" {
+            return match method_name {
+                "sendMessage" => {
+                    let handler = object_arg(args, 0)?;
+                    let message = args.get(1).cloned().unwrap_or(Value::Null);
+                    self.run_instance_method(handler, "handleMessage", vec![message])?;
+                    Ok(Value::Int(1))
+                }
+                "post" | "postDelayed" | "removeCallbacks" => Ok(Value::Int(1)),
+                "handleMessage" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/os/Message;" {
+            return Ok(Value::Void);
+        }
         Err(self.error(
             0,
             0,
@@ -4671,6 +4805,38 @@ impl<'a> Vm<'a> {
             opcode,
             message: message.into(),
         }
+    }
+}
+
+fn format_registers(registers: &[Value]) -> String {
+    registers
+        .iter()
+        .enumerate()
+        .map(|(index, value)| format!("r{index}=0x{:x}({value:?})", value_bits(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_call_args(args: &[Value]) -> String {
+    args.iter()
+        .enumerate()
+        .map(|(index, value)| format!("r{index}=0x{:x}({value:?})", value_bits(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn value_bits(value: &Value) -> u64 {
+    match value {
+        Value::Void => 0,
+        Value::Int(value) => *value as u32 as u64,
+        Value::Long(value) => *value as u64,
+        Value::Float(value) => value.to_bits() as u64,
+        Value::Double(value) => value.to_bits(),
+        Value::Object(value) => *value as u64,
+        Value::String(value) => value.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        }),
+        Value::Null => 0,
     }
 }
 

@@ -23,6 +23,7 @@ public final class MainActivity extends Activity {
     static { System.loadLibrary("donuthle"); }
     private native String nativeRuntimeInfo();
     private native String nativeLaunchApk(String path);
+    private native String registerTrace();
     native void nativeRenderFrame(int width, int height);
     native int nativeTouchEvent(int action, float x, float y);
     private static final int PICK_APK = 42;
