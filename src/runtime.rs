@@ -422,7 +422,7 @@ fn resolve_application_label(
 fn is_tiny_santa_activation_method(method: &crate::dalvik::MethodId) -> bool {
     method.class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
         && method.name == "a"
-        && method.prototype == "V(I)->V"
+        && method.prototype == "VI(I)->V"
 }
 
 fn read_manifest(archive: &mut zip::ZipArchive<File>) -> Result<AppManifest> {
@@ -450,13 +450,8 @@ fn read_dex(archive: &mut zip::ZipArchive<File>) -> Result<DexFile> {
     DexFile::parse(&bytes)
 }
 
-fn read_entry<R: Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Result<Vec<u8>> {
-    let mut entry = archive
-        .by_name(name)
-        .with_context(|| format!("missing APK entry {name}"))?;
+fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
+    let mut entry = archive.by_name(name)?;
     let mut bytes = Vec::new();
     entry.read_to_end(&mut bytes)?;
     Ok(bytes)
