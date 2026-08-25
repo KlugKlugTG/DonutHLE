@@ -311,7 +311,7 @@ impl Runtime {
                         .dex
                         .methods
                         .iter()
-                        .position(|method| is_tiny_santa_activation_method(method))
+                        .position(is_tiny_santa_activation_method)
                         .ok_or_else(|| {
                             anyhow::anyhow!("TinySantaView game activation method is missing")
                         })?;
