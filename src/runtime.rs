@@ -180,6 +180,7 @@ impl Runtime {
             compatibility,
         })
     }
+
     pub fn trace_registers(&mut self, enabled: bool) -> Vec<String> {
         if let Some(session) = self.session.as_mut() {
             session.vm.enable_register_trace(enabled);
@@ -330,7 +331,6 @@ impl Runtime {
             );
             activities = session.vm.framework.activities.clone();
             self.session = Some(session);
-            self.framework = Framework::new();
             return Ok(BootState {
                 result: match value {
                     VmValue::Void => ExecutionResult::ReturnVoid,
