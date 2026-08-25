@@ -422,7 +422,7 @@ fn resolve_application_label(
 fn is_tiny_santa_activation_method(method: &crate::dalvik::MethodId) -> bool {
     method.class_name == "Lde/nurogames/android/tinysanta/views/TinySantaView;"
         && method.name == "a"
-        && method.prototype == "V(I)->V"
+        && method.prototype == "VI(I)->V"
 }
 
 fn read_manifest(archive: &mut zip::ZipArchive<File>) -> Result<AppManifest> {
