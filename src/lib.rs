@@ -13,6 +13,7 @@ pub mod gles1_on_gl2;
 pub mod gles_native;
 pub mod input;
 pub mod manifest;
+pub mod native;
 pub mod resources;
 pub mod runtime;
 pub mod vm;
@@ -273,10 +274,16 @@ pub unsafe extern "C" fn donuthle_launch_report(
                     Ok(report) => match RUNTIME.lock() {
                         Ok(mut shared) => {
                             *shared = Some(runtime);
-                            Ok(format!(
+                            let mut message = format!(
                                 "{}\nLauncher: {}\n{}",
                                 report.message, report.launcher_activity, report.dex
-                            ))
+                            );
+                            let compatibility_lines = report.compatibility.format_lines();
+                            if !compatibility_lines.is_empty() {
+                                message.push('\n');
+                                message.push_str(&compatibility_lines.join("\n"));
+                            }
+                            Ok(message)
                         }
                         Err(_) => Err(anyhow::anyhow!("runtime lock is poisoned")),
                     },

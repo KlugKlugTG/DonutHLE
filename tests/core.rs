@@ -1,6 +1,6 @@
 use donuthle::{
-    dalvik::DexHeader, manifest::AppManifest, ANDROID_X_MAX_API_LEVEL, ANDROID_X_MIN_API_LEVEL,
-    API_LEVEL, RELEASE,
+    dalvik::DexHeader, manifest::AppManifest, native, ANDROID_X_MAX_API_LEVEL,
+    ANDROID_X_MIN_API_LEVEL, API_LEVEL, RELEASE,
 };
 
 #[test]
@@ -31,4 +31,23 @@ fn parses_dex_035_header() {
 #[test]
 fn rejects_non_axml() {
     assert!(AppManifest::parse_axml(b"not xml").is_err());
+}
+
+#[test]
+fn detects_native_library_entry_names() {
+    assert!(native::is_native_library_entry("lib/armeabi/libgame.so"));
+    assert!(native::is_native_library_entry("lib/x86/libgame.so"));
+    assert!(!native::is_native_library_entry("assets/libgame.so"));
+    assert!(!native::is_native_library_entry("lib/armeabi/data.bin"));
+}
+
+#[test]
+fn native_report_keeps_parse_failures_visible() {
+    let report = native::NativeLibraryReport::failed("lib/armeabi/libgame.so", "missing ELF magic");
+    assert_eq!(
+        report.status_line(),
+        "lib/armeabi/libgame.so: unreadable (missing ELF magic)"
+    );
+    assert!(native::status_summary(std::slice::from_ref(&report)).is_some());
+    assert_eq!(native::status_summary(&[]), None);
 }

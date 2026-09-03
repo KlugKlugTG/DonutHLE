@@ -11,6 +11,7 @@ use crate::{
     framework::Framework,
     framework::{ActivityManager, Intent, Value},
     manifest::AppManifest,
+    native::{self, NativeLibraryReport},
     resources::ResourceTable,
     vm::{ObjectId, Value as VmValue, Vm, VmConfig},
     HostGles, VirtualScreen,
@@ -43,6 +44,7 @@ pub struct LaunchReport {
     pub application_label: Option<String>,
     pub message: String,
     pub compatibility: CompatibilityReport,
+    pub native_libraries: Vec<NativeLibraryReport>,
 }
 
 pub struct Runtime {
@@ -136,7 +138,16 @@ impl Runtime {
             .launcher_activity
             .clone()
             .unwrap_or_else(|| "none".to_owned());
-        let compatibility = compat::scan_dex(&dex);
+        let native_libraries = read_native_libraries(&mut archive);
+        let mut compatibility = compat::scan_dex(&dex);
+        compatibility.native = native::format_report_lines(&native_libraries);
+        let mut message = format!(
+            "platform: Android 1.x-2.x (API 1-8); manifest decoded; launcher: {launcher}; resources: {resource_status}"
+        );
+        if let Some(native_status) = native::status_summary(&native_libraries) {
+            message.push_str("; ");
+            message.push_str(&native_status);
+        }
         Ok(LaunchReport {
             package: manifest.package,
             launcher_activity: launcher.clone(),
@@ -150,10 +161,9 @@ impl Runtime {
                 dex.classes.len(),
                 dex.methods.len()
             ),
-            message: format!(
-                "platform: Android 1.x-2.x (API 1-8); manifest decoded; launcher: {launcher}; resources: {resource_status}"
-            ),
+            message,
             compatibility,
+            native_libraries,
         })
     }
 
@@ -165,7 +175,14 @@ impl Runtime {
             .or_else(|| Some(plan.package.clone()));
         let state = self.boot(&plan)?;
         self.activities = state.activities;
-        let compatibility = compat::scan_dex(&plan.dex);
+        let native_libraries = plan.native_libraries.clone();
+        let mut compatibility = compat::scan_dex(&plan.dex);
+        compatibility.native = native::format_report_lines(&native_libraries);
+        let mut message = format!("booted launcher; {}", state.graphics);
+        if let Some(native_status) = native::status_summary(&native_libraries) {
+            message.push_str("; ");
+            message.push_str(&native_status);
+        }
         Ok(LaunchReport {
             package: plan.package,
             dex: format!(
@@ -176,8 +193,9 @@ impl Runtime {
             ),
             launcher_activity: plan.activity,
             application_label: plan.application_label,
-            message: format!("booted launcher; {}", state.graphics),
+            message,
             compatibility,
+            native_libraries,
         })
     }
 
@@ -221,6 +239,7 @@ impl Runtime {
         let application_label =
             resolve_application_label(manifest.application_label.as_deref(), resources.as_ref());
         let assets = crate::assets::AssetStore::from_archive(&mut archive)?;
+        let native_libraries = read_native_libraries(&mut archive);
         let activity = manifest
             .launcher_activity
             .clone()
@@ -236,6 +255,7 @@ impl Runtime {
             assets,
             dex,
             entry_method,
+            native_libraries,
         })
     }
 
@@ -394,6 +414,7 @@ pub struct LaunchPlan {
     pub entry_method: bool,
     pub resources: Option<ResourceTable>,
     pub assets: crate::assets::AssetStore,
+    pub native_libraries: Vec<NativeLibraryReport>,
 }
 
 #[derive(Debug)]
@@ -455,4 +476,28 @@ fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str) -> Result<Vec<u8>
     let mut bytes = Vec::new();
     entry.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+/// Reads and parses every `lib/<abi>/*.so` entry. Parse failures are kept in
+/// the report instead of failing the launch so that diagnostics stay visible.
+fn read_native_libraries(archive: &mut zip::ZipArchive<File>) -> Vec<NativeLibraryReport> {
+    let entries = archive
+        .file_names()
+        .filter(|name| native::is_native_library_entry(name))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    entries
+        .into_iter()
+        .map(|entry| match read_entry(archive, &entry) {
+            Ok(bytes) => match native::parse(&bytes) {
+                Ok(library) => NativeLibraryReport {
+                    entry,
+                    library: Some(library),
+                    error: None,
+                },
+                Err(error) => NativeLibraryReport::failed(entry, error.to_string()),
+            },
+            Err(error) => NativeLibraryReport::failed(entry, format!("cannot read entry: {error}")),
+        })
+        .collect()
 }

@@ -6,6 +6,7 @@ use crate::dalvik::DexFile;
 pub struct CompatibilityReport {
     pub implemented: Vec<String>,
     pub unimplemented: Vec<String>,
+    pub native: Vec<String>,
 }
 
 impl CompatibilityReport {
@@ -16,6 +17,9 @@ impl CompatibilityReport {
         }
         for feature in &self.unimplemented {
             lines.push(format!("UNIMPLEMENTED: {feature}"));
+        }
+        for line in &self.native {
+            lines.push(format!("NATIVE: {line}"));
         }
         lines
     }
@@ -101,5 +105,6 @@ pub fn scan_dex(dex: &DexFile) -> CompatibilityReport {
     CompatibilityReport {
         implemented: implemented.into_iter().collect(),
         unimplemented: unimplemented.into_iter().collect(),
+        native: Vec::new(),
     }
 }

@@ -65,6 +65,7 @@ DonutHLE-windows-x86_64.exe run path\to\game.apk
 
 - Safe ZIP/APK inspection with deterministic file listing.
 - Android binary XML manifest parsing and launcher resolution.
+- Native-library detection: ELF32 inspection of `lib/<abi>/*.so` with import/export/JNI inventories and honest launch diagnostics.
 - Dalvik 035 header parsing and a guarded interpreter with register bounds checks, call-depth/step limits, and unsupported-call diagnostics.
 - Android 1.x–2.x target profile covering API levels 1–8, with API 8 as the default and a 320×480 virtual screen.
 - Partial resource-table discovery and `resources.arsc` decoding.
@@ -138,6 +139,7 @@ APK
 4. Improve fixed-function GLES correctness, clipping, blending factors, depth behavior, and indexed rendering.
 5. Connect Android touch/key events and audio output to emulated applications instead of placeholders.
 6. Add reproducible compatibility fixtures, frame captures, traces, and per-application reports.
+7. Add native-code support (ARM interpreter, ELF loading, JNI bridge) for applications that ship native engines; see [`docs/ovenbreak.md`](docs/ovenbreak.md).
 
 ## Project principles
 

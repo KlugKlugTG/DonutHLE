@@ -2330,9 +2330,12 @@ impl<'a> Vm<'a> {
             return Ok(Value::Long(clock.elapsed().as_nanos() as i64));
         }
         if class_name == "Ljava/lang/System;" && matches!(method_name, "loadLibrary" | "load") {
-            self.framework
-                .logs
-                .push(format!("System.{method_name} ignored by HLE"));
+            let requested = self
+                .string_arg(args, 0)
+                .unwrap_or_else(|_| "unknown".to_owned());
+            self.framework.logs.push(format!(
+                "System.{method_name}({requested}): native library execution is not implemented; code in this library will not run"
+            ));
             return Ok(Value::Void);
         }
         if class_name == "Ljava/util/Locale;" {

@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
-use donuthle::{apk, runtime::Runtime};
+use donuthle::{apk, native, runtime::Runtime};
 
 #[derive(Parser, Debug)]
 #[command(name = "donuthle", version, about = "Android 1.x-2.x HLE prototype")]
@@ -61,6 +61,15 @@ fn main() -> Result<()> {
                 println!("entries: {}", info.entries.len());
                 println!("manifest: {}", info.has_manifest);
                 println!("classes.dex: {}", info.has_dex);
+                let native_libraries: Vec<&String> = info
+                    .entries
+                    .iter()
+                    .filter(|entry| native::is_native_library_entry(entry))
+                    .collect();
+                println!("native libraries: {}", native_libraries.len());
+                for entry in &native_libraries {
+                    println!("  {entry}");
+                }
                 for entry in info.entries {
                     println!("  {entry}");
                 }
