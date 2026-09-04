@@ -13,6 +13,16 @@ use crate::mem::Memory;
 pub const HOST_BASE: u32 = 0x7000_0000;
 pub const FIRST_MODULE_BASE: u32 = 0x6000_0000;
 
+/// Guest range backing imported data symbols (STT_OBJECT). Unlike host
+/// function slots, this range is mapped writable guest memory so that data
+/// reads and writes work.
+pub const DATA_BASE: u32 = 0x7200_0000;
+const DATA_REGION_SIZE: u32 = 0x0010_0000;
+
+/// Deterministic initial values for imports whose content the guest assumes.
+const STACK_CHK_GUARD: u32 = 0x5EED_C0DE;
+const PAGE_SIZE: u32 = 4096;
+
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 const DT_NULL: u32 = 0;
@@ -89,6 +99,9 @@ struct GuestSymbol {
     name: String,
     value: u32,
     defined: bool,
+    /// Symbol type is STT_OBJECT; `object_size` is its `st_size`.
+    is_object: bool,
+    object_size: u32,
 }
 
 /// Registry of host shims and loaded modules; resolves dynamic symbols.
@@ -98,6 +111,10 @@ pub struct Linker {
     pub host_slots: HashMap<u32, usize>,
     next_host_address: u32,
     modules: Vec<(String, u32, Vec<GuestSymbol>)>,
+    /// Imported data symbols (by name) backed with writable guest memory.
+    data_symbols: HashMap<String, u32>,
+    data_next: u32,
+    data_region_mapped: bool,
     pub diagnostics: Vec<String>,
 }
 
@@ -108,8 +125,43 @@ impl Linker {
             host_slots: HashMap::new(),
             next_host_address: HOST_BASE,
             modules: Vec::new(),
+            data_symbols: HashMap::new(),
+            data_next: DATA_BASE,
+            data_region_mapped: false,
             diagnostics: Vec::new(),
         }
+    }
+
+    /// Backs an imported data symbol with writable guest memory and returns
+    /// its address. Known names receive deterministic initial values; the
+    /// rest are zeroed. Returns `None` if the data region is exhausted.
+    pub fn ensure_data_symbol(
+        &mut self,
+        name: &str,
+        size: u32,
+        memory: &mut Memory,
+    ) -> Option<u32> {
+        if let Some(address) = self.data_symbols.get(name) {
+            return Some(*address);
+        }
+        if !self.data_region_mapped {
+            memory.map_anon(DATA_BASE, DATA_REGION_SIZE).ok()?;
+            self.data_region_mapped = true;
+        }
+        let size = size.max(4);
+        let address = self.data_next;
+        self.data_next = self.data_next.wrapping_add((size + 15) & !15);
+        if self.data_next >= DATA_BASE + DATA_REGION_SIZE && size != 0 {
+            return None; // data region exhausted
+        }
+        let initial = initial_bytes_for(name, size);
+        memory.write_bytes(address, &initial).ok()?;
+        self.data_symbols.insert(name.to_owned(), address);
+        Some(address)
+    }
+
+    pub fn data_symbol(&self, name: &str) -> Option<u32> {
+        self.data_symbols.get(name).copied()
     }
 
     /// Registers a host shim by ELF symbol name; returns its slot index.
@@ -154,6 +206,9 @@ impl Linker {
             {
                 return Some(*module_base + symbol.value);
             }
+        }
+        if let Some(address) = self.data_symbols.get(name) {
+            return Some(*address);
         }
         self.host_index_of(name)
             .map(|slot| self.assign_host_address(slot))
@@ -304,6 +359,8 @@ impl ElfImage {
                 }
                 let st_name = u32_at(base);
                 let st_value = u32_at(base + 4);
+                let st_size = u32_at(base + 8);
+                let st_type = bytes[base + 12] & 0xF; // STT_OBJECT = 1, STT_FUNC = 2
                 let st_shndx = u16_at(base + 14);
                 let name = if st_name != 0 && (st_name as usize) < table.strsz as usize {
                     let start = strtab_offset + st_name as usize;
@@ -320,6 +377,8 @@ impl ElfImage {
                     name,
                     value: st_value,
                     defined: st_shndx != SHN_UNDEF,
+                    is_object: st_type == 1,
+                    object_size: st_size,
                 });
             }
             // .rel.dyn holds general relocations; .rel.plt (DT_JMPREL) holds
@@ -378,6 +437,23 @@ impl ElfImage {
         }
         Ok(())
     }
+}
+
+/// Initial content for known imported data symbols; everything else zeroes.
+fn initial_bytes_for(name: &str, size: u32) -> Vec<u8> {
+    let mut bytes = vec![0u8; size as usize];
+    let value = match name {
+        "__page_size" => Some(PAGE_SIZE),
+        "__stack_chk_guard" => Some(STACK_CHK_GUARD),
+        "__dso_handle" => Some(1), // any non-null handle; __aeabi_atexit ignores it
+        _ => None,
+    };
+    if let Some(value) = value {
+        if size >= 4 {
+            bytes[..4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    bytes
 }
 
 fn base_offset(segments: &[Segment], vaddr: u32) -> Option<usize> {
@@ -513,6 +589,15 @@ pub fn load_module(
                         .map(|symbol| {
                             if symbol.defined {
                                 base + symbol.value
+                            } else if symbol.is_object {
+                                // Data imports need readable/writable backing,
+                                // not a call target: bind to guest memory.
+                                linker
+                                    .ensure_data_symbol(&symbol.name, symbol.object_size, memory)
+                                    .unwrap_or_else(|| {
+                                        unresolved_name = Some(symbol.name.clone());
+                                        0
+                                    })
                             } else {
                                 match linker.resolve(&symbol.name) {
                                     Some(value) => value,
@@ -591,36 +676,49 @@ pub fn load_module(
             name: symbol.name.clone(),
             value: symbol.value,
             defined: symbol.defined,
+            is_object: symbol.is_object,
+            object_size: symbol.object_size,
         })
         .collect();
     linker.modules.push((name.to_owned(), base, symbols));
 
     Ok(module)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arm::{CpuConfig, Machine};
+    use crate::host::BasicHost;
+    use crate::mem::Memory;
 
-    /// Builds a minimal ARM shared object with two PT_LOADs, a dynamic
-    /// section, three symbols, relocations, and an init_array entry.
+    /// Builds a minimal ARM shared object: two PT_LOADs, a dynamic section,
+    /// six symbols (including two object imports), six relocations, and an
+    /// init_array entry whose function reads `__stack_chk_guard`.
     fn build_elf() -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::new();
-        let u16v = |bytes: &mut Vec<u8>, value: u16| bytes.extend_from_slice(&value.to_le_bytes());
-        let u32v = |bytes: &mut Vec<u8>, value: u32| bytes.extend_from_slice(&value.to_le_bytes());
-
-        // Layout constants (file offset == vaddr for the single LOAD segment).
+        // Layout (file offset == vaddr for the single LOAD segment).
         const PHOFF: usize = 0x34;
-        const CODE: usize = 0x100; // my_init: mov r0, #0x2A; bx lr
-        const HELPER: usize = 0x108; // mov r0, #0x2C; bx lr
-        const STRTAB: usize = 0x120;
-        const DYNSYM: usize = 0x150;
-        const HASH: usize = 0x190;
-        const REL: usize = 0x1A8;
-        const DATA: usize = 0x1D0; // three relocated words
-        const INIT_ARRAY: usize = 0x1DC;
+        const CODE: usize = 0x080; // my_init (3 words) + helper (2 words)
+        const HELPER: usize = 0x08C;
+        const STRTAB: usize = 0x0A0;
+        const DYNSYM: usize = 0x0E0;
+        const HASH: usize = 0x140;
+        const REL: usize = 0x180;
+        const DATA: usize = 0x1C0; // relocated words + init_array
+        const GUARD_PTR: usize = DATA + 0x0C;
         const DYNAMIC: usize = 0x1E0;
-        const TOTAL: usize = 0x240;
+        const TOTAL: usize = 0x280;
+
+        let strtab = b"\0my_init\0malloc\0helper\0libtest.so\0__stack_chk_guard\0__page_size\0";
+        // Offsets: 1 my_init, 9 malloc, 16 helper, 23 libtest.so,
+        // 34 __stack_chk_guard, 52 __page_size.
+
+        let mut bytes: Vec<u8> = Vec::new();
+        let u16v = |bytes: &mut Vec<u8>, value: u16| {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        };
+        let u32v = |bytes: &mut Vec<u8>, value: u32| {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        };
 
         // ELF header.
         bytes.extend_from_slice(b"\x7fELF");
@@ -644,19 +742,11 @@ mod tests {
         assert_eq!(bytes.len(), PHOFF);
 
         // Program headers: one PT_LOAD covering everything, one PT_DYNAMIC.
-        for segment in [
-            (0u32, 0u32, TOTAL as u32, TOTAL as u32 + 0x100),
-            (DYNAMIC as u32, DYNAMIC as u32, 0x60, 0x60),
+        for (p_type, offset, vaddr, filesz, memsz) in [
+            (PT_LOAD, 0u32, 0u32, TOTAL as u32, TOTAL as u32 + 0x100),
+            (PT_DYNAMIC, DYNAMIC as u32, DYNAMIC as u32, 0x60, 0x60),
         ] {
-            let (offset, vaddr, filesz, memsz) = segment;
-            u32v(
-                &mut bytes,
-                if offset == DYNAMIC as u32 {
-                    PT_DYNAMIC
-                } else {
-                    PT_LOAD
-                },
-            );
+            u32v(&mut bytes, p_type);
             u32v(&mut bytes, offset);
             u32v(&mut bytes, vaddr);
             u32v(&mut bytes, 0); // p_physaddr
@@ -665,89 +755,91 @@ mod tests {
             u32v(&mut bytes, 7); // p_flags
             u32v(&mut bytes, 0x1000); // p_align
         }
-        assert_eq!(bytes.len(), 0x74);
 
-        // Code: my_init returns 42; helper returns 44.
+        // Code: my_init loads the guard pointer (ABS32-relocated) and then
+        // the guard value itself; helper returns 44.
         bytes.resize(CODE, 0);
-        u32v(&mut bytes, 0xE3A0_002A); // mov r0, #42
+        let pc_relative = (GUARD_PTR - (CODE + 8)) as u32;
+        u32v(&mut bytes, 0xE59F_0000 | pc_relative); // ldr r0, [pc, #off]
+        u32v(&mut bytes, 0xE590_0000); // ldr r0, [r0]
         u32v(&mut bytes, 0xE12F_FF1E); // bx lr
-        u32v(&mut bytes, 0xE3A0_002C); // mov r0, #44
+        u32v(&mut bytes, 0xE3A0_002C); // helper: mov r0, #44
         u32v(&mut bytes, 0xE12F_FF1E); // bx lr
 
         // String table.
         bytes.resize(STRTAB, 0);
-        bytes.extend_from_slice(b"\0my_init\0malloc\0helper\0libtest.so\0");
-        // Offsets: 1 my_init, 9 malloc, 16 helper, 23 libtest.so
-        assert!(bytes.len() <= DYNSYM);
+        bytes.extend_from_slice(strtab);
 
-        // Dynamic symbols: null, my_init (defined), malloc (import), helper.
+        // Dynamic symbols: null, my_init, malloc (func import), helper,
+        // __stack_chk_guard (object import), __page_size (object import).
         bytes.resize(DYNSYM, 0);
-        for (name, value, shndx) in [
-            (0u32, 0u32, 0u16),
-            (1, CODE as u32, 1),
-            (9, 0, 0),
-            (16, HELPER as u32, 1),
+        for (name, value, kind, size, shndx) in [
+            (0u32, 0u32, 0u8, 0u32, 0u16),
+            (1, CODE as u32, 2, 0, 1),    // my_init: GLOBAL FUNC
+            (9, 0, 2, 0, 0),              // malloc: GLOBAL FUNC, undefined
+            (16, HELPER as u32, 2, 0, 1), // helper: GLOBAL FUNC
+            (34, 0, 1, 4, 0),             // __stack_chk_guard: OBJECT, undefined
+            (52, 0, 1, 4, 0),             // __page_size: OBJECT, undefined
         ] {
             u32v(&mut bytes, name);
             u32v(&mut bytes, value);
-            u32v(&mut bytes, 0); // size
-            bytes.push(0x12); // GLOBAL FUNC for functions
+            u32v(&mut bytes, size);
+            bytes.push((0x10 | kind) << 4 >> 4); // GLOBAL, type in low nibble
             bytes.push(0);
             u16v(&mut bytes, shndx);
         }
         assert_eq!(bytes.len(), HASH);
 
-        // DT_HASH: nbucket=1, nchain=4, one bucket pointing at symbol 1.
+        // DT_HASH: nbucket=1, nchain=6, one bucket, six chains.
         bytes.resize(HASH, 0);
         u32v(&mut bytes, 1);
-        u32v(&mut bytes, 4);
+        u32v(&mut bytes, 6);
         u32v(&mut bytes, 1);
-        u32v(&mut bytes, 0);
-        u32v(&mut bytes, 0);
+        for _ in 0..7 {
+            u32v(&mut bytes, 0);
+        }
 
-        // Relocations: RELATIVE at DATA, JUMP_SLOT(malloc) at DATA+4,
-        // ABS32(helper) at DATA+8.
+        // Relocations: RELATIVE for a data word and init_array, JUMP_SLOT for
+        // malloc, ABS32 for helper, guard pointer, and page-size pointer.
         bytes.resize(REL, 0);
         for (offset, info) in [
-            (DATA as u32, 23u32),             // R_ARM_RELATIVE, symbol 0
-            (DATA as u32 + 4, (2 << 8) | 22), // JUMP_SLOT malloc
-            (DATA as u32 + 8, (3 << 8) | 2),  // ABS32 helper
-            (INIT_ARRAY as u32, 23u32),       // R_ARM_RELATIVE for init_array
+            (DATA as u32, 23u32),               // R_ARM_RELATIVE, symbol 0
+            (DATA as u32 + 4, (2 << 8) | 22),   // JUMP_SLOT malloc
+            (DATA as u32 + 8, (3 << 8) | 2),    // ABS32 helper
+            (GUARD_PTR as u32, (4 << 8) | 2),   // ABS32 __stack_chk_guard
+            (DATA as u32 + 0x10, (5 << 8) | 2), // ABS32 __page_size
+            (DATA as u32 + 0x14, 23),           // R_ARM_RELATIVE init_array
         ] {
             u32v(&mut bytes, offset);
             u32v(&mut bytes, info);
         }
-        assert_eq!(bytes.len(), 0x1C8);
 
-        // Data words and init_array (points at my_init; a RELATIVE entry
-        // above re-binds it to the load base).
+        // Data words and init_array (points at my_init; RELATIVE re-binds it).
         bytes.resize(DATA, 0);
         u32v(&mut bytes, 0x1000); // RELATIVE target
         u32v(&mut bytes, 0); // malloc slot
         u32v(&mut bytes, 0); // helper
+        u32v(&mut bytes, 0); // guard pointer
+        u32v(&mut bytes, 0); // page-size pointer
         u32v(&mut bytes, CODE as u32); // init_array[0]
-        assert_eq!(bytes.len(), DYNAMIC);
+        assert_eq!(bytes.len(), DATA + 0x18);
 
         // Dynamic table.
-        let dyn_entries: [(u32, u32); 12] = [
-            (DT_NEEDED, 23), // libtest.so
+        bytes.resize(DYNAMIC, 0);
+        for (tag, value) in [
+            (DT_NEEDED, 23u32), // libtest.so
             (DT_SONAME, 23),
             (DT_STRTAB, STRTAB as u32),
             (DT_SYMTAB, DYNSYM as u32),
-            (DT_STRSZ, 0x30),
+            (DT_STRSZ, strtab.len() as u32),
             (DT_HASH, HASH as u32),
             (DT_REL, REL as u32),
-            (DT_RELSZ, 32),
+            (DT_RELSZ, 48),
             (DT_RELENT, 8),
-            (DT_INIT_ARRAY, INIT_ARRAY as u32),
+            (DT_INIT_ARRAY, (DATA + 0x14) as u32),
             (DT_INIT_ARRAYSZ, 4),
             (DT_NULL, 0),
-        ];
-        // The relative relocation for init_array goes after the three above.
-        // Append it to the REL region by extending RELSZ is not possible
-        // post-hoc, so instead patch: add one more REL entry by rewriting
-        // RELSZ below (the region has room up to DYNAMIC).
-        for (tag, value) in dyn_entries {
+        ] {
             u32v(&mut bytes, tag);
             u32v(&mut bytes, value);
         }
@@ -761,44 +853,74 @@ mod tests {
         let bytes = build_elf();
         let mut memory = Memory::new();
         let mut linker = Linker::new();
-        linker.register_host("malloc");
-        let malloc_slot = linker.host_index_of("malloc").unwrap();
+        let malloc_slot = linker.register_host("malloc");
 
         let module = load_module(&mut memory, &mut linker, &bytes, "test.so").expect("load");
         assert_eq!(module.base, FIRST_MODULE_BASE);
         assert_eq!(module.soname.as_deref(), Some("libtest.so"));
         assert_eq!(module.needed, vec!["libtest.so".to_owned()]);
         assert_eq!(module.unresolved, Vec::<String>::new());
-        assert_eq!(module.applied_relocations, 4);
+        assert_eq!(module.applied_relocations, 6);
 
         // R_ARM_RELATIVE relocated the data word and the init_array entry.
         assert_eq!(
-            memory.read_u32(module.base + 0x1D0).unwrap(),
+            memory.read_u32(module.base + 0x1C0).unwrap(),
             module.base + 0x1000
         );
-        assert_eq!(module.init_array, vec![module.base + 0x100]);
+        assert_eq!(module.init_array, vec![module.base + 0x080]);
         // JUMP_SLOT(malloc) points into the host trampoline range.
-        let malloc_address = memory.read_u32(module.base + 0x1D4).unwrap();
+        let malloc_address = memory.read_u32(module.base + 0x1C4).unwrap();
         assert!(malloc_address >= HOST_BASE);
         assert_eq!(linker.host_slot_for(malloc_address), Some(malloc_slot));
         // ABS32(helper) resolved against the module itself.
         assert_eq!(
-            memory.read_u32(module.base + 0x1D8).unwrap(),
-            module.base + 0x108
+            memory.read_u32(module.base + 0x1C8).unwrap(),
+            module.base + 0x08C
         );
     }
 
     #[test]
-    fn unresolved_imports_get_diagnostic_slots() {
+    fn object_imports_get_backing_storage() {
         let bytes = build_elf();
         let mut memory = Memory::new();
         let mut linker = Linker::new();
         let module = load_module(&mut memory, &mut linker, &bytes, "test.so").expect("load");
+
+        // The guard pointer word resolved into the data region.
+        let guard_address = memory.read_u32(module.base + 0x1CC).unwrap();
+        assert!(
+            guard_address >= super::DATA_BASE,
+            "backed in the data region"
+        );
+        assert_eq!(linker.data_symbol("__stack_chk_guard"), Some(guard_address));
+
+        // Known names carry deterministic values; reads do not fault.
+        assert_eq!(memory.read_u32(guard_address).unwrap(), 0x5EED_C0DE);
+        let page_address = memory.read_u32(module.base + 0x1D0).unwrap();
+        assert_eq!(memory.read_u32(page_address).unwrap(), 4096);
+
+        // Function imports still land on diagnostic slots.
         assert!(module.unresolved.contains(&"malloc".to_owned()));
-        let malloc_address = memory.read_u32(module.base + 0x1D4).unwrap();
-        assert!(malloc_address >= HOST_BASE, "bound to a diagnostic slot");
-        assert_eq!(linker.host_slot_for(malloc_address), Some(0));
-        assert_eq!(linker.host_name(0), Some("malloc"));
+        let malloc_address = memory.read_u32(module.base + 0x1C4).unwrap();
+        assert!((HOST_BASE..super::DATA_BASE).contains(&malloc_address));
+    }
+
+    #[test]
+    fn init_reads_stack_protector_through_backed_symbol() {
+        let bytes = build_elf();
+        let mut machine = Machine::new(CpuConfig::default());
+        machine.memory.map_anon(0x7F00_0000, 0x10_0000).unwrap();
+        machine.cpu.r[13] = 0x7F0F_F000;
+        let mut host = BasicHost::new();
+        let module =
+            load_module(&mut machine.memory, &mut machine.linker, &bytes, "test.so").expect("load");
+
+        // my_init dereferences the backed __stack_chk_guard pointer and
+        // returns the guard value: a stack-protected function can run.
+        let result = machine
+            .call_function(&mut host, module.init_array[0], &[])
+            .expect("init should run without faults");
+        assert_eq!(result, 0x5EED_C0DE);
     }
 
     #[test]

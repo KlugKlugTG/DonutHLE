@@ -70,10 +70,14 @@ Measured facts (ELF build attributes and dynamic-symbol inventory):
    - Decoder bugs the real binary flushed out: LDR/STR immediate/register
      bit (25) inverted, Thumb format-2 operand positions, unsigned branch
      offsets, missing DT_JMPREL, and ARM R_ARM_RELATIVE = 23 (not 8).
-3. **M2 (next):** JNI bridge both directions; `nativePreInit`/`nativeInit`
-   complete; `Java_com_com2us_wrapper_WrapperUserDefined_StartGame`
-   reachable; backing storage for data symbols (`__sF`, `__page_size`,
-   `__dso_handle`, `__stack_chk_guard`).
+3. **M2 (in progress):** JNI bridge both directions; `nativePreInit`/
+   `nativeInit` complete; `Java_com_com2us_wrapper_WrapperUserDefined_StartGame`
+   reachable.
+   - Imported data symbols (STT_OBJECT) are auto-backed with writable guest
+     memory in `0x7200_0000..`, with deterministic values for `__page_size`
+     (4096), `__stack_chk_guard`, and `__dso_handle`; `__sF` is zeroed and
+     readable. Verified on the real libraries: the four data imports are
+     backed and the unresolved import count dropped to 50/6 (from 53/7).
 4. **M3 (de-risk gate):** first frame rendered through `nativeRender` into the
    existing GLES 1.x command stream.
 5. **M4:** menu navigation via touch (`WrapperEventHandler` -> `nativeEvent`).

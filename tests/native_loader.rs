@@ -76,6 +76,26 @@ fn links_real_ovenbreak_libraries() {
     };
     let (mut machine, _host, loaded) = load_real_libraries();
     assert_eq!(loaded.len(), 2);
+    // Imported data symbols are backed with writable guest memory and carry
+    // their expected values; the guard is readable by protected functions.
+    for name in ["__stack_chk_guard", "__page_size", "__sF", "__dso_handle"] {
+        let address = machine
+            .linker
+            .data_symbol(name)
+            .unwrap_or_else(|| panic!("{name} must be backed"));
+        assert!(
+            address >= donuthle::elfload::DATA_BASE,
+            "{name} in the data region"
+        );
+        // Reading must not fault.
+        let _ = machine.memory.read_u32(address).unwrap();
+    }
+    let guard = machine.linker.data_symbol("__stack_chk_guard").unwrap();
+    assert_eq!(
+        machine.memory.read_u32(guard).unwrap(),
+        0x5EED_C0DE,
+        "guard carries its deterministic value"
+    );
     // Both libraries resolved their JNI entry points.
     for name in [
         "Java_com_com2us_wrapper_WrapperJinterface_nativeInit",
