@@ -53,10 +53,27 @@ Measured facts (ELF build attributes and dynamic-symbol inventory):
 1. **M0 (done):** native-library detection in `inspect`/`validate`/launch
    reports; ELF32 header, dynamic section, and symbol inventory in
    `src/native.rs`; `System.loadLibrary` logs that native code will not run.
-2. **M1:** ELF32 loader + dynamic linker (R_ARM REL relocations, PLT/GOT,
-   init_array) and an ARMv5TE/Thumb-1 interpreter reaching `init_array`.
-3. **M2:** JNI bridge both directions; `nativePreInit`/`nativeInit` complete;
-   `Java_com_com2us_wrapper_WrapperUserDefined_StartGame` reachable.
+2. **M1 (done):** ELF32 loader + dynamic linker and an ARMv5TE/Thumb-1
+   interpreter reaching `init_array`.
+   - `src/mem.rs` sparse guest memory; `src/elfload.rs` program loading,
+     R_ARM relocations (`.rel.dyn` + `.rel.plt`/DT_JMPREL), host-symbol
+     binding with diagnostic slots for unimplemented imports.
+   - `src/arm.rs` CPU: ARMv4T + v5TE additions (BLX, CLZ, DSP multiplies,
+     QADD family, LDRD/STRD, SWP) and full Thumb-1; unsupported classes
+     (VFP, coprocessor, v6 atomics, Thumb-2) stop with a visible fault.
+   - `src/host.rs` bionic libc/libm shims plus the full `__aeabi_*`
+     soft-float set; network and file operations fail closed with logs.
+   - Verified against the real libraries: both `.so` files load and link
+     (949 + 23 relocations), every JNI entry point resolves, and
+     `libgame.so`'s `init_array[0]` executes cleanly
+     (`tests/native_loader.rs`, set `DONUTHLE_OVENBREAK_LIBS`).
+   - Decoder bugs the real binary flushed out: LDR/STR immediate/register
+     bit (25) inverted, Thumb format-2 operand positions, unsigned branch
+     offsets, missing DT_JMPREL, and ARM R_ARM_RELATIVE = 23 (not 8).
+3. **M2 (next):** JNI bridge both directions; `nativePreInit`/`nativeInit`
+   complete; `Java_com_com2us_wrapper_WrapperUserDefined_StartGame`
+   reachable; backing storage for data symbols (`__sF`, `__page_size`,
+   `__dso_handle`, `__stack_chk_guard`).
 4. **M3 (de-risk gate):** first frame rendered through `nativeRender` into the
    existing GLES 1.x command stream.
 5. **M4:** menu navigation via touch (`WrapperEventHandler` -> `nativeEvent`).

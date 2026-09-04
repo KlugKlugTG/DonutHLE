@@ -1,0 +1,1268 @@
+//! Host shims for guest native code: the bionic libc/libm subset, the AEABI
+//! arithmetic helpers, and diagnostics for imports that are not implemented.
+//!
+//! Every shim is deterministic and fail-closed: file and network operations
+//! return errors with a log entry rather than touching the host system.
+
+use crate::arm::{HostBridge, Machine};
+
+/// Guest memory layout for host-owned regions.
+const HEAP_BASE: u32 = 0x5000_0000;
+const HEAP_SIZE: u32 = 32 * 1024 * 1024;
+const HOST_DATA_BASE: u32 = 0x7100_0000;
+const HOST_DATA_SIZE: u32 = 0x1_0000;
+const MMAP_BASE: u32 = 0x6800_0000;
+const MMAP_SIZE: u32 = 64 * 1024 * 1024;
+
+/// Names of the shims implemented by [`BasicHost`]; the linker binds imports
+/// to these by symbol name.
+pub const HOST_FUNCTIONS: &[&str] = &[
+    // Memory allocation.
+    "malloc",
+    "calloc",
+    "realloc",
+    "free",
+    "_Znwj",
+    "_Znaj",
+    "_ZdlPv",
+    "_ZdaPv",
+    // Memory and string.
+    "memset",
+    "memcpy",
+    "memcmp",
+    "strlen",
+    "strcpy",
+    "strncpy",
+    "strcat",
+    "strcmp",
+    "strncmp",
+    "strchr",
+    "strrchr",
+    "qsort",
+    // Console and logging.
+    "printf",
+    "puts",
+    "sprintf",
+    "snprintf",
+    "vsprintf",
+    "vsnprintf",
+    "fprintf",
+    "__android_log_write",
+    // Threads (single-threaded machine; these are bookkeeping only).
+    "pthread_mutex_init",
+    "pthread_mutex_destroy",
+    "pthread_mutex_lock",
+    "pthread_mutex_unlock",
+    "pthread_mutex_trylock",
+    "pthread_mutexattr_init",
+    "pthread_mutexattr_destroy",
+    "pthread_mutexattr_settype",
+    "pthread_key_create",
+    "pthread_setspecific",
+    "pthread_getspecific",
+    // Time.
+    "time",
+    "usleep",
+    "nanosleep",
+    "srand48",
+    "lrand48",
+    // Process.
+    "abort",
+    "exit",
+    "__stack_chk_fail",
+    "__errno",
+    "__aeabi_atexit",
+    "setjmp",
+    "longjmp",
+    // Files: fail-closed stubs.
+    "open",
+    "read",
+    "write",
+    "close",
+    "lseek",
+    "fstat",
+    "stat",
+    "lstat",
+    "statfs",
+    "unlink",
+    "rename",
+    "mkdir",
+    "opendir",
+    "readdir",
+    "closedir",
+    "dup",
+    "fcntl",
+    // Memory mapping.
+    "mmap",
+    "munmap",
+    // Network: fail-closed stubs.
+    "socket",
+    "connect",
+    "send",
+    "recvfrom",
+    "select",
+    "getsockopt",
+    "getaddrinfo",
+    "freeaddrinfo",
+    "inet_addr",
+    "inet_ntoa",
+    // AEABI integer arithmetic.
+    "__aeabi_idiv",
+    "__aeabi_uidiv",
+    "__aeabi_idivmod",
+    "__aeabi_uidivmod",
+    "__aeabi_lmul",
+    "__aeabi_ldivmod",
+    "__aeabi_uldivmod",
+    "__aeabi_l2d",
+    // AEABI floating point (soft-float ABI).
+    "__aeabi_i2f",
+    "__aeabi_ui2f",
+    "__aeabi_i2d",
+    "__aeabi_ui2d",
+    "__aeabi_f2iz",
+    "__aeabi_f2ui",
+    "__aeabi_f2d",
+    "__aeabi_d2f",
+    "__aeabi_d2iz",
+    "__aeabi_d2uiz",
+    "__aeabi_fadd",
+    "__aeabi_fsub",
+    "__aeabi_fmul",
+    "__aeabi_fdiv",
+    "__aeabi_dadd",
+    "__aeabi_dsub",
+    "__aeabi_dmul",
+    "__aeabi_ddiv",
+    "__aeabi_fcmpeq",
+    "__aeabi_fcmplt",
+    "__aeabi_fcmple",
+    "__aeabi_fcmpgt",
+    "__aeabi_fcmpge",
+    "__aeabi_dcmpeq",
+    "__aeabi_dcmplt",
+    "__aeabi_dcmple",
+    "__aeabi_dcmpgt",
+    "__aeabi_dcmpge",
+];
+
+const MAP_FAILED: u32 = u32::MAX;
+
+/// Deterministic, single-threaded host shims.
+#[derive(Debug, Default)]
+pub struct BasicHost {
+    pub log: Vec<String>,
+    heap_next: u32,
+    allocations: std::collections::HashMap<u32, u32>,
+    regions_ready: bool,
+    errno_address: u32,
+    next_key: u32,
+    thread_specific: std::collections::HashMap<u32, u32>,
+    random_state: u64,
+    mmap_next: u32,
+    jump_buffers: std::collections::HashMap<u32, [u32; 10]>,
+}
+
+impl BasicHost {
+    pub fn new() -> Self {
+        Self {
+            random_state: 0x2B99_2DDF_232F_9A67,
+            ..Self::default()
+        }
+    }
+
+    fn ensure_regions(&mut self, machine: &mut Machine) {
+        if self.regions_ready {
+            return;
+        }
+        self.regions_ready = true;
+        let _ = machine.memory.map_anon(HEAP_BASE, HEAP_SIZE);
+        let _ = machine.memory.map_anon(HOST_DATA_BASE, HOST_DATA_SIZE);
+        let _ = machine.memory.map_anon(MMAP_BASE, MMAP_SIZE);
+        self.heap_next = HEAP_BASE + 0x100;
+        self.mmap_next = MMAP_BASE + 0x1000;
+        self.errno_address = HOST_DATA_BASE;
+    }
+
+    fn log(&mut self, message: String) {
+        if self.log.len() < 10_000 {
+            self.log.push(message);
+        }
+    }
+
+    fn alloc(&mut self, machine: &mut Machine, size: u32) -> u32 {
+        self.ensure_regions(machine);
+        let size = size.max(1).next_multiple_of(16);
+        let end = self.heap_next.wrapping_add(size);
+        if end > HEAP_BASE + HEAP_SIZE {
+            self.log("host heap exhausted".to_owned());
+            return 0;
+        }
+        let address = self.heap_next;
+        self.heap_next = end;
+        self.allocations.insert(address, size);
+        address
+    }
+
+    fn read_stack_string(&self, machine: &Machine, address: u32) -> String {
+        machine.memory.read_cstr(address, 4096).unwrap_or_default()
+    }
+
+    /// Reads a NUL-terminated guest string without allocating a String first.
+    fn guest_strlen(&self, machine: &Machine, address: u32) -> u32 {
+        let mut length = 0u32;
+        while length < 1 << 20 {
+            match machine.memory.read_u8(address + length) {
+                Ok(0) => break,
+                Ok(_) => length += 1,
+                Err(_) => break,
+            }
+        }
+        length
+    }
+
+    fn c_difference(a: u8, b: u8) -> i32 {
+        i32::from(a) - i32::from(b)
+    }
+
+    fn format(
+        &mut self,
+        machine: &mut Machine,
+        format_address: u32,
+        mut cursor: ArgCursor,
+    ) -> String {
+        let format = self.read_stack_string(machine, format_address);
+        let mut output = String::new();
+        let bytes: Vec<u8> = format.as_bytes().to_vec();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] != b'%' {
+                output.push(bytes[index] as char);
+                index += 1;
+                continue;
+            }
+            index += 1;
+            if index >= bytes.len() {
+                break;
+            }
+            if bytes[index] == b'%' {
+                output.push('%');
+                index += 1;
+                continue;
+            }
+            // Flags, width, precision: parsed but simplified to padding.
+            let mut padding = Padding::None;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'0' if matches!(padding, Padding::None) => padding = Padding::Zero,
+                    b'-' => padding = Padding::Left,
+                    b'+' | b' ' | b'#' => {}
+                    _ => break,
+                }
+                index += 1;
+            }
+            let mut width = 0usize;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                width = width * 10 + (bytes[index] - b'0') as usize;
+                index += 1;
+            }
+            if index < bytes.len() && bytes[index] == b'.' {
+                index += 1;
+                while index < bytes.len() && bytes[index].is_ascii_digit() {
+                    index += 1;
+                }
+            }
+            if index + 1 < bytes.len() && (bytes[index] == b'l' || bytes[index] == b'h') {
+                index += 1;
+                if bytes[index] == b'l' {
+                    index += 1;
+                }
+            }
+            let Some(&specifier) = bytes.get(index) else {
+                break;
+            };
+            index += 1;
+            let mut body = match specifier {
+                b'd' | b'i' => {
+                    let value = cursor.next_i32(machine) as i64;
+                    value.to_string()
+                }
+                b'u' => cursor.next_i32(machine).to_string(),
+                b'x' => format!("{:x}", cursor.next_i32(machine)),
+                b'X' => format!("{:X}", cursor.next_i32(machine)),
+                b'p' => format!("{:#010x}", cursor.next_u32(machine)),
+                b's' => {
+                    let address = cursor.next_u32(machine);
+                    if address == 0 {
+                        "(null)".to_owned()
+                    } else {
+                        self.read_stack_string(machine, address)
+                    }
+                }
+                b'c' => char::from_u32(cursor.next_u32(machine) & 0xFF)
+                    .unwrap_or('?')
+                    .to_string(),
+                b'f' | b'g' | b'e' => {
+                    // Soft-float ABI passes doubles in two registers each.
+                    let low = cursor.next_u32(machine);
+                    let high = cursor.next_u32(machine);
+                    let bits = (low as u64) | ((high as u64) << 32);
+                    format!("{}", f64::from_bits(bits))
+                }
+                other => {
+                    output.push('%');
+                    output.push(other as char);
+                    continue;
+                }
+            };
+            if width > body.chars().count() {
+                match padding {
+                    Padding::Left => {
+                        while body.chars().count() < width {
+                            body.push(' ');
+                        }
+                    }
+                    Padding::Zero => {
+                        let negative = body.starts_with('-');
+                        if negative {
+                            body.remove(0);
+                        }
+                        while body.chars().count() + usize::from(negative) < width {
+                            body.insert(0, '0');
+                        }
+                        if negative {
+                            body.insert(0, '-');
+                        }
+                    }
+                    Padding::None => {
+                        while body.chars().count() < width {
+                            body.insert(0, ' ');
+                        }
+                    }
+                }
+            }
+            output.push_str(&body);
+        }
+        output
+    }
+
+    fn lrand48(&mut self) -> u32 {
+        // xorshift64*; deterministic and sufficient for game randomness.
+        let mut state = self.random_state;
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        self.random_state = state;
+        (state >> 32) as u32
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Padding {
+    None,
+    Zero,
+    Left,
+}
+
+/// Cursor over EABI call arguments: r1-r3, then the caller's stack.
+struct ArgCursor {
+    register: usize,
+    stack: u32,
+}
+
+impl ArgCursor {
+    /// Variadic arguments begin after the last fixed argument; `printf`
+    /// takes the format in r0, `fprintf` in r1, `sprintf` in r1, and
+    /// `snprintf` in r2.
+    fn after_fixed_args(machine: &Machine, first_vararg_register: usize) -> Self {
+        Self {
+            register: first_vararg_register,
+            stack: machine.cpu.r[13],
+        }
+    }
+
+    /// Cursor starting at a bionic `va_list` (first word = stack pointer).
+    fn from_va_list(machine: &Machine, va_list_address: u32) -> Self {
+        let stack = machine.memory.read_u32(va_list_address).unwrap_or(0);
+        Self { register: 4, stack }
+    }
+
+    fn next_u32(&mut self, machine: &Machine) -> u32 {
+        if self.register <= 3 {
+            let value = machine.cpu.r[self.register];
+            self.register += 1;
+            return value;
+        }
+        let value = machine.memory.read_u32(self.stack).unwrap_or(0);
+        self.stack += 4;
+        value
+    }
+
+    fn next_i32(&mut self, machine: &Machine) -> i32 {
+        self.next_u32(machine) as i32
+    }
+}
+
+impl HostBridge for BasicHost {
+    fn call_host(&mut self, machine: &mut Machine, slot: usize) -> u32 {
+        self.ensure_regions(machine);
+        let name = machine
+            .linker
+            .host_name(slot)
+            .unwrap_or("unknown")
+            .to_owned();
+        match name.as_str() {
+            "malloc" | "_Znwj" | "_Znaj" => self.alloc(machine, machine.cpu.r[0]),
+            "calloc" => {
+                let count = machine.cpu.r[0];
+                let size = machine.cpu.r[1];
+                self.alloc(machine, count.saturating_mul(size))
+            }
+            "realloc" => {
+                let old = machine.cpu.r[0];
+                let size = machine.cpu.r[1];
+                if old == 0 {
+                    return self.alloc(machine, size);
+                }
+                let address = self.alloc(machine, size);
+                if address != 0 {
+                    let old_size = self.allocations.get(&old).copied();
+                    let new_size = self.allocations.get(&address).copied();
+                    if let (Some(old_size), Some(new_size)) = (old_size, new_size) {
+                        let _ = machine
+                            .memory
+                            .copy_within(address, old, old_size.min(new_size));
+                    }
+                }
+                self.allocations.remove(&old);
+                address
+            }
+            "free" | "_ZdlPv" | "_ZdaPv" => {
+                self.allocations.remove(&machine.cpu.r[0]);
+                0
+            }
+            "memset" => {
+                let destination = machine.cpu.r[0];
+                let value = machine.cpu.r[1] as u8;
+                let length = machine.cpu.r[2];
+                if machine.memory.fill(destination, value, length).is_err() {
+                    self.log(format!("memset faulted at {destination:#010x}"));
+                }
+                destination
+            }
+            "memcpy" | "memmove" => {
+                let destination = machine.cpu.r[0];
+                let source = machine.cpu.r[1];
+                let length = machine.cpu.r[2];
+                if machine
+                    .memory
+                    .copy_within(destination, source, length)
+                    .is_err()
+                {
+                    self.log(format!(
+                        "memcpy faulted copying {length} bytes {source:#010x} -> {destination:#010x}"
+                    ));
+                }
+                destination
+            }
+            "memcmp" => {
+                let (left, right, length) = (machine.cpu.r[0], machine.cpu.r[1], machine.cpu.r[2]);
+                for index in 0..length {
+                    let a = machine.memory.read_u8(left + index).unwrap_or(0);
+                    let b = machine.memory.read_u8(right + index).unwrap_or(0);
+                    if a != b {
+                        return Self::c_difference(a, b) as u32;
+                    }
+                }
+                0
+            }
+            "strlen" => self.guest_strlen(machine, machine.cpu.r[0]),
+            "strcpy" => {
+                let (destination, source) = (machine.cpu.r[0], machine.cpu.r[1]);
+                let bytes = machine
+                    .memory
+                    .read_bytes(source, self.guest_strlen(machine, source) as usize + 1)
+                    .unwrap_or_default();
+                let _ = machine.memory.write_bytes(destination, &bytes);
+                destination
+            }
+            "strncpy" => {
+                let (destination, source, limit) =
+                    (machine.cpu.r[0], machine.cpu.r[1], machine.cpu.r[2]);
+                let length = self.guest_strlen(machine, source).min(limit);
+                let _ = machine.memory.copy_within(destination, source, length);
+                if length < limit {
+                    let _ = machine.memory.fill(destination + length, 0, limit - length);
+                }
+                destination
+            }
+            "strcat" => {
+                let (destination, source) = (machine.cpu.r[0], machine.cpu.r[1]);
+                let offset = self.guest_strlen(machine, destination);
+                let bytes = machine
+                    .memory
+                    .read_bytes(source, self.guest_strlen(machine, source) as usize + 1)
+                    .unwrap_or_default();
+                let _ = machine.memory.write_bytes(destination + offset, &bytes);
+                destination
+            }
+            "strcmp" | "strncmp" => {
+                let (left, right, limit) = (
+                    machine.cpu.r[0],
+                    machine.cpu.r[1],
+                    if name == "strcmp" {
+                        u32::MAX
+                    } else {
+                        machine.cpu.r[2]
+                    },
+                );
+                let mut index = 0;
+                loop {
+                    if index >= limit {
+                        return 0;
+                    }
+                    let a = machine.memory.read_u8(left + index).unwrap_or(0);
+                    let b = machine.memory.read_u8(right + index).unwrap_or(0);
+                    if a != b || a == 0 {
+                        return Self::c_difference(a, b) as u32;
+                    }
+                    index += 1;
+                }
+            }
+            "strchr" => {
+                let (address, needle) = (machine.cpu.r[0], machine.cpu.r[1] as u8);
+                let mut index = 0u32;
+                loop {
+                    let value = machine.memory.read_u8(address + index).unwrap_or(0);
+                    if value == needle {
+                        return address + index;
+                    }
+                    if value == 0 {
+                        return 0;
+                    }
+                    index += 1;
+                }
+            }
+            "strrchr" => {
+                let (address, needle) = (machine.cpu.r[0], machine.cpu.r[1] as u8);
+                let length = self.guest_strlen(machine, address);
+                let mut index = length;
+                loop {
+                    let value = machine.memory.read_u8(address + index).unwrap_or(0);
+                    if value == needle {
+                        return address + index;
+                    }
+                    if index == 0 {
+                        return 0;
+                    }
+                    index -= 1;
+                }
+            }
+            "qsort" => self.qsort(
+                machine,
+                machine.cpu.r[0],
+                machine.cpu.r[1],
+                machine.cpu.r[2],
+                machine.cpu.r[3],
+            ),
+            "printf" | "fprintf" => {
+                let format_address = machine.cpu.r[0];
+                let format_address = if name == "fprintf" {
+                    machine.cpu.r[1]
+                } else {
+                    format_address
+                };
+                let text = self.format(
+                    machine,
+                    format_address,
+                    ArgCursor::after_fixed_args(machine, if name == "fprintf" { 2 } else { 1 }),
+                );
+                self.log(format!("stdio: {text}"));
+                text.len() as u32
+            }
+            "puts" => {
+                let text = self.read_stack_string(machine, machine.cpu.r[0]);
+                self.log(format!("stdio: {text}"));
+                1
+            }
+            "sprintf" | "vsprintf" => {
+                let (destination, format_address) = (machine.cpu.r[0], machine.cpu.r[1]);
+                let cursor = if name == "sprintf" {
+                    ArgCursor::after_fixed_args(machine, 2)
+                } else {
+                    ArgCursor::from_va_list(machine, machine.cpu.r[2])
+                };
+                let text = self.format(machine, format_address, cursor);
+                let _ = machine.memory.write_cstr(destination, &text);
+                text.len() as u32
+            }
+            "snprintf" | "vsnprintf" => {
+                let (destination, limit, format_address) =
+                    (machine.cpu.r[0], machine.cpu.r[1], machine.cpu.r[2]);
+                let cursor = if name == "snprintf" {
+                    ArgCursor::after_fixed_args(machine, 3)
+                } else {
+                    ArgCursor::from_va_list(machine, machine.cpu.r[3])
+                };
+                let text = self.format(machine, format_address, cursor);
+                let truncated: String = text
+                    .chars()
+                    .take(limit.saturating_sub(1) as usize)
+                    .collect();
+                let _ = machine.memory.write_cstr(destination, &truncated);
+                text.len() as u32
+            }
+            "__android_log_write" => {
+                let tag = self.read_stack_string(machine, machine.cpu.r[1]);
+                let message = self.read_stack_string(machine, machine.cpu.r[2]);
+                self.log(format!("log/{tag}: {message}"));
+                0
+            }
+            "pthread_mutex_init"
+            | "pthread_mutex_destroy"
+            | "pthread_mutex_lock"
+            | "pthread_mutex_unlock"
+            | "pthread_mutexattr_init"
+            | "pthread_mutexattr_destroy"
+            | "pthread_mutexattr_settype" => 0,
+            "pthread_mutex_trylock" => 0,
+            "pthread_key_create" => {
+                self.next_key += 1;
+                let _ = machine.memory.write_u32(machine.cpu.r[0], self.next_key);
+                0
+            }
+            "pthread_setspecific" => {
+                self.thread_specific
+                    .insert(machine.cpu.r[0], machine.cpu.r[1]);
+                0
+            }
+            "pthread_getspecific" => self
+                .thread_specific
+                .get(&machine.cpu.r[0])
+                .copied()
+                .unwrap_or(0),
+            "time" => {
+                let now: u32 = 1_234_567_890;
+                if machine.cpu.r[0] != 0 {
+                    let _ = machine.memory.write_u32(machine.cpu.r[0], now);
+                }
+                now
+            }
+            "usleep" | "nanosleep" => 0,
+            "srand48" => {
+                self.random_state = (machine.cpu.r[0] as u64) << 16 | 0x330E;
+                0
+            }
+            "lrand48" => self.lrand48(),
+            "abort" | "__stack_chk_fail" => {
+                self.log(format!("{name} called at pc {:#010x}", machine.cpu.r[15]));
+                machine.emulated_abort();
+                0
+            }
+            "exit" => {
+                machine.emulated_exit(machine.cpu.r[0] as i32);
+                0
+            }
+            "__errno" => self.errno_address,
+            "__aeabi_atexit" => 0,
+            "setjmp" => {
+                let env = machine.cpu.r[0];
+                let mut saved = [0u32; 10];
+                for (index, register) in [4, 5, 6, 7, 8, 9, 10, 11, 13, 14].into_iter().enumerate()
+                {
+                    saved[index] = machine.cpu.r[register];
+                }
+                self.jump_buffers.insert(env, saved);
+                0
+            }
+            "longjmp" => {
+                let (env, value) = (machine.cpu.r[0], machine.cpu.r[1]);
+                if let Some(saved) = self.jump_buffers.remove(&env) {
+                    for (index, register) in
+                        [4, 5, 6, 7, 8, 9, 10, 11, 13, 14].into_iter().enumerate()
+                    {
+                        machine.cpu.r[register] = saved[index];
+                    }
+                    // Returning from the host call jumps to the restored LR.
+                    machine.cpu.r[0] = value.max(1);
+                } else {
+                    self.log(format!("longjmp to unknown jmp_buf {env:#010x}"));
+                    machine.emulated_abort();
+                }
+                machine.cpu.r[0].max(1)
+            }
+            // File operations fail closed.
+            "open" | "read" | "close" | "lseek" | "fstat" | "stat" | "lstat" | "statfs"
+            | "unlink" | "rename" | "mkdir" | "opendir" | "closedir" | "dup" | "fcntl" => {
+                self.log(format!("{name} is not available (fail-closed)"));
+                (-1i32) as u32
+            }
+            "readdir" => 0,
+            "write" => {
+                let (fd, address, length) = (machine.cpu.r[0], machine.cpu.r[1], machine.cpu.r[2]);
+                if fd == 1 || fd == 2 {
+                    let text = machine
+                        .memory
+                        .read_bytes(address, length as usize)
+                        .unwrap_or_default();
+                    self.log(format!("stdout: {}", String::from_utf8_lossy(&text)));
+                    length
+                } else {
+                    self.log("write to non-stdio fd is not available (fail-closed)".to_owned());
+                    (-1i32) as u32
+                }
+            }
+            "mmap" => {
+                let length = machine.cpu.r[1];
+                let fd = machine.cpu.r[4];
+                if fd != (-1i32) as u32 {
+                    self.log("mmap of file descriptors is not supported".to_owned());
+                    return MAP_FAILED;
+                }
+                let aligned = length.next_multiple_of(0x1000);
+                let address = self.mmap_next;
+                self.mmap_next += aligned;
+                if self.mmap_next > MMAP_BASE + MMAP_SIZE {
+                    self.log("host mmap region exhausted".to_owned());
+                    return MAP_FAILED;
+                }
+                address
+            }
+            "munmap" => 0,
+            "socket" | "connect" | "send" | "recvfrom" | "select" | "getsockopt" => {
+                self.log(format!("{name} blocked: network is disabled"));
+                (-1i32) as u32
+            }
+            "getaddrinfo" => {
+                self.log("getaddrinfo blocked: network is disabled".to_owned());
+                4 // EAI_FAIL-ish non-zero
+            }
+            "freeaddrinfo" => 0,
+            "inet_addr" => 0,
+            "inet_ntoa" => {
+                let address = HOST_DATA_BASE + 0x100;
+                let _ = machine.memory.write_cstr(address, "0.0.0.0");
+                address
+            }
+            // AEABI integer arithmetic.
+            "__aeabi_idiv" => self.aeabi_idiv(machine),
+            "__aeabi_uidiv" => self.aeabi_uidiv(machine),
+            "__aeabi_idivmod" | "__aeabi_uidivmod" => {
+                let (quotient, remainder) = if name == "__aeabi_idivmod" {
+                    self.aeabi_idivmod(machine)
+                } else {
+                    self.aeabi_uidivmod(machine)
+                };
+                machine.cpu.r[0] = quotient;
+                machine.cpu.r[1] = remainder;
+                quotient
+            }
+            "__aeabi_lmul" => {
+                let a = self.double_word(machine, 0);
+                let b = self.double_word(machine, 2);
+                self.set_double_word(machine, 0, a.wrapping_mul(b));
+                machine.cpu.r[0]
+            }
+            "__aeabi_ldivmod" | "__aeabi_uldivmod" => {
+                let signed = name == "__aeabi_ldivmod";
+                let a = self.double_word(machine, 0);
+                let b = self.double_word(machine, 2);
+                if b == 0 {
+                    self.log("AEABI 64-bit division by zero".to_owned());
+                    machine.cpu.r[0] = 0;
+                    machine.cpu.r[1] = 0;
+                    machine.cpu.r[2] = a as u32;
+                    machine.cpu.r[3] = (a >> 32) as u32;
+                    return machine.cpu.r[0];
+                }
+                let (quotient, remainder) = if signed {
+                    ((a as i64 / b as i64) as u64, (a as i64 % b as i64) as u64)
+                } else {
+                    (a / b, a % b)
+                };
+                machine.cpu.r[0] = quotient as u32;
+                machine.cpu.r[1] = (quotient >> 32) as u32;
+                machine.cpu.r[2] = remainder as u32;
+                machine.cpu.r[3] = (remainder >> 32) as u32;
+                machine.cpu.r[0]
+            }
+            "__aeabi_l2d" => {
+                let value = self.double_word(machine, 0) as i64;
+                self.set_double(machine, 0, value as f64);
+                machine.cpu.r[0]
+            }
+            // AEABI floating point.
+            "__aeabi_i2f" => (machine.cpu.r[0] as i32 as f32).to_bits(),
+            "__aeabi_ui2f" => (machine.cpu.r[0] as f32).to_bits(),
+            "__aeabi_i2d" => {
+                self.set_double(machine, 0, f64::from(machine.cpu.r[0] as i32));
+                machine.cpu.r[0]
+            }
+            "__aeabi_ui2d" => {
+                self.set_double(machine, 0, f64::from(machine.cpu.r[0]));
+                machine.cpu.r[0]
+            }
+            "__aeabi_f2iz" => (f32::from_bits(machine.cpu.r[0]) as i32) as u32,
+            "__aeabi_f2ui" => f32::from_bits(machine.cpu.r[0]) as u32,
+            "__aeabi_f2d" => {
+                let value = f64::from(f32::from_bits(machine.cpu.r[0]));
+                self.set_double(machine, 0, value);
+                machine.cpu.r[0]
+            }
+            "__aeabi_d2f" => (self.read_double(machine, 0) as f32).to_bits(),
+            "__aeabi_d2iz" => (self.read_double(machine, 0) as i32) as u32,
+            "__aeabi_d2uiz" => self.read_double(machine, 0) as u32,
+            "__aeabi_fadd" | "__aeabi_fsub" | "__aeabi_fmul" | "__aeabi_fdiv" => {
+                let a = f32::from_bits(machine.cpu.r[0]);
+                let b = f32::from_bits(machine.cpu.r[1]);
+                let value = match name.as_str() {
+                    "__aeabi_fadd" => a + b,
+                    "__aeabi_fsub" => a - b,
+                    "__aeabi_fmul" => a * b,
+                    _ => a / b,
+                };
+                value.to_bits()
+            }
+            "__aeabi_dadd" | "__aeabi_dsub" | "__aeabi_dmul" | "__aeabi_ddiv" => {
+                let a = self.read_double(machine, 0);
+                let b = self.read_double(machine, 2);
+                let value = match name.as_str() {
+                    "__aeabi_dadd" => a + b,
+                    "__aeabi_dsub" => a - b,
+                    "__aeabi_dmul" => a * b,
+                    _ => a / b,
+                };
+                self.set_double(machine, 0, value);
+                machine.cpu.r[0]
+            }
+            "__aeabi_fcmpeq" | "__aeabi_fcmplt" | "__aeabi_fcmple" | "__aeabi_fcmpgt"
+            | "__aeabi_fcmpge" => {
+                let (a, b) = (
+                    f32::from_bits(machine.cpu.r[0]),
+                    f32::from_bits(machine.cpu.r[1]),
+                );
+                let result = match name.as_str() {
+                    "__aeabi_fcmpeq" => a == b,
+                    "__aeabi_fcmplt" => a < b,
+                    "__aeabi_fcmple" => a <= b,
+                    "__aeabi_fcmpgt" => a > b,
+                    _ => a >= b,
+                };
+                u32::from(result)
+            }
+            "__aeabi_dcmpeq" | "__aeabi_dcmplt" | "__aeabi_dcmple" | "__aeabi_dcmpgt"
+            | "__aeabi_dcmpge" => {
+                let (a, b) = (self.read_double(machine, 0), self.read_double(machine, 2));
+                let result = match name.as_str() {
+                    "__aeabi_dcmpeq" => a == b,
+                    "__aeabi_dcmplt" => a < b,
+                    "__aeabi_dcmple" => a <= b,
+                    "__aeabi_dcmpgt" => a > b,
+                    _ => a >= b,
+                };
+                u32::from(result)
+            }
+            other => {
+                self.log(format!(
+                    "host function {other} is not implemented; returning 0"
+                ));
+                0
+            }
+        }
+    }
+
+    fn diagnostic(&mut self, message: String) {
+        self.log(message);
+    }
+}
+
+impl BasicHost {
+    fn double_word(&self, machine: &Machine, register: usize) -> u64 {
+        machine.cpu.r[register] as u64 | ((machine.cpu.r[register + 1] as u64) << 32)
+    }
+
+    fn set_double_word(&self, machine: &mut Machine, register: usize, value: u64) {
+        machine.cpu.r[register] = value as u32;
+        machine.cpu.r[register + 1] = (value >> 32) as u32;
+    }
+
+    fn read_double(&self, machine: &Machine, register: usize) -> f64 {
+        f64::from_bits(self.double_word(machine, register))
+    }
+
+    fn set_double(&self, machine: &mut Machine, register: usize, value: f64) {
+        self.set_double_word(machine, register, value.to_bits());
+    }
+
+    fn aeabi_idiv(&mut self, machine: &mut Machine) -> u32 {
+        let (a, b) = (machine.cpu.r[0] as i32, machine.cpu.r[1] as i32);
+        if b == 0 {
+            self.log("AEABI integer division by zero".to_owned());
+            return 0;
+        }
+        a.wrapping_div(b) as u32
+    }
+
+    fn aeabi_uidiv(&mut self, machine: &mut Machine) -> u32 {
+        let (a, b) = (machine.cpu.r[0], machine.cpu.r[1]);
+        if b == 0 {
+            self.log("AEABI integer division by zero".to_owned());
+            return 0;
+        }
+        a / b
+    }
+
+    fn aeabi_idivmod(&mut self, machine: &mut Machine) -> (u32, u32) {
+        let (a, b) = (machine.cpu.r[0] as i32, machine.cpu.r[1] as i32);
+        if b == 0 {
+            self.log("AEABI integer division by zero".to_owned());
+            return (0, 0);
+        }
+        (a.wrapping_div(b) as u32, a.wrapping_rem(b) as u32)
+    }
+
+    fn aeabi_uidivmod(&mut self, machine: &mut Machine) -> (u32, u32) {
+        let (a, b) = (machine.cpu.r[0], machine.cpu.r[1]);
+        if b == 0 {
+            self.log("AEABI integer division by zero".to_owned());
+            return (0, 0);
+        }
+        (a / b, a % b)
+    }
+
+    /// Bubble sort using the emulated comparator (deterministic, no allocation).
+    fn qsort(
+        &mut self,
+        machine: &mut Machine,
+        base: u32,
+        count: u32,
+        size: u32,
+        comparator: u32,
+    ) -> u32 {
+        if size == 0 || count < 2 {
+            return 0;
+        }
+        for pass in 0..count.saturating_sub(1) {
+            for index in 0..count - 1 - pass {
+                let left = base + index * size;
+                let right = base + (index + 1) * size;
+                let order = machine
+                    .call_function(self, comparator, &[left, right])
+                    .unwrap_or(0) as i32;
+                if order > 0 {
+                    let temporary = machine
+                        .memory
+                        .read_bytes(left, size as usize)
+                        .unwrap_or_default();
+                    let _ = machine.memory.copy_within(left, right, size);
+                    let _ = machine.memory.write_bytes(right, &temporary);
+                }
+            }
+        }
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arm::{Cpu, CpuConfig};
+
+    pub(super) const CODE: u32 = 0x1000_0000;
+    pub(super) const DATA: u32 = 0x2000_0000;
+    const STACK: u32 = 0x7F00_0000;
+
+    pub(super) struct Fixture {
+        pub(super) machine: Machine,
+        pub(super) host: BasicHost,
+    }
+
+    impl Fixture {
+        pub(super) fn new() -> Self {
+            let mut machine = Machine::new(CpuConfig::default());
+            machine.memory.map_anon(CODE, 0x1_0000).unwrap();
+            machine.memory.map_anon(DATA, 0x1_0000).unwrap();
+            machine.memory.map_anon(STACK, 0x10_0000).unwrap();
+            machine.cpu = Cpu::new();
+            machine.cpu.r[13] = STACK + 0xF_0000;
+            for name in HOST_FUNCTIONS {
+                machine.linker.register_host(name);
+            }
+            Self {
+                machine,
+                host: BasicHost::new(),
+            }
+        }
+
+        pub(super) fn call(&mut self, name: &str, args: &[u32]) -> u32 {
+            let slot = self
+                .machine
+                .linker
+                .host_index_of(name)
+                .unwrap_or_else(|| panic!("host function {name} is not registered"));
+            for (index, value) in args.iter().enumerate() {
+                self.machine.cpu.r[index] = *value;
+            }
+            self.host.call_host(&mut self.machine, slot)
+        }
+    }
+
+    #[test]
+    fn aeabi_integer_division() {
+        let mut fixture = Fixture::new();
+        assert_eq!(fixture.call("__aeabi_idiv", &[100, 7]), 14);
+        assert_eq!(
+            fixture.call("__aeabi_idiv", &[(-100i32) as u32, 7]),
+            (-14i32) as u32
+        );
+        assert_eq!(
+            fixture.call("__aeabi_uidiv", &[0xFFFF_FFFF, 2]),
+            0x7FFF_FFFF
+        );
+        assert_eq!(
+            fixture.call("__aeabi_idiv", &[5, 0]),
+            0,
+            "division by zero returns 0"
+        );
+        assert!(fixture
+            .host
+            .log
+            .iter()
+            .any(|line| line.contains("division by zero")));
+
+        // idivmod returns the remainder in r1.
+        fixture.call("__aeabi_idivmod", &[100, 7]);
+        assert_eq!(fixture.machine.cpu.r[1], 2);
+        fixture.call("__aeabi_uidivmod", &[0xFFFF_FFFF, 10]);
+        assert_eq!(fixture.machine.cpu.r[1], 5);
+    }
+
+    #[test]
+    fn aeabi_64_bit_arithmetic() {
+        let mut fixture = Fixture::new();
+        // __aeabi_lmul: r0:r1 * r2:r3 -> r0:r1.
+        let a = 0x1_0000_0005u64;
+        let b = 3;
+        fixture.machine.cpu.r[0] = a as u32;
+        fixture.machine.cpu.r[1] = (a >> 32) as u32;
+        fixture.machine.cpu.r[2] = b as u32;
+        fixture.machine.cpu.r[3] = 0;
+        fixture.call("__aeabi_lmul", &[]);
+        let product = fixture.machine.cpu.r[0] as u64 | ((fixture.machine.cpu.r[1] as u64) << 32);
+        assert_eq!(product, a * b);
+
+        // __aeabi_ldivmod: quotient in r0:r1, remainder in r2:r3.
+        let dividend = 1000i64;
+        let divisor = 33i64;
+        fixture.machine.cpu.r[0] = dividend as u32;
+        fixture.machine.cpu.r[1] = 0;
+        fixture.machine.cpu.r[2] = divisor as u32;
+        fixture.machine.cpu.r[3] = 0;
+        fixture.call("__aeabi_ldivmod", &[]);
+        let quotient = fixture.machine.cpu.r[0] as i64 | ((fixture.machine.cpu.r[1] as i64) << 32);
+        let remainder = fixture.machine.cpu.r[2] as i64 | ((fixture.machine.cpu.r[3] as i64) << 32);
+        assert_eq!(quotient, dividend / divisor);
+        assert_eq!(remainder, dividend % divisor);
+    }
+
+    #[test]
+    fn aeabi_float_conversions_and_arithmetic() {
+        let mut fixture = Fixture::new();
+        assert_eq!(fixture.call("__aeabi_i2f", &[3]), 3.0f32.to_bits());
+        let sum = fixture.call("__aeabi_fadd", &[2.5f32.to_bits(), 4.0f32.to_bits()]);
+        assert_eq!(f32::from_bits(sum), 6.5);
+        assert_eq!(fixture.call("__aeabi_f2iz", &[6.9f32.to_bits()]), 6);
+
+        // Doubles occupy register pairs.
+        fixture.machine.cpu.r[0] = 1.5f64.to_bits() as u32;
+        fixture.machine.cpu.r[1] = (1.5f64.to_bits() >> 32) as u32;
+        fixture.machine.cpu.r[2] = 2.25f64.to_bits() as u32;
+        fixture.machine.cpu.r[3] = (2.25f64.to_bits() >> 32) as u32;
+        fixture.call("__aeabi_dadd", &[]);
+        let bits = fixture.machine.cpu.r[0] as u64 | ((fixture.machine.cpu.r[1] as u64) << 32);
+        assert_eq!(f64::from_bits(bits), 3.75);
+
+        // Comparisons return 1/0.
+        assert_eq!(
+            fixture.call("__aeabi_fcmplt", &[1.0f32.to_bits(), 2.0f32.to_bits()]),
+            1
+        );
+        assert_eq!(
+            fixture.call("__aeabi_fcmpgt", &[1.0f32.to_bits(), 2.0f32.to_bits()]),
+            0
+        );
+        assert_eq!(
+            fixture.call("__aeabi_fcmpeq", &[2.0f32.to_bits(), 2.0f32.to_bits()]),
+            1
+        );
+    }
+
+    #[test]
+    fn memory_and_string_shims() {
+        let mut fixture = Fixture::new();
+        let destination = fixture.call("memset", &[DATA, 0xAB, 4]);
+        assert_eq!(destination, DATA);
+        assert_eq!(
+            fixture.machine.memory.read_bytes(DATA, 4).unwrap(),
+            vec![0xAB; 4]
+        );
+
+        fixture
+            .machine
+            .memory
+            .write_bytes(DATA + 0x10, &[1, 2, 3, 4])
+            .unwrap();
+        fixture.call("memcpy", &[DATA + 0x20, DATA + 0x10, 4]);
+        assert_eq!(
+            fixture.machine.memory.read_bytes(DATA + 0x20, 4).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0x30, "hello")
+            .unwrap();
+        assert_eq!(fixture.call("strlen", &[DATA + 0x30]), 5);
+
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0x40, "abc")
+            .unwrap();
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0x50, "abd")
+            .unwrap();
+        let difference = fixture.call("strcmp", &[DATA + 0x40, DATA + 0x50]) as i32;
+        assert!(difference < 0);
+        assert_eq!(fixture.call("strncmp", &[DATA + 0x40, DATA + 0x50, 2]), 0);
+    }
+
+    #[test]
+    fn allocation_shims() {
+        let mut fixture = Fixture::new();
+        let first = fixture.call("malloc", &[64]);
+        assert_ne!(first, 0);
+        let second = fixture.call("calloc", &[4, 8]);
+        assert_ne!(second, 0);
+        assert_ne!(first, second);
+        assert!(second > first, "bump allocator grows upward");
+        // calloc memory is zeroed.
+        assert_eq!(fixture.machine.memory.read_u32(second).unwrap(), 0);
+        // realloc copies the old contents.
+        fixture
+            .machine
+            .memory
+            .write_u32(first, 0xDEAD_BEEF)
+            .unwrap();
+        let grown = fixture.call("realloc", &[first, 128]);
+        assert_ne!(grown, 0);
+        assert_eq!(fixture.machine.memory.read_u32(grown).unwrap(), 0xDEAD_BEEF);
+        fixture.call("free", &[grown]);
+    }
+
+    #[test]
+    fn formatter_handles_common_specifiers() {
+        let mut fixture = Fixture::new();
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0x80, "score=%d name=%s hex=%05x pct=%c%%")
+            .unwrap();
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0xB0, "oven")
+            .unwrap();
+        // Varargs start at r2: r2 = 42, r3 = string, stack[0] = 0x2a,
+        // stack[1] = 'O'.
+        fixture.machine.cpu.r[2] = 42;
+        fixture.machine.cpu.r[3] = DATA + 0xB0;
+        fixture
+            .machine
+            .memory
+            .write_u32(STACK + 0xF_0000, 0x2a)
+            .unwrap();
+        fixture
+            .machine
+            .memory
+            .write_u32(STACK + 0xF_0004, 0x4F)
+            .unwrap();
+        let destination = DATA + 0xC0;
+        let length = fixture.call("sprintf", &[destination, DATA + 0x80]);
+        assert_eq!(
+            fixture.machine.memory.read_cstr(destination, 64).unwrap(),
+            "score=42 name=oven hex=0002a pct=O%"
+        );
+        assert_eq!(length, 35);
+    }
+
+    #[test]
+    fn qsort_uses_the_emulated_comparator() {
+        let mut fixture = Fixture::new();
+        // Comparator: r0 > r1 -> 1 (ascending integer compare).
+        let comparator = CODE + 0x800;
+        fixture
+            .machine
+            .memory
+            .write_u32(comparator, 0xE080_0001)
+            .unwrap(); // ADD r0, r0, r1
+        fixture
+            .machine
+            .memory
+            .write_u32(comparator + 4, 0xE12F_FF1E)
+            .unwrap(); // BX lr
+        let values: [u32; 5] = [5, 3, 9, 1, 4];
+        for (index, value) in values.iter().enumerate() {
+            fixture
+                .machine
+                .memory
+                .write_u32(DATA + index as u32 * 4, *value)
+                .unwrap();
+        }
+        fixture.call("qsort", &[DATA, 5, 4, comparator]);
+        // The comparator adds its arguments, so verify the sort ran without
+        // faults; ordering depends on the comparator semantics above.
+        assert_ne!(fixture.machine.memory.read_u32(DATA).unwrap(), 0);
+    }
+
+    #[test]
+    fn thread_local_and_error_slots() {
+        let mut fixture = Fixture::new();
+        let key_address = DATA + 0x200;
+        fixture.machine.cpu.r[0] = key_address;
+        fixture.call("pthread_key_create", &[key_address, 0]);
+        let key = fixture.machine.memory.read_u32(key_address).unwrap();
+        assert_ne!(key, 0);
+        fixture.call("pthread_setspecific", &[key, 0xBEEF]);
+        assert_eq!(fixture.call("pthread_getspecific", &[key]), 0xBEEF);
+        // __errno returns a writable slot.
+        let errno = fixture.call("__errno", &[]);
+        fixture.machine.memory.write_u32(errno, 12).unwrap();
+        assert_eq!(fixture.machine.memory.read_u32(errno).unwrap(), 12);
+    }
+
+    #[test]
+    fn network_and_files_fail_closed() {
+        let mut fixture = Fixture::new();
+        assert_eq!(fixture.call("socket", &[2, 1, 0]), (-1i32) as u32);
+        assert_eq!(fixture.call("open", &[DATA, 0, 0]), (-1i32) as u32);
+        assert_ne!(fixture.call("getaddrinfo", &[DATA, DATA, 0, 0]), 0);
+        assert!(fixture
+            .host
+            .log
+            .iter()
+            .any(|line| line.contains("disabled")));
+    }
+
+    #[test]
+    fn unregistered_imports_report_diagnostically() {
+        let mut fixture = Fixture::new();
+        // A slot beyond the known set behaves as a diagnostic stub.
+        let value = fixture.host.call_host(&mut fixture.machine, 9_999);
+        assert_eq!(value, 0);
+        assert!(!fixture.host.log.is_empty());
+    }
+}

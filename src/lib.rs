@@ -1,18 +1,22 @@
 //! DonutHLE core: an explicit foundation for Android 1.x-2.x HLE work.
 
 pub mod apk;
+pub mod arm;
 pub mod assets;
 pub mod audio;
 pub mod compat;
 pub mod dalvik;
 #[cfg(target_os = "linux")]
 pub mod desktop;
+pub mod elfload;
 pub mod framework;
 pub mod gles;
 pub mod gles1_on_gl2;
 pub mod gles_native;
+pub mod host;
 pub mod input;
 pub mod manifest;
+pub mod mem;
 pub mod native;
 pub mod resources;
 pub mod runtime;
