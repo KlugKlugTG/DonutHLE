@@ -179,9 +179,13 @@ impl Runtime {
         let mut compatibility = compat::scan_dex(&plan.dex);
         compatibility.native = native::format_report_lines(&native_libraries);
         let mut message = format!("booted launcher; {}", state.graphics);
-        if let Some(native_status) = native::status_summary(&native_libraries) {
-            message.push_str("; ");
-            message.push_str(&native_status);
+        // Only the static inventory claims execution is missing; the boot
+        // message above reports what actually loaded.
+        if !state.loaded_native_libraries {
+            if let Some(native_status) = native::status_summary(&native_libraries) {
+                message.push_str("; ");
+                message.push_str(&native_status);
+            }
         }
         Ok(LaunchReport {
             package: plan.package,
@@ -240,6 +244,14 @@ impl Runtime {
             resolve_application_label(manifest.application_label.as_deref(), resources.as_ref());
         let assets = crate::assets::AssetStore::from_archive(&mut archive)?;
         let native_libraries = read_native_libraries(&mut archive);
+        let mut libraries = Vec::new();
+        for report in &native_libraries {
+            if report.library.is_some() {
+                if let Ok(bytes) = read_entry(&mut archive, &report.entry) {
+                    libraries.push((report.entry.clone(), bytes));
+                }
+            }
+        }
         let activity = manifest
             .launcher_activity
             .clone()
@@ -256,6 +268,7 @@ impl Runtime {
             dex,
             entry_method,
             native_libraries,
+            libraries,
         })
     }
 
@@ -297,6 +310,28 @@ impl Runtime {
                     trace_registers: std::env::var_os("DONUTHLE_TRACE").is_some(),
                 },
             );
+
+            // Native bridge: stage lib/<abi>/*.so bytes and dispatch ACC_NATIVE
+            // methods into the ARM machine. The bridge is shared between the
+            // dispatch closure and the session via Arc<Mutex>.
+            let native_bridge = std::sync::Arc::new(std::sync::Mutex::new(
+                crate::native_bridge::NativeBridge::new(),
+            ));
+            {
+                let mut bridge = native_bridge.lock().expect("native bridge lock");
+                for (entry, bytes) in &plan.libraries {
+                    bridge.stage_library(entry, bytes.clone());
+                }
+            }
+            {
+                let dispatch_bridge = std::sync::Arc::clone(&native_bridge);
+                vm.native_dispatch = Some(Box::new(move |class_name, name, params| {
+                    dispatch_bridge
+                        .lock()
+                        .expect("native bridge lock")
+                        .call_native(class_name, name, params)
+                }));
+            }
             let method_index = plan
                 .dex
                 .methods
@@ -338,18 +373,24 @@ impl Runtime {
                 // GLSurfaceView loop into native code; per-frame native
                 // dispatch is the next integration step, so record the boot
                 // without a Dalvik render session.
+                let (native_log, loaded_native) = native_bridge
+                    .lock()
+                    .map(|bridge| {
+                        (
+                            bridge.host_log().join("; "),
+                            bridge.loaded_library_count() > 0,
+                        )
+                    })
+                    .unwrap_or_default();
                 return Ok(BootState {
                     result: ExecutionResult::ReturnVoid,
+                    loaded_native_libraries: loaded_native,
                     activities,
-                    graphics: format!(
-                        "onCreate complete; {} native librar{} loaded by the wrapper",
-                        plan.native_libraries.len(),
-                        if plan.native_libraries.len() == 1 {
-                            "y"
-                        } else {
-                            "ies"
-                        }
-                    ),
+                    graphics: if native_log.is_empty() {
+                        "onCreate complete; no native libraries were requested".to_owned()
+                    } else {
+                        format!("onCreate complete; {native_log}")
+                    },
                     vm_result: "onCreate completed".to_owned(),
                 });
             } else {
@@ -390,6 +431,7 @@ impl Runtime {
                     VmValue::Int(value) => ExecutionResult::Return(value),
                     _ => ExecutionResult::Return(0),
                 },
+                loaded_native_libraries: false,
                 activities,
                 graphics: frame_status,
                 vm_result: "onCreate completed".to_owned(),
@@ -399,6 +441,7 @@ impl Runtime {
         };
         Ok(BootState {
             result,
+            loaded_native_libraries: false,
             activities,
             graphics: "no application code executed".to_owned(),
             vm_result: "launcher has no executable onCreate".to_owned(),
@@ -439,6 +482,8 @@ pub struct FrameworkSnapshot {
 
 #[derive(Debug)]
 pub struct LaunchPlan {
+    /// Native libraries from the APK: entry name -> raw bytes.
+    pub libraries: Vec<(String, Vec<u8>)>,
     pub package: String,
     pub application_label: Option<String>,
     pub activity: String,
@@ -456,6 +501,8 @@ pub struct BootState {
     pub activities: ActivityManager,
     pub graphics: String,
     pub vm_result: String,
+    /// True when the native bridge loaded at least one library this boot.
+    pub loaded_native_libraries: bool,
 }
 
 fn resolve_application_label(

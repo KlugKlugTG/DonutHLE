@@ -1062,7 +1062,7 @@ impl BasicHost {
         }
     }
 
-    fn jni_class(&mut self, _machine: &mut Machine, name: &str) -> u32 {
+    pub fn jni_class(&mut self, _machine: &mut Machine, name: &str) -> u32 {
         if let Some(handle) = self.jni_classes.get(name) {
             return *handle;
         }
@@ -1096,7 +1096,7 @@ impl BasicHost {
         handle
     }
 
-    fn jni_string(&mut self, machine: &mut Machine, text: &str) -> u32 {
+    pub fn jni_string(&mut self, machine: &mut Machine, text: &str) -> u32 {
         self.jni_next += 16;
         let handle = self.jni_next;
         let storage = self.jni_string_storage(machine, text);

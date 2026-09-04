@@ -19,6 +19,7 @@ pub mod jni;
 pub mod manifest;
 pub mod mem;
 pub mod native;
+pub mod native_bridge;
 pub mod resources;
 pub mod runtime;
 pub mod vm;

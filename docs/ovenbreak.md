@@ -101,7 +101,17 @@ executed, `invoke_args` mishandled wide (J/D) argument pairs, view shims sat
 behind an unreachable catch-all, and `getPackageName`/`PackageManager`/
 `TelephonyManager`/`ClassLoader`/`java.io.File` shims were missing.
 
-The next integration step is per-frame native dispatch: the wrapper's
-`GLSurfaceView` render loop (`WrapperRenderer.onDrawFrame` ->
-`WrapperJinterface.nativeRender`) must route into the ARM machine through the
-JNI bridge, with `System.loadLibrary("game")` loading libgame.so for real.
+## Dalvik -> native bridge (M2)
+
+`System.loadLibrary("game")` in `MainActivity.<clinit>` now loads
+`lib/armeabi/libgame.so` into the ARM machine for real: the boot message
+reports `loaded libgame.so: 949 relocations, 51 unresolved imports`. The
+`Vm.native_dispatch` hook (vm.rs) routes ACC_NATIVE methods and loadLibrary
+into `src/native_bridge.rs`, which owns the machine, stages library bytes from
+the APK, installs the `jni.rs` environment, and marshals Dalvik values into
+`(env, jclass, args...)` with JNI handles for Java arrays/strings.
+
+The remaining step to a first frame is dispatching the wrapper's render loop:
+`WrapperRenderer.onDrawFrame` -> `WrapperJinterface.run()` ->
+`nativeRender(timerIndex)` and the earlier `nativePreInit`/`nativeInit` calls,
+now that their entry points resolve in the machine.

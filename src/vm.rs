@@ -94,10 +94,17 @@ impl std::fmt::Display for VmError {
 
 impl std::error::Error for VmError {}
 
+/// Dalvik -> native call hook: (class, method, params) -> return value.
+pub type NativeDispatch<'a> =
+    Box<dyn FnMut(&str, &str, &[Value]) -> Result<Value, String> + Send + 'a>;
+
 pub struct Vm<'a> {
     pub dex: &'a DexFile,
     pub framework: Framework,
     pub config: VmConfig,
+    /// Native-code bridge: when set, ACC_NATIVE methods dispatch here with
+    /// the fully-marshalled Java arguments (receiver/class excluded).
+    pub native_dispatch: Option<NativeDispatch<'a>>,
     heap: Vec<HeapObject>,
     static_fields: HashMap<String, Value>,
     initialized_classes: std::collections::HashSet<String>,
@@ -118,6 +125,7 @@ impl<'a> Vm<'a> {
             dex,
             framework,
             config,
+            native_dispatch: None,
             heap: Vec::new(),
             static_fields: HashMap::new(),
             initialized_classes: std::collections::HashSet::new(),
@@ -619,7 +627,23 @@ impl<'a> Vm<'a> {
                     return self.dispatch_framework(&owner, &method.name, &args);
                 }
                 let flags = self.dex.method_access_flags(method_index).unwrap_or(0);
-                if flags & (0x0100 | 0x0400) != 0 {
+                if flags & 0x0100 != 0 {
+                    if let Some(dispatch) = self.native_dispatch.as_mut() {
+                        let class_name = method.class_name.clone();
+                        let name = method.name.clone();
+                        // Strip the receiver/class argument: JNI static
+                        // entry points take (JNIEnv*, jclass, params...).
+                        let params = args.iter().skip(1).cloned().collect::<Vec<_>>();
+                        return dispatch(&class_name, &name, &params)
+                            .map_err(|error| self.error(0, 0, error));
+                    }
+                    self.framework.logs.push(format!(
+                        "native method {}->{} called with no native runtime",
+                        method.class_name, method.name
+                    ));
+                    return Ok(Value::Void);
+                }
+                if flags & 0x0400 != 0 {
                     return Ok(Value::Void);
                 }
                 return Err(self.error(
@@ -2337,6 +2361,15 @@ impl<'a> Vm<'a> {
             let requested = self
                 .string_arg(args, 0)
                 .unwrap_or_else(|_| "unknown".to_owned());
+            if let Some(dispatch) = self.native_dispatch.as_mut() {
+                let library = if method_name == "loadLibrary" {
+                    format!("lib{requested}.so")
+                } else {
+                    requested.clone()
+                };
+                return dispatch("(library)", "loadLibrary", &[Value::String(library)])
+                    .map_err(|error| self.error(0, 0, error));
+            }
             self.framework.logs.push(format!(
                 "System.{method_name}({requested}): native library execution is not implemented; code in this library will not run"
             ));
