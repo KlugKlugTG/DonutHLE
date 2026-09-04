@@ -273,6 +273,7 @@ impl Runtime {
         let result = if plan.entry_method {
             let mut framework = std::mem::take(&mut self.framework);
             framework.activities = activities.clone();
+            framework.package_name = Some(plan.package.clone());
             framework.assets = Some(plan.assets.clone());
             if let Some(resources) = &plan.resources {
                 for value in &resources.values {
@@ -305,6 +306,19 @@ impl Runtime {
                 })
                 .ok_or_else(|| anyhow::anyhow!("launcher onCreate method is missing"))?;
             let activity_object = vm.alloc_instance(plan.class_name.clone());
+            // Run the constructor chain before onCreate: MainActivity.<init>
+            // -> WrapperActivity.<init> materializes the WrapperData singleton
+            // into the inherited wrapperData field; skipping it leaves onCreate
+            // calling setPackageName on a null receiver.
+            let constructor_index = plan.dex.methods.iter().position(|method| {
+                method.class_name == plan.class_name
+                    && method.name == "<init>"
+                    && method.prototype == "V()->V"
+            });
+            if let Some(constructor_index) = constructor_index {
+                vm.run_method(constructor_index, vec![VmValue::Object(activity_object)])
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            }
             let value = vm
                 .run_method(
                     method_index,
@@ -319,6 +333,25 @@ impl Runtime {
                 vm.run_instance_method(listener, "create", Vec::new())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 listener
+            } else if !plan.native_libraries.is_empty() {
+                // Native-engine apps (OvenBreak) render from their own
+                // GLSurfaceView loop into native code; per-frame native
+                // dispatch is the next integration step, so record the boot
+                // without a Dalvik render session.
+                return Ok(BootState {
+                    result: ExecutionResult::ReturnVoid,
+                    activities,
+                    graphics: format!(
+                        "onCreate complete; {} native librar{} loaded by the wrapper",
+                        plan.native_libraries.len(),
+                        if plan.native_libraries.len() == 1 {
+                            "y"
+                        } else {
+                            "ies"
+                        }
+                    ),
+                    vm_result: "onCreate completed".to_owned(),
+                });
             } else {
                 let listener = vm
                     .find_instance_by_class("Lde/nurogames/android/tinysanta/views/TinySantaView;")

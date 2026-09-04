@@ -326,9 +326,29 @@ impl Machine {
             .map(|address| format!("{address:#010x}"))
             .collect::<Vec<_>>()
             .join(", ");
+        // Data accesses that land in the host-slot range are the classic
+        // "data symbol bound to a function slot" bug; name the culprit.
+        let host_hint = if let Some(begin) = message.find("memory access 0x") {
+            let digits = message[begin + 16..]
+                .chars()
+                .take_while(|c| c.is_ascii_hexdigit())
+                .collect::<String>();
+            u32::from_str_radix(&digits, 16)
+                .ok()
+                .and_then(|address| self.linker.host_slot_for(address))
+                .and_then(|slot| self.linker.host_name(slot))
+                .map(|name| format!(" (host slot '{name}')"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         format!(
-            "native CPU fault at pc {pc:#010x} (thumb={}): {message}; recent pc: {trail}",
-            self.cpu.flags.thumb
+            "native CPU fault at pc {pc:#010x} (thumb={}): {message}{host_hint}; r0={:08x} r1={:08x} r2={:08x} r3={:08x}; recent pc: {trail}",
+            self.cpu.flags.thumb,
+            self.cpu.r[0],
+            self.cpu.r[1],
+            self.cpu.r[2],
+            self.cpu.r[3],
         )
     }
 
@@ -1295,10 +1315,10 @@ impl Machine {
             let offset = u32::from((insn >> 6) & 0x1F) * scale;
             let address = self.cpu.r[((insn >> 3) & 7) as usize].wrapping_add(offset);
             let opcode = match (is_byte, is_load) {
-                (false, false) => 0,
-                (false, true) => 2,
-                (true, false) => 1,
-                (true, true) => 3,
+                (false, false) => 0, // STR
+                (false, true) => 4,  // LDR
+                (true, false) => 2,  // STRB
+                (true, true) => 6,   // LDRB
             };
             return self.thumb_memory_access(opcode, address, (insn & 7) as usize, next_pc);
         }
@@ -1306,13 +1326,13 @@ impl Machine {
             // Load/store halfword with 5-bit immediate offset (scaled by 2).
             let offset = u32::from((insn >> 6) & 0x1F) * 2;
             let address = self.cpu.r[((insn >> 3) & 7) as usize].wrapping_add(offset);
-            let opcode = if insn & 0x0800 != 0 { 5 } else { 4 };
+            let opcode = if insn & 0x0800 != 0 { 5 } else { 1 };
             return self.thumb_memory_access(opcode, address, (insn & 7) as usize, next_pc);
         }
         if insn < 0xA000 {
             // SP-relative load/store.
             let address = self.cpu.r[13].wrapping_add(u32::from(insn & 0xFF) * 4);
-            let opcode = if insn & 0x0800 != 0 { 2 } else { 0 };
+            let opcode = if insn & 0x0800 != 0 { 4 } else { 0 };
             return self.thumb_memory_access(opcode, address, ((insn >> 8) & 7) as usize, next_pc);
         }
         if insn < 0xB000 {
@@ -1457,29 +1477,31 @@ impl Machine {
         next_pc: u32,
     ) -> Result<(), String> {
         let outcome: Result<(), String> = match opcode {
+            // Thumb bits[11:9] order: STR, STRH, STRB, LDRSB, LDR, LDRH,
+            // LDRB, LDRSH.
             0 => self
                 .memory
                 .write_u32(address, self.cpu.r[destination])
                 .map_err(|e| e.to_string()),
-            1 => self
-                .memory
-                .write_u8(address, self.cpu.r[destination] as u8)
-                .map_err(|e| e.to_string()),
-            2 => {
-                let value = self.memory.read_u32(address).map_err(|e| e.to_string())?;
-                self.cpu.r[destination] = value;
-                Ok(())
-            }
-            3 => {
-                let value = self.memory.read_u8(address).map_err(|e| e.to_string())?;
-                self.cpu.r[destination] = u32::from(value);
-                Ok(())
-            }
-            4 => {
+            1 => {
                 let value = self.cpu.r[destination] as u16;
                 self.memory
                     .write_u16(address, value)
                     .map_err(|e| e.to_string())
+            }
+            2 => self
+                .memory
+                .write_u8(address, self.cpu.r[destination] as u8)
+                .map_err(|e| e.to_string()),
+            3 => {
+                let value = self.memory.read_u8(address).map_err(|e| e.to_string())?;
+                self.cpu.r[destination] = i32::from(value as i8) as u32;
+                Ok(())
+            }
+            4 => {
+                let value = self.memory.read_u32(address).map_err(|e| e.to_string())?;
+                self.cpu.r[destination] = value;
+                Ok(())
             }
             5 => {
                 let value = self.memory.read_u16(address).map_err(|e| e.to_string())?;
@@ -1488,7 +1510,7 @@ impl Machine {
             }
             6 => {
                 let value = self.memory.read_u8(address).map_err(|e| e.to_string())?;
-                self.cpu.r[destination] = i32::from(value as i8) as u32;
+                self.cpu.r[destination] = u32::from(value);
                 Ok(())
             }
             _ => {

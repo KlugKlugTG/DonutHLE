@@ -1192,7 +1192,11 @@ impl<'a> Vm<'a> {
                         "Ljava/util/ArrayList;"
                             | "Ljava/util/LinkedList;"
                             | "Ljava/util/HashMap;"
+                            | "Ljava/util/LinkedHashMap;"
                             | "Ljava/util/Hashtable;"
+                            | "Ljava/util/HashSet;"
+                            | "Ljava/util/TreeSet;"
+                            | "Ljava/util/TreeMap;"
                             | "Ljava/util/Properties;"
                     ) {
                         self.alloc(HeapObject::Collection(Vec::new()))
@@ -2960,6 +2964,11 @@ impl<'a> Vm<'a> {
                 || class_name == "Ljava/util/ArrayList;"
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/util/LinkedHashMap;"
+                || class_name == "Ljava/util/HashSet;"
+                || class_name == "Ljava/util/TreeSet;"
+                || class_name == "Ljava/util/TreeMap;"
+                || class_name == "Ljava/util/LinkedHashMap;"
                 || class_name == "Ljava/util/Hashtable;"
                 || class_name == "Ljava/util/Properties;"
                 || class_name == "Ljava/util/Vector;"
@@ -2968,6 +2977,10 @@ impl<'a> Vm<'a> {
             if class_name == "Ljava/util/ArrayList;"
                 || class_name == "Ljava/util/LinkedList;"
                 || class_name == "Ljava/util/HashMap;"
+                || class_name == "Ljava/util/LinkedHashMap;"
+                || class_name == "Ljava/util/HashSet;"
+                || class_name == "Ljava/util/TreeSet;"
+                || class_name == "Ljava/util/TreeMap;"
                 || class_name == "Ljava/util/Hashtable;"
                 || class_name == "Ljava/util/Properties;"
                 || class_name == "Ljava/util/Vector;"
@@ -3134,6 +3147,133 @@ impl<'a> Vm<'a> {
                 _ => Ok(Value::Void),
             };
         }
+        if class_name == "Ljava/lang/reflect/Method;" {
+            return match method_name {
+                // Reflection-based system property reads: return defaults so
+                // the license plumbing proceeds without host specifics.
+                "invoke" => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            };
+        }
+        if class_name == "Ljava/lang/ClassLoader;" {
+            return match method_name {
+                // zirconia's DevInfoRetriever reflects into android.os.SystemProperties;
+                // returning a class object keeps the reflection chain alive.
+                "loadClass" => {
+                    let requested = self.string_arg(args, 1)?;
+                    let descriptor = if requested.starts_with('L') && requested.ends_with(';') {
+                        requested
+                    } else {
+                        format!("L{};", requested.replace('.', "/"))
+                    };
+                    Ok(Value::Object(self.alloc(HeapObject::Class(descriptor))))
+                }
+                _ => Ok(Value::Null),
+            };
+        }
+        if class_name == "Landroid/telephony/TelephonyManager;" {
+            return match method_name {
+                "getDeviceId" => Ok(Value::String("000000000000000".to_owned())),
+                "getLine1Number" => Ok(Value::String("+821000000000".to_owned())),
+                "getSimCountryIso" | "getNetworkCountryIso" => Ok(Value::String("kr".to_owned())),
+                "getSimOperator" | "getNetworkOperator" => Ok(Value::String("45005".to_owned())),
+                "getSimSerialNumber" => Ok(Value::String("0000000000000000".to_owned())),
+                "getSubscriberId" => Ok(Value::String("000000000000000".to_owned())),
+                _ => Ok(Value::Null),
+            };
+        }
+        if class_name == "Landroid/net/wifi/WifiManager;" {
+            return match method_name {
+                "getConnectionInfo" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/net/wifi/WifiInfo;"),
+                )),
+                _ => Ok(Value::Null),
+            };
+        }
+        if class_name == "Landroid/net/wifi/WifiInfo;" {
+            return match method_name {
+                "getMacAddress" => Ok(Value::String("00:00:00:00:00:00".to_owned())),
+                _ => Ok(Value::Null),
+            };
+        }
+        if class_name == "Landroid/content/pm/PackageManager;" {
+            return match method_name {
+                "getApplicationInfo" | "getPackageInfo" => {
+                    // ApplicationInfo with a plausible sourceDir path.
+                    let info = self.alloc_instance("Landroid/content/pm/ApplicationInfo;");
+                    let package = self.framework.package_name.clone().unwrap_or_default();
+                    self.set_object_field(
+                        info,
+                        "sourceDir",
+                        Value::String(format!("/data/app/{package}-1.apk")),
+                    );
+                    self.set_object_field(
+                        info,
+                        "dataDir",
+                        Value::String(format!("/data/data/{package}")),
+                    );
+                    Ok(Value::Object(info))
+                }
+                _ => Ok(Value::Null),
+            };
+        }
+        if class_name == "Landroid/view/View;" {
+            return match method_name {
+                "getLayoutParams" => {
+                    // Cache LayoutParams per view so later iget/sput see the
+                    // same instance the guest mutated.
+                    let receiver = object_arg(args, 0)?;
+                    let field = format!("view:{receiver}:layoutParams");
+                    if let Some(Value::Object(existing)) = self.static_fields.get(&field).cloned() {
+                        Ok(Value::Object(existing))
+                    } else {
+                        let params = self.alloc_instance("Landroid/view/ViewGroup$LayoutParams;");
+                        self.set_object_field(params, "width", Value::Int(-1));
+                        self.set_object_field(params, "height", Value::Int(-2));
+                        self.static_fields.insert(field, Value::Object(params));
+                        Ok(Value::Object(params))
+                    }
+                }
+                "getWidth" | "getHeight" => Ok(Value::Int(0)),
+                "setFocusableInTouchMode"
+                | "setFocusable"
+                | "setOnFocusChangeListener"
+                | "setEnabled"
+                | "setClickable" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/view/WindowManager;" {
+            return match method_name {
+                "getDefaultDisplay" => {
+                    Ok(Value::Object(self.alloc_instance("Landroid/view/Display;")))
+                }
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/view/Display;" {
+            return match method_name {
+                "getWidth" => Ok(Value::Int(self.framework.surface_size.0.max(1))),
+                "getHeight" => Ok(Value::Int(self.framework.surface_size.1.max(1))),
+                "getMetrics" => {
+                    if let Some(Value::Object(metrics)) = args.get(1) {
+                        self.set_object_field(
+                            *metrics,
+                            "widthPixels",
+                            Value::Int(self.framework.surface_size.0.max(1)),
+                        );
+                        self.set_object_field(
+                            *metrics,
+                            "heightPixels",
+                            Value::Int(self.framework.surface_size.1.max(1)),
+                        );
+                        self.set_object_field(*metrics, "density", Value::Float(1.0));
+                    }
+                    Ok(Value::Void)
+                }
+                _ => Ok(Value::Void),
+            };
+        }
         if class_name.starts_with("Landroid/view/")
             || class_name.starts_with("Landroid/widget/")
             || class_name == "Landroid/opengl/GLSurfaceView;"
@@ -3195,6 +3335,31 @@ impl<'a> Vm<'a> {
         if class_name == "Landroid/content/Context;" || class_name.starts_with("Landroid/app/") {
             return match method_name {
                 "getApplicationContext" => object_arg(args, 0).map(Value::Object),
+                "getPackageName" => Ok(Value::String(
+                    self.framework.package_name.clone().unwrap_or_default(),
+                )),
+                "getAssets" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/content/res/AssetManager;"),
+                )),
+                "getPackageManager" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/content/pm/PackageManager;"),
+                )),
+                "getDir" | "getFilesDir" | "getCacheDir" | "getExternalFilesDir" => {
+                    // A File whose path is set directly (the File shim reads
+                    // the "path" instance field).
+                    let file = self.alloc_instance("Ljava/io/File;");
+                    let package = self.framework.package_name.clone().unwrap_or_default();
+                    let name = self
+                        .string_arg(args, 1)
+                        .unwrap_or_else(|_| "files".to_owned());
+                    let path = match method_name {
+                        "getDir" => format!("/data/data/{package}/app_{name}"),
+                        "getCacheDir" => format!("/data/data/{package}/cache"),
+                        _ => format!("/data/data/{package}/files"),
+                    };
+                    self.set_object_field(file, "path", Value::String(path));
+                    Ok(Value::Object(file))
+                }
                 "getResources" => Ok(Value::Object(
                     self.alloc_instance("Landroid/content/res/Resources;"),
                 )),
@@ -3247,37 +3412,6 @@ impl<'a> Vm<'a> {
                 _ => Ok(Value::Void),
             };
         }
-        if class_name == "Landroid/view/WindowManager;" {
-            return match method_name {
-                "getDefaultDisplay" => {
-                    Ok(Value::Object(self.alloc_instance("Landroid/view/Display;")))
-                }
-                _ => Ok(Value::Void),
-            };
-        }
-        if class_name == "Landroid/view/Display;" {
-            return match method_name {
-                "getWidth" => Ok(Value::Int(self.framework.surface_size.0.max(1))),
-                "getHeight" => Ok(Value::Int(self.framework.surface_size.1.max(1))),
-                "getMetrics" => {
-                    if let Some(Value::Object(metrics)) = args.get(1) {
-                        self.set_object_field(
-                            *metrics,
-                            "widthPixels",
-                            Value::Int(self.framework.surface_size.0.max(1)),
-                        );
-                        self.set_object_field(
-                            *metrics,
-                            "heightPixels",
-                            Value::Int(self.framework.surface_size.1.max(1)),
-                        );
-                        self.set_object_field(*metrics, "density", Value::Float(1.0));
-                    }
-                    Ok(Value::Void)
-                }
-                _ => Ok(Value::Void),
-            };
-        }
         if class_name == "Landroid/util/DisplayMetrics;" {
             let receiver = object_arg(args, 0)?;
             return match method_name {
@@ -3298,6 +3432,14 @@ impl<'a> Vm<'a> {
                     self.set_object_field(receiver, "ydpi", Value::Float(160.0));
                     Ok(Value::Void)
                 }
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Landroid/media/AudioManager;" {
+            return match method_name {
+                "getStreamVolume" => Ok(Value::Int(10)),
+                "setStreamVolume" | "adjustStreamVolume" | "setMode" | "abandonAudioFocus"
+                | "requestAudioFocus" => Ok(Value::Int(0)),
                 _ => Ok(Value::Void),
             };
         }
@@ -3390,6 +3532,11 @@ impl<'a> Vm<'a> {
             let path = self
                 .object_field_string(receiver, "path")
                 .unwrap_or_default();
+            if path.is_empty() {
+                if let Some(Value::String(path)) = args.get(1) {
+                    self.set_object_field(receiver, "path", Value::String(path.clone()));
+                }
+            }
             return Ok(match method_name {
                 "exists" => Value::Int(i32::from(self.framework.files.contains_key(&path))),
                 "length" => Value::Long(
@@ -3467,6 +3614,20 @@ impl<'a> Vm<'a> {
                     let left = value_of(args.first()).to_ascii_lowercase();
                     let right = value_of(args.get(1)).to_ascii_lowercase();
                     return Ok(Value::Int(i32::from(left == right)));
+                }
+                "compareTo" | "compareToIgnoreCase" => {
+                    let left = value_of(args.first());
+                    let right = value_of(args.get(1));
+                    let (left, right) = if method_name == "compareToIgnoreCase" {
+                        (left.to_ascii_lowercase(), right.to_ascii_lowercase())
+                    } else {
+                        (left, right)
+                    };
+                    return Ok(Value::Int(match left.cmp(&right) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    }));
                 }
                 "startsWith" | "endsWith" | "contains" => {
                     let left = value_of(args.first());
@@ -3559,6 +3720,10 @@ impl<'a> Vm<'a> {
         if class_name == "Ljava/util/ArrayList;"
             || class_name == "Ljava/util/LinkedList;"
             || class_name == "Ljava/util/HashMap;"
+            || class_name == "Ljava/util/LinkedHashMap;"
+            || class_name == "Ljava/util/HashSet;"
+            || class_name == "Ljava/util/TreeSet;"
+            || class_name == "Ljava/util/TreeMap;"
             || class_name == "Ljava/util/Hashtable;"
             || class_name == "Ljava/util/Properties;"
             || class_name == "Ljava/util/Vector;"
@@ -3598,6 +3763,7 @@ impl<'a> Vm<'a> {
                 }
                 "get" => {
                     if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/LinkedHashMap;"
                         || class_name == "Ljava/util/Hashtable;"
                         || class_name == "Ljava/util/Properties;"
                     {
@@ -3630,6 +3796,7 @@ impl<'a> Vm<'a> {
                 }
                 "put"
                     if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/LinkedHashMap;"
                         || class_name == "Ljava/util/Hashtable;"
                         || class_name == "Ljava/util/Properties;" =>
                 {
@@ -3652,6 +3819,7 @@ impl<'a> Vm<'a> {
                 }
                 "containsKey" | "remove"
                     if class_name == "Ljava/util/HashMap;"
+                        || class_name == "Ljava/util/LinkedHashMap;"
                         || class_name == "Ljava/util/Hashtable;"
                         || class_name == "Ljava/util/Properties;" =>
                 {
@@ -3688,6 +3856,18 @@ impl<'a> Vm<'a> {
             }
         }
 
+        if class_name == "Ljava/lang/Class;" && method_name == "getName" {
+            // The receiver is a class object; its name comes from the heap
+            // object or (for raw class literals) the argument chain.
+            let name = match args.first() {
+                Some(Value::Object(id)) => match self.heap_object(*id) {
+                    Some(HeapObject::Class(name)) => name.clone(),
+                    _ => "java.lang.Object".to_owned(),
+                },
+                _ => "java.lang.Object".to_owned(),
+            };
+            return Ok(Value::Object(self.alloc_string(&name)));
+        }
         if class_name == "Ljava/lang/Class;" && method_name == "getMethod" {
             return Ok(Value::Object(
                 self.alloc_instance("Ljava/lang/reflect/Method;"),
@@ -5335,14 +5515,20 @@ fn invoke_args(
     let types = prototype
         .and_then(parse_prototype_parameters)
         .unwrap_or_default();
-    candidates[..count.min(candidates.len())]
-        .iter()
-        .enumerate()
-        .map(|(position, index)| {
-            get_register(registers, *index, pc, opcode)
-                .map(|value| normalize_wide_value(value, types.get(position).map(String::as_str)))
-        })
-        .collect()
+    // Register slots hold wide (J/D) arguments as a pair; the caller passes
+    // one logical value per parameter, so the high half is skipped here.
+    let slots = count.min(candidates.len());
+    let mut args = Vec::with_capacity(slots);
+    let mut slot = 0usize;
+    let mut position = 0usize;
+    while slot < slots {
+        let type_name = types.get(position).map(String::as_str);
+        let value = get_register(registers, candidates[slot], pc, opcode)?;
+        args.push(normalize_wide_value(value, type_name));
+        slot += 1 + usize::from(matches!(type_name, Some("J" | "D")));
+        position += 1;
+    }
+    Ok(args)
 }
 
 fn get_object(

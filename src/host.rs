@@ -5,6 +5,7 @@
 //! return errors with a log entry rather than touching the host system.
 
 use crate::arm::{HostBridge, Machine};
+use crate::jni::{array_element_size, entry_function};
 
 /// Guest memory layout for host-owned regions.
 const HEAP_BASE: u32 = 0x5000_0000;
@@ -161,6 +162,28 @@ pub struct BasicHost {
     random_state: u64,
     mmap_next: u32,
     jump_buffers: std::collections::HashMap<u32, [u32; 10]>,
+    /// JNI object bump pointer inside [`crate::jni::JNI_BASE`].
+    jni_next: u32,
+    /// Stable class handles by name, plus a reverse map for logging.
+    jni_classes: std::collections::HashMap<String, u32>,
+    jni_class_names: std::collections::HashMap<u32, String>,
+    /// Method handles by (class handle, name, signature).
+    jni_methods: std::collections::HashMap<(u32, String, String), u32>,
+    jni_method_names: std::collections::HashMap<u32, (u32, String)>,
+    jni_next_handle: u32,
+    jni_strings: std::collections::HashMap<u32, String>,
+    jni_arrays: std::collections::HashMap<u32, JniArray>,
+    jni_array_storage: std::collections::HashMap<u32, u32>,
+}
+
+/// A guest-visible JNI primitive array: handle word, element geometry, and
+/// the storage block returned by the Get*ArrayElements family.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct JniArray {
+    length: u32,
+    element_size: u32,
+    storage: u32,
 }
 
 impl BasicHost {
@@ -862,6 +885,7 @@ impl HostBridge for BasicHost {
                 };
                 u32::from(result)
             }
+            other if other.starts_with("jni:") => self.call_jni(machine, other),
             other => {
                 self.log(format!(
                     "host function {other} is not implemented; returning 0"
@@ -877,6 +901,252 @@ impl HostBridge for BasicHost {
 }
 
 impl BasicHost {
+    /// Dispatches a JNI table entry. `slot_name` is `jni:<index>:<Name>`.
+    fn call_jni(&mut self, machine: &mut Machine, slot_name: &str) -> u32 {
+        self.ensure_regions(machine);
+        let function = entry_function(slot_name);
+        let string_at = |machine: &Machine, register: usize| -> String {
+            machine
+                .memory
+                .read_cstr(machine.cpu.r[register], 512)
+                .unwrap_or_default()
+        };
+        match function {
+            "GetVersion" => 0x0001_0004, // JNI 1.4
+            "GetJavaVM" => {
+                machine
+                    .memory
+                    .write_u32(machine.cpu.r[1], crate::jni::JNI_BASE + 0x80)
+                    .ok();
+                0
+            }
+            "FindClass" => {
+                let name = string_at(machine, 1);
+                let handle = self.jni_class(machine, &name);
+                self.log(format!("JNI FindClass({name}) -> {handle:#x}"));
+                handle
+            }
+            "GetObjectClass" => {
+                let name = format!("object@{:#x}", machine.cpu.r[1]);
+                let handle = self.jni_class(machine, &name);
+                self.log(format!(
+                    "JNI GetObjectClass({:#x}) -> {handle:#x}",
+                    machine.cpu.r[1]
+                ));
+                handle
+            }
+            "GetMethodID" | "GetStaticMethodID" | "GetFieldID" | "GetStaticFieldID" => {
+                let class = machine.cpu.r[1];
+                let name = string_at(machine, 2);
+                let signature = string_at(machine, 3);
+                let handle = self.jni_method(machine, class, &name, &signature);
+                self.log(format!(
+                    "JNI {function}(class={class:#x}, {name}{signature}) -> {handle:#x}"
+                ));
+                handle
+            }
+            "NewStringUTF" => {
+                let text = string_at(machine, 1);
+                let handle = self.jni_string(machine, &text);
+                self.log(format!("JNI NewStringUTF({text:?}) -> {handle:#x}"));
+                handle
+            }
+            "GetStringUTFChars" => {
+                let handle = machine.cpu.r[1];
+                let text = self.jni_strings.get(&handle).cloned().unwrap_or_default();
+                self.log(format!("JNI GetStringUTFChars({handle:#x}) -> {text:?}"));
+                self.jni_string_storage(machine, &text)
+            }
+            "ReleaseStringChars" | "ReleaseStringUTFChars" => 0,
+            "GetArrayLength" => {
+                let handle = machine.cpu.r[1];
+                let length = self
+                    .jni_arrays
+                    .get(&handle)
+                    .map(|array| array.length)
+                    .unwrap_or(0);
+                self.log(format!("JNI GetArrayLength({handle:#x}) -> {length}"));
+                length
+            }
+            "NewIntArray" | "NewLongArray" | "NewFloatArray" | "NewByteArray"
+            | "NewBooleanArray" | "NewCharArray" | "NewShortArray" | "NewDoubleArray" => {
+                let element = array_element_size(function).unwrap_or(4);
+                let length = machine.cpu.r[1];
+                let handle = self.jni_array(machine, length, element);
+                self.log(format!("JNI {function}({length}) -> {handle:#x}"));
+                handle
+            }
+            "GetIntArrayElements"
+            | "GetLongArrayElements"
+            | "GetFloatArrayElements"
+            | "GetByteArrayElements"
+            | "GetBooleanArrayElements"
+            | "GetCharArrayElements"
+            | "GetShortArrayElements"
+            | "GetDoubleArrayElements"
+            | "GetPrimitiveArrayCritical" => {
+                let handle = machine.cpu.r[1];
+                // The storage word holds the length; element data follows it.
+                let data = self
+                    .jni_arrays
+                    .get(&handle)
+                    .map(|array| array.storage + 4)
+                    .unwrap_or(0);
+                self.log(format!("JNI {function}({handle:#x}) -> {data:#x}"));
+                data
+            }
+            "ReleaseIntArrayElements"
+            | "ReleaseLongArrayElements"
+            | "ReleaseFloatArrayElements"
+            | "ReleaseByteArrayElements"
+            | "ReleaseBooleanArrayElements"
+            | "ReleaseCharArrayElements"
+            | "ReleaseShortArrayElements"
+            | "ReleaseDoubleArrayElements"
+            | "ReleasePrimitiveArrayCritical" => 0,
+            "ExceptionCheck" | "ExceptionOccurred" => 0,
+            "EnsureLocalCapacity"
+            | "PushLocalFrame"
+            | "PopLocalFrame"
+            | "MonitorEnter"
+            | "MonitorExit"
+            | "DeleteLocalRef"
+            | "DeleteGlobalRef" => 0,
+            "RegisterNatives" => {
+                self.log(format!(
+                    "JNI RegisterNatives(class={:#x}, count={}) ignored",
+                    machine.cpu.r[1], machine.cpu.r[3]
+                ));
+                0
+            }
+            "GetStringLength" | "GetStringUTFLength" => {
+                let handle = machine.cpu.r[1];
+                let length = self
+                    .jni_strings
+                    .get(&handle)
+                    .map(|text| {
+                        if function == "GetStringLength" {
+                            text.chars().count()
+                        } else {
+                            text.len()
+                        }
+                    })
+                    .unwrap_or(0) as u32;
+                self.log(format!("JNI {function}({handle:#x}) -> {length}"));
+                length
+            }
+            "CallStaticVoidMethod"
+            | "CallVoidMethod"
+            | "CallStaticObjectMethod"
+            | "CallStaticIntMethod"
+            | "CallStaticBooleanMethod"
+            | "CallObjectMethod"
+            | "CallIntMethod"
+            | "CallBooleanMethod" => {
+                let handle = machine.cpu.r[2];
+                let info = self
+                    .jni_method_names
+                    .get(&handle)
+                    .cloned()
+                    .unwrap_or((0, "unknown".to_owned()));
+                self.log(format!(
+                    "JNI {function}(class={:#x}, {}) -> 0 (stub)",
+                    info.0, info.1
+                ));
+                0
+            }
+            _ => {
+                self.log(format!("JNI {function} is not implemented; returning 0"));
+                0
+            }
+        }
+    }
+
+    fn jni_class(&mut self, _machine: &mut Machine, name: &str) -> u32 {
+        if let Some(handle) = self.jni_classes.get(name) {
+            return *handle;
+        }
+        self.jni_next += 8;
+        let handle = self.jni_next;
+        self.jni_classes.insert(name.to_owned(), handle);
+        self.jni_class_names.insert(handle, name.to_owned());
+        handle
+    }
+
+    fn jni_method(
+        &mut self,
+        machine: &mut Machine,
+        class: u32,
+        name: &str,
+        signature: &str,
+    ) -> u32 {
+        let key = (class, name.to_owned(), signature.to_owned());
+        if let Some(handle) = self.jni_methods.get(&key) {
+            return *handle;
+        }
+        self.jni_next_handle += 1;
+        let handle = self.jni_next_handle;
+        machine
+            .memory
+            .write_u32(crate::jni::JNI_BASE + 0x400 + handle * 4, 0)
+            .ok();
+        self.jni_methods.insert(key, handle);
+        self.jni_method_names
+            .insert(handle, (class, format!("{name}{signature}")));
+        handle
+    }
+
+    fn jni_string(&mut self, machine: &mut Machine, text: &str) -> u32 {
+        self.jni_next += 16;
+        let handle = self.jni_next;
+        let storage = self.jni_string_storage(machine, text);
+        machine.memory.write_u32(handle, storage).ok();
+        self.jni_strings.insert(handle, text.to_owned());
+        handle
+    }
+
+    /// UTF-8 storage for a string object, written into the JNI region.
+    fn jni_string_storage(&mut self, machine: &mut Machine, text: &str) -> u32 {
+        self.jni_next = (self.jni_next + 15) & !15;
+        let address = self.jni_next;
+        self.jni_next += text.len() as u32 + 1;
+        machine.memory.write_cstr(address, text).ok();
+        address
+    }
+
+    /// Creates a Java-side primitive array for a harness (the mirror of the
+    /// guest calling New*Array); returns the array handle.
+    pub fn new_jni_array(&mut self, machine: &mut Machine, length: u32, element_size: u32) -> u32 {
+        self.jni_array(machine, length, element_size)
+    }
+
+    /// Guest storage address of a JNI array's element data (the value
+    /// `Get*ArrayElements` hands out).
+    pub fn jni_array_data(&self, handle: u32) -> Option<u32> {
+        self.jni_arrays.get(&handle).map(|array| array.storage + 4)
+    }
+
+    fn jni_array(&mut self, machine: &mut Machine, length: u32, element_size: u32) -> u32 {
+        self.jni_next += 16;
+        let handle = self.jni_next;
+        self.jni_next = (self.jni_next + 15) & !15;
+        let storage = self.jni_next;
+        let bytes = length.saturating_mul(element_size);
+        self.jni_next += bytes.max(16);
+        machine.memory.write_u32(handle, storage).ok();
+        machine.memory.write_u32(storage, length).ok();
+        self.jni_arrays.insert(
+            handle,
+            JniArray {
+                length,
+                element_size,
+                storage,
+            },
+        );
+        self.jni_array_storage.insert(storage, handle);
+        handle
+    }
+
     fn double_word(&self, machine: &Machine, register: usize) -> u64 {
         machine.cpu.r[register] as u64 | ((machine.cpu.r[register + 1] as u64) << 32)
     }

@@ -15,6 +15,7 @@ pub mod gles1_on_gl2;
 pub mod gles_native;
 pub mod host;
 pub mod input;
+pub mod jni;
 pub mod manifest;
 pub mod mem;
 pub mod native;

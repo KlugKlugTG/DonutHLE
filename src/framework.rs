@@ -382,6 +382,8 @@ pub struct Framework {
     pub assets: Option<AssetStore>,
     pub resource_images: HashMap<u32, String>,
     pub surface_size: (i32, i32),
+    /// Manifest package name, served by Context.getPackageName.
+    pub package_name: Option<String>,
     next_handle: u32,
 }
 

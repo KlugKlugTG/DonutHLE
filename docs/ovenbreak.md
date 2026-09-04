@@ -86,17 +86,22 @@ Measured facts (ELF build attributes and dynamic-symbol inventory):
 
 ## Current boot observation
 
-`cargo run -- run ovenbreak.apk` fails honestly inside the Dalvik VM before
-any native code matters:
+`cargo run -- run ovenbreak.apk` completes the launcher activity:
 
 ```text
-Dalvik VM error at pc 0 opcode 0x5b: null instance field target:
-field=Lcom/com2us/wrapper/WrapperData;->packageName:Ljava/lang/String;
-in Lcom/com2us/wrapper/WrapperData;->setPackageName
-in Lcom/com2us/ovenbreak/.../MainActivity;->onCreate
+booted launcher; onCreate complete; 2 native libraries loaded by the wrapper
+launcher: com.com2us.ovenbreak.normal.paidfull.samsungapps.kr.android.samsung.MainActivity
 ```
 
-`MainActivity.onCreate` runs with a `Null` implicit `this`-adjacent argument
-path in `WrapperData.setPackageName`; the VM reaches the wrapper code but the
-wrapper object is not initialized. Debugging this Dalvik-lifecycle gap is
-prerequisite work for M1-M3 bring-up and is tracked as the next step after M0.
+`MainActivity.<init>` through `WrapperActivity.<init>` (constructor chain,
+singleton `WrapperData` materialized) and the whole of `onCreate` — including
+`InitializeSecurityModule()` (executed as-is per the license policy) — now run
+in the Dalvik VM. Fixes along the way: the launcher constructor chain was never
+executed, `invoke_args` mishandled wide (J/D) argument pairs, view shims sat
+behind an unreachable catch-all, and `getPackageName`/`PackageManager`/
+`TelephonyManager`/`ClassLoader`/`java.io.File` shims were missing.
+
+The next integration step is per-frame native dispatch: the wrapper's
+`GLSurfaceView` render loop (`WrapperRenderer.onDrawFrame` ->
+`WrapperJinterface.nativeRender`) must route into the ARM machine through the
+JNI bridge, with `System.loadLibrary("game")` loading libgame.so for real.

@@ -156,3 +156,94 @@ fn runs_real_library_init_when_requested() {
         eprintln!("  diagnostics: {:?}", host.log);
     }
 }
+
+/// Harness mirroring the Java wrapper's boot sequence: `nativePreInit`
+/// receives `int[3]` plus display width/height and writes back a geometry
+/// triple; `nativeInit` receives the time/up-time/pixel/gyro arrays whose
+/// element storage the engine keeps for rendering.
+#[test]
+fn runs_real_jni_entry_points_when_requested() {
+    let Some(directory) = ovenbreak_libraries() else {
+        eprintln!("skipped: set DONUTHLE_OVENBREAK_LIBS to run");
+        return;
+    };
+    let mut machine = Machine::new(donuthle::arm::CpuConfig::default());
+    machine.memory.map_anon(0x7F00_0000, 0x10_0000).unwrap();
+    machine.cpu.r[13] = 0x7F0F_F000;
+    for name in HOST_FUNCTIONS {
+        machine.linker.register_host(name);
+    }
+    let mut host = BasicHost::new();
+
+    for name in ["libnativeinterface.so", "libgame.so"] {
+        let path = Path::new(&directory).join(name);
+        let bytes = std::fs::read(&path).unwrap();
+        let module = load_module(&mut machine.memory, &mut machine.linker, &bytes, name).unwrap();
+        if let Some(init) = module.init {
+            let _ = machine.call_function(&mut host, init, &[module.base, 0, 0]);
+        }
+        for hook in module.init_array.clone() {
+            let _ = machine.call_function(&mut host, hook, &[module.base, 0, 0]);
+        }
+    }
+
+    let env = donuthle::jni::install(&mut machine);
+    let log_and_clear = |host: &mut BasicHost, label: &str| {
+        eprintln!("--- {label} ---");
+        for line in &host.log {
+            eprintln!("  {line}");
+        }
+        host.log.clear();
+    };
+
+    // Java-side arrays, as the wrapper builds them before calling native code.
+    let parameter = host.new_jni_array(&mut machine, 3, 4);
+    let system_time = host.new_jni_array(&mut machine, 4, 8);
+    let up_time = host.new_jni_array(&mut machine, 64, 4);
+    let pixel = host.new_jni_array(&mut machine, 320 * 480, 4);
+    let gyro = host.new_jni_array(&mut machine, 3, 4);
+
+    // static nativePreInit(int[] parameter, int width, int height)
+    let pre_init = machine
+        .linker
+        .resolve("Java_com_com2us_wrapper_WrapperJinterface_nativePreInit")
+        .expect("nativePreInit resolves");
+    let result = machine.call_function(&mut host, pre_init, &[env, env, parameter, 320, 480]);
+    let parameter_data = host.jni_array_data(parameter).unwrap_or(0);
+    if result.is_err() {
+        eprintln!(
+            "  registers on fault: r0={:08x} r1={:08x} r2={:08x} r3={:08x} r12={:08x}",
+            machine.cpu.r[0],
+            machine.cpu.r[1],
+            machine.cpu.r[2],
+            machine.cpu.r[3],
+            machine.cpu.r[12]
+        );
+        eprintln!(
+            "  vtable[187] = {:#x}; env word = {:#x}",
+            machine.memory.read_u32(env + 0x100 + 187 * 4).unwrap_or(0),
+            machine.memory.read_u32(env).unwrap_or(0)
+        );
+    }
+    eprintln!(
+        "nativePreInit -> {result:?}; geometry = {:?}",
+        machine
+            .memory
+            .read_bytes(parameter_data, 12)
+            .unwrap_or_default()
+    );
+    log_and_clear(&mut host, "nativePreInit log");
+
+    // static nativeInit(long[] time, int[] upTime, int[] pixel, float[] gyro)
+    let init = machine
+        .linker
+        .resolve("Java_com_com2us_wrapper_WrapperJinterface_nativeInit")
+        .expect("nativeInit resolves");
+    let result = machine.call_function(
+        &mut host,
+        init,
+        &[env, env, system_time, up_time, pixel, gyro],
+    );
+    eprintln!("nativeInit -> {result:?}");
+    log_and_clear(&mut host, "nativeInit log");
+}
