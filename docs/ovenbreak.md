@@ -111,7 +111,22 @@ into `src/native_bridge.rs`, which owns the machine, stages library bytes from
 the APK, installs the `jni.rs` environment, and marshals Dalvik values into
 `(env, jclass, args...)` with JNI handles for Java arrays/strings.
 
-The remaining step to a first frame is dispatching the wrapper's render loop:
-`WrapperRenderer.onDrawFrame` -> `WrapperJinterface.run()` ->
-`nativeRender(timerIndex)` and the earlier `nativePreInit`/`nativeInit` calls,
-now that their entry points resolve in the machine.
+### First-frame status
+
+`nativePreInit(int[] geometry, w, h)` executes completely through the JNI
+bridge: the engine calls `GetIntArrayElements` through the vtable, writes the
+geometry array, and returns. Two real bugs the run flushed out:
+
+- Thumb format-7 load/store extracted B/L from the wrong bits (B=bit 12,
+  L=bit 11), decoding `ldr r1, [r0]` as `strb` — every immediate Thumb
+  load/store was wrong until the real binary caught it.
+- JNI host objects bumped from address 0 instead of the mapped JNI region,
+  silently dropping every array/string allocation.
+
+`nativeInit` still stops at pc 0x2d71e computing a pointer from state the
+engine expects to be initialized by an earlier step of the real wrapper flow
+(presumably the `StartGame`/loader path that the cracked license check gates).
+The trace (`r5 = module .bss + jclass`, garbage offset) is recorded in the
+boot message; identifying which wrapper step sets that global is the next
+debugging task. GL imports (47 functions) are bound to the software
+rasterizer through `BasicHost::call_gl`, ready for `nativeRender`.

@@ -373,6 +373,13 @@ impl Runtime {
                 // GLSurfaceView loop into native code; per-frame native
                 // dispatch is the next integration step, so record the boot
                 // without a Dalvik render session.
+                // Drive the engine bring-up exactly as the wrapper would:
+                // nativePreInit(int[] geometry, w, h) then nativeInit(
+                // long[] time, int[] upTime, int[] pixel, float[] gyro).
+                let native_boot = native_bridge
+                    .lock()
+                    .map(|mut bridge| bridge.boot_engine(&plan.package))
+                    .unwrap_or_else(|_| "native bridge lock failed".to_owned());
                 let (native_log, loaded_native) = native_bridge
                     .lock()
                     .map(|bridge| {
@@ -387,9 +394,9 @@ impl Runtime {
                     loaded_native_libraries: loaded_native,
                     activities,
                     graphics: if native_log.is_empty() {
-                        "onCreate complete; no native libraries were requested".to_owned()
+                        format!("onCreate complete; {native_boot}")
                     } else {
-                        format!("onCreate complete; {native_log}")
+                        format!("onCreate complete; {native_log}; {native_boot}")
                     },
                     vm_result: "onCreate completed".to_owned(),
                 });

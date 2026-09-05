@@ -46,10 +46,18 @@ impl NativeBridge {
         for name in crate::host::HOST_FUNCTIONS {
             machine.linker.register_host(name);
         }
+        for name in crate::host::GL_FUNCTIONS {
+            machine.linker.register_host(name);
+        }
         let env = jni::install(&mut machine);
+        let mut host = BasicHost::new();
+        host.gles = Some(crate::gles1_on_gl2::Gles1OnGl2::new(crate::VirtualScreen {
+            width: 480,
+            height: 320,
+        }));
         Self {
             machine,
-            host: BasicHost::new(),
+            host,
             env,
             java_arrays: HashMap::new(),
             java_strings: HashMap::new(),
@@ -57,6 +65,95 @@ impl NativeBridge {
             pending: HashMap::new(),
             loaded: Vec::new(),
         }
+    }
+
+    /// Runs the wrapper's engine bring-up: nativePreInit(geometry, w, h)
+    /// followed by nativeInit(time, upTime, pixel, gyro). Mirrors
+    /// WrapperJinterface initialization with the game's Java-side arrays.
+    pub fn boot_engine(&mut self, package: &str) -> String {
+        const WRAPPER: &str = "com.com2us.wrapper.WrapperJinterface";
+
+        if std::env::var_os("DONUTHLE_TRACE").is_some() {
+            eprintln!(
+                "boot_engine: env={:#x} mem[env]={:#x} vtable[6]={:#x}",
+                self.env,
+                self.machine.memory.read_u32(self.env).unwrap_or(0),
+                self.machine
+                    .memory
+                    .read_u32(self.machine.memory.read_u32(self.env).unwrap_or(0) + 6 * 4)
+                    .unwrap_or(0),
+            );
+        }
+        let geometry = self.java_array(3, 4, &[0; 12]);
+        match self.call_native(
+            WRAPPER,
+            "nativePreInit",
+            &[
+                DalvikValue::Object(geometry),
+                DalvikValue::Int(320),
+                DalvikValue::Int(480),
+            ],
+        ) {
+            Ok(_) => {}
+            Err(error) => return format!("nativePreInit stopped: {error}"),
+        }
+        let geometry_back = self.java_array_bytes(geometry).unwrap_or_default();
+        self.host.log.push(format!(
+            "nativePreInit geometry: {:?}",
+            geometry_back
+                .chunks(4)
+                .map(|word| i32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+                .collect::<Vec<_>>()
+        ));
+        let system_time = self.java_array(4, 8, &[0; 32]);
+        let up_time = self.java_array(64, 4, &[0; 256]);
+        let pixel = self.java_array(320 * 480, 4, &[0; 320 * 480 * 4]);
+        let gyro = self.java_array(3, 4, &[0; 12]);
+        match self.call_native(
+            WRAPPER,
+            "nativeInit",
+            &[
+                DalvikValue::Object(system_time),
+                DalvikValue::Object(up_time),
+                DalvikValue::Object(pixel),
+                DalvikValue::Object(gyro),
+            ],
+        ) {
+            Ok(_) => {}
+            Err(error) => return format!("nativeInit stopped: {error}"),
+        }
+        let _ = package;
+        "engine bring-up complete".to_owned()
+    }
+
+    /// Renders one frame: nativeRender(timerIndex) then reports pixels.
+    pub fn render_frame(&mut self) -> Result<usize, String> {
+        if let Some(renderer) = self.host.gles.as_mut() {
+            renderer.reset_frame_state();
+            renderer.begin_frame();
+            renderer.viewport(0, 0, 480, 320);
+        }
+        self.call_native(
+            "com.com2us.wrapper.WrapperJinterface",
+            "nativeRender",
+            &[DalvikValue::Int(0)],
+        )?;
+        let pixels = self
+            .host
+            .gles
+            .as_ref()
+            .map(|renderer| renderer.rendered_pixels())
+            .unwrap_or(0);
+        Ok(pixels)
+    }
+
+    /// GLES framebuffer of the native render pipeline.
+    pub fn framebuffer(&self) -> &crate::Framebuffer {
+        self.host
+            .gles
+            .as_ref()
+            .map(|renderer| renderer.framebuffer())
+            .expect("native GLES context")
     }
 
     /// Number of libraries loaded into the machine this session.
@@ -113,6 +210,24 @@ impl NativeBridge {
                     module.applied_relocations,
                     module.unresolved.len()
                 ));
+                // Static initializers (DT_INIT + init_array) before any code
+                // from the library runs.
+                if let Some(init) = module.init {
+                    if let Err(error) = self.machine.call_function(&mut self.host, init, &[0, 0, 0])
+                    {
+                        self.host
+                            .log
+                            .push(format!("{module_name} DT_INIT stopped: {error}"));
+                    }
+                }
+                for (index, hook) in module.init_array.clone().into_iter().enumerate() {
+                    if let Err(error) = self.machine.call_function(&mut self.host, hook, &[0, 0, 0])
+                    {
+                        self.host.log.push(format!(
+                            "{module_name} init_array[{index}] stopped: {error}"
+                        ));
+                    }
+                }
                 self.loaded.push(module);
             }
             Err(error) => self
@@ -193,6 +308,20 @@ impl NativeBridge {
                 }
                 DalvikValue::Void | DalvikValue::Null => 0,
             });
+        }
+        // AAPCS: arguments beyond r0-r3 are passed on the caller's stack.
+        // Reserve room and write the extras so the callee's [sp] reads are
+        // valid; call_function snapshots/restores r13 afterwards.
+        let extra = arm_args.len().saturating_sub(4);
+        if extra > 0 {
+            let stack = self.machine.cpu.r[13] - (extra as u32) * 4;
+            for (index, value) in arm_args[4..].iter().enumerate() {
+                self.machine
+                    .memory
+                    .write_u32(stack + index as u32 * 4, *value)
+                    .map_err(|error| format!("stack argument write failed: {error}"))?;
+            }
+            self.machine.cpu.r[13] = stack;
         }
         let address = self
             .machine

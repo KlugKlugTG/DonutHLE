@@ -1308,9 +1308,10 @@ impl Machine {
             return self.thumb_memory_access(opcode, address, (insn & 7) as usize, next_pc);
         }
         if insn < 0x8000 {
-            // Load/store with 5-bit immediate offset.
-            let is_byte = insn & 0x0800 != 0;
-            let is_load = insn & 0x0400 != 0;
+            // Load/store with 5-bit immediate offset: bit 12 selects byte
+            // access (B) and bit 11 selects load (L).
+            let is_byte = insn & 0x1000 != 0;
+            let is_load = insn & 0x0800 != 0;
             let scale: u32 = if is_byte { 1 } else { 4 };
             let offset = u32::from((insn >> 6) & 0x1F) * scale;
             let address = self.cpu.r[((insn >> 3) & 7) as usize].wrapping_add(offset);
@@ -2220,5 +2221,40 @@ mod tests {
             .call_function(&mut host, entry, &[])
             .expect_err("coprocessor instruction should be rejected");
         assert!(error.contains("coprocessor"), "unexpected error: {error}");
+    }
+}
+
+#[cfg(test)]
+mod probe_format5 {
+    use super::*;
+    use crate::host::BasicHost;
+
+    #[test]
+    fn ldr_register_offset_58cb() {
+        let mut machine = Machine::new(CpuConfig::default());
+        machine.memory.map_anon(0x1000_0000, 0x1000).unwrap();
+        machine.memory.map_anon(0x2000_0000, 0x1000).unwrap();
+        machine.memory.map_anon(0x7F00_0000, 0x10000).unwrap();
+        machine.cpu.r[13] = 0x7F0F_F000;
+        let mut host = BasicHost::new();
+        // 0x58CB should be: ldr r3, [r1, r3]
+        machine.memory.write_u16(0x1000_0000, 0x58CB).unwrap();
+        machine.memory.write_u16(0x1000_0002, 0x4770).unwrap(); // bx lr
+        machine
+            .memory
+            .write_u32(0x2000_0100 + 0x2EC, 0x7000_02EC)
+            .unwrap();
+        machine.cpu.r[1] = 0x2000_0100;
+        machine.cpu.r[2] = 0xDEAD_BEEF; // must not be the base
+        machine.cpu.r[3] = 0x2EC;
+        machine.cpu.flags.thumb = true;
+        machine.cpu.r[15] = 0x1000_0000;
+        machine.cpu.r[14] = RETURN_SENTINEL;
+        machine.step_once(&mut host).unwrap();
+        eprintln!(
+            "after 0x58CB: r3={:#x} (expect 0x700002ec if base=r1)",
+            machine.cpu.r[3]
+        );
+        assert_eq!(machine.cpu.r[3], 0x7000_02EC, "base must be r1, not r2");
     }
 }

@@ -6,6 +6,7 @@
 
 use crate::arm::{HostBridge, Machine};
 use crate::jni::{array_element_size, entry_function};
+use crate::Rgba8;
 
 /// Guest memory layout for host-owned regions.
 const HEAP_BASE: u32 = 0x5000_0000;
@@ -149,6 +150,106 @@ pub const HOST_FUNCTIONS: &[&str] = &[
 
 const MAP_FAILED: u32 = u32::MAX;
 
+/// GLES 1.x constants used by the imported engine (ARM Mali-era values).
+const GL_BYTE: u32 = 0x1400;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
+const GL_SHORT: u32 = 0x1402;
+const GL_UNSIGNED_SHORT: u32 = 0x1403;
+const GL_FIXED: u32 = 0x140C;
+const GL_FLOAT: u32 = 0x1406;
+const GL_RGBA: u32 = 0x1908;
+const GL_RGB: u32 = 0x1907;
+const GL_UNSIGNED_SHORT_4_4_4_4: u32 = 0x8033;
+const GL_UNSIGNED_SHORT_5_5_5_1: u32 = 0x8030;
+const GL_UNSIGNED_SHORT_5_6_5: u32 = 0x8363;
+const GL_VERTEX_ARRAY: u32 = 0x9070;
+const GL_COLOR_ARRAY: u32 = 0x9072;
+const GL_TEXTURE_COORD_ARRAY: u32 = 0x9074;
+const GL_NORMAL_ARRAY: u32 = 0x9076;
+
+/// Imported GLES functions the native bridge expects the host to serve.
+pub const GL_FUNCTIONS: &[&str] = &[
+    "glActiveTexture",
+    "glBindTexture",
+    "glBlendFunc",
+    "glClear",
+    "glClearColor",
+    "glClearColorx",
+    "glClientActiveTexture",
+    "glColor4x",
+    "glColorPointer",
+    "glCompressedTexImage2D",
+    "glCopyTexImage2D",
+    "glCopyTexSubImage2D",
+    "glDeleteTextures",
+    "glDepthMask",
+    "glDisable",
+    "glDisableClientState",
+    "glDrawArrays",
+    "glDrawElements",
+    "glEnable",
+    "glEnableClientState",
+    "glFinish",
+    "glGenTextures",
+    "glGetError",
+    "glGetFixedv",
+    "glGetIntegerv",
+    "glGetPointerv",
+    "glIsEnabled",
+    "glLightxv",
+    "glLineWidthx",
+    "glLoadIdentity",
+    "glLoadMatrixf",
+    "glLoadMatrixx",
+    "glMatrixMode",
+    "glNormalPointer",
+    "glPointSizex",
+    "glScissor",
+    "glShadeModel",
+    "glTexCoordPointer",
+    "glTexEnvf",
+    "glTexEnvx",
+    "glTexEnvxv",
+    "glTexImage2D",
+    "glTexParameterf",
+    "glTexParameteri",
+    "glTexParameterx",
+    "glTexSubImage2D",
+    "glVertexPointer",
+    "glViewport",
+];
+
+/// Client-array state captured from the guest: the pointers live in guest
+/// memory and are materialized at draw time.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClientArraySpec {
+    pub pointer: u32,
+    pub size: usize,
+    pub stride: usize,
+    pub enabled: bool,
+    /// GL component type (GL_FIXED, GL_FLOAT, ...).
+    pub array_type: u32,
+}
+
+/// GLES 1.x ABI arguments: r0-r3 then the caller's stack.
+pub fn gl_call_args(machine: &Machine, count: usize) -> Vec<u32> {
+    let mut args = Vec::with_capacity(count);
+    for register in 0..4.min(count) {
+        args.push(machine.cpu.r[register]);
+    }
+    let mut stack = machine.cpu.r[13];
+    for _ in 4..count {
+        let value = machine.memory.read_u32(stack).unwrap_or(0);
+        args.push(value);
+        stack = stack.wrapping_add(4);
+    }
+    args
+}
+
+fn fixed_to_f32(value: u32) -> f32 {
+    value as i32 as f32 / 65536.0
+}
+
 /// Deterministic, single-threaded host shims.
 #[derive(Debug, Default)]
 pub struct BasicHost {
@@ -174,6 +275,12 @@ pub struct BasicHost {
     jni_strings: std::collections::HashMap<u32, String>,
     jni_arrays: std::collections::HashMap<u32, JniArray>,
     jni_array_storage: std::collections::HashMap<u32, u32>,
+    /// GLES 1.x state for native engines; None until a native runtime needs it.
+    pub gles: Option<crate::gles1_on_gl2::Gles1OnGl2>,
+    /// Client-array pointers captured from the guest (vertex/color/texcoord).
+    pub gl_client_arrays: [ClientArraySpec; 4],
+    /// Names of GL state calls accepted but not modeled by the rasterizer.
+    pub gl_ignored: std::collections::BTreeSet<String>,
 }
 
 /// A guest-visible JNI primitive array: handle word, element geometry, and
@@ -190,6 +297,9 @@ impl BasicHost {
     pub fn new() -> Self {
         Self {
             random_state: 0x2B99_2DDF_232F_9A67,
+            // JNI objects bump-allocate inside the region that jni::install
+            // maps; starting at zero would silently drop every allocation.
+            jni_next: crate::jni::JNI_BASE + crate::jni::JNI_OBJECTS_OFFSET,
             ..Self::default()
         }
     }
@@ -885,6 +995,17 @@ impl HostBridge for BasicHost {
                 };
                 u32::from(result)
             }
+            other if GL_FUNCTIONS.contains(&other) => {
+                self.ensure_regions(machine);
+                if self.gles.is_none() {
+                    self.gles = Some(crate::gles1_on_gl2::Gles1OnGl2::new(crate::VirtualScreen {
+                        width: 480,
+                        height: 320,
+                    }));
+                }
+                let args = gl_call_args(machine, 9);
+                self.call_gl(machine, other, &args)
+            }
             other if other.starts_with("jni:") => self.call_jni(machine, other),
             other => {
                 self.log(format!(
@@ -1145,6 +1266,358 @@ impl BasicHost {
         );
         self.jni_array_storage.insert(storage, handle);
         handle
+    }
+
+    /// Dispatches an imported GLES function against the software rasterizer.
+    /// Integer arguments come from r0-r3 + guest stack (AAPCS).
+    fn call_gl(&mut self, machine: &mut Machine, name: &str, args: &[u32]) -> u32 {
+        let arg = |index: usize| -> u32 { args.get(index).copied().unwrap_or(0) };
+        let renderer = match self.gles.as_mut() {
+            Some(renderer) => renderer,
+            None => return 0,
+        };
+        match name {
+            "glViewport" => renderer.viewport(arg(0) as i32, arg(1) as i32, arg(2), arg(3)),
+            "glClearColor" | "glClearColorx" => renderer.set_clear_color(Rgba8 {
+                r: (fixed_to_f32(arg(0)) * 255.0).clamp(0.0, 255.0) as u8,
+                g: (fixed_to_f32(arg(1)) * 255.0).clamp(0.0, 255.0) as u8,
+                b: (fixed_to_f32(arg(2)) * 255.0).clamp(0.0, 255.0) as u8,
+                a: 255,
+            }),
+            "glClear" => renderer.clear(),
+            "glEnable" | "glDisable" => {
+                let capability = arg(0);
+                if capability == GL_VERTEX_ARRAY
+                    || capability == GL_COLOR_ARRAY
+                    || capability == GL_TEXTURE_COORD_ARRAY
+                    || capability == GL_NORMAL_ARRAY
+                {
+                    let index = match capability {
+                        GL_VERTEX_ARRAY => 0,
+                        GL_COLOR_ARRAY => 1,
+                        GL_TEXTURE_COORD_ARRAY => 2,
+                        _ => 3,
+                    };
+                    self.gl_client_arrays[index].enabled = name == "glEnable";
+                }
+                if name == "glEnable" {
+                    renderer.enable(capability);
+                } else {
+                    renderer.disable(capability);
+                }
+            }
+            "glEnableClientState" | "glDisableClientState" => {
+                let array = match arg(0) {
+                    GL_VERTEX_ARRAY => Some(crate::gles1_on_gl2::ClientArray::Vertex),
+                    GL_COLOR_ARRAY => Some(crate::gles1_on_gl2::ClientArray::Color),
+                    GL_TEXTURE_COORD_ARRAY => Some(crate::gles1_on_gl2::ClientArray::TexCoord),
+                    _ => None, // normal arrays are not modeled
+                };
+                if let Some(array) = array {
+                    if name == "glEnableClientState" {
+                        renderer.enable_client_state(array);
+                    } else {
+                        renderer.disable_client_state(array);
+                    }
+                }
+            }
+            "glBlendFunc" => renderer.blend_func(arg(0), arg(1)),
+            "glShadeModel"
+            | "glPointSizex"
+            | "glLineWidthx"
+            | "glTexEnvf"
+            | "glTexEnvx"
+            | "glLightxv"
+            | "glActiveTexture"
+            | "glClientActiveTexture"
+            | "glTexEnvxv"
+            | "glCopyTexImage2D"
+            | "glCopyTexSubImage2D" => {
+                self.gl_ignored.insert(name.to_owned());
+            }
+            "glTexParameterf" | "glTexParameteri" | "glTexParameterx" => {
+                renderer.texture_parameter(arg(0), arg(1), arg(2));
+            }
+            "glMatrixMode" => renderer.matrix_mode(arg(0)),
+            "glLoadIdentity" => renderer.load_identity(),
+            "glLoadMatrixf" => {
+                let mut matrix = [0f32; 16];
+                for (index, cell) in matrix.iter_mut().enumerate() {
+                    *cell = f32::from_bits(
+                        machine
+                            .memory
+                            .read_u32(arg(0) + index as u32 * 4)
+                            .unwrap_or(0),
+                    );
+                }
+                renderer.load_matrix_f(&matrix);
+            }
+            "glLoadMatrixx" => {
+                let mut matrix = [0i32; 16];
+                for (index, cell) in matrix.iter_mut().enumerate() {
+                    *cell = machine
+                        .memory
+                        .read_u32(arg(0) + index as u32 * 4)
+                        .unwrap_or(0) as i32;
+                }
+                renderer.load_matrix_x(&matrix);
+            }
+            "glScissor" => renderer.scissor(arg(0) as i32, arg(1) as i32, arg(2), arg(3)),
+            "glColor4x" => renderer.set_current_color(Rgba8 {
+                r: (fixed_to_f32(arg(0)) * 255.0).clamp(0.0, 255.0) as u8,
+                g: (fixed_to_f32(arg(1)) * 255.0).clamp(0.0, 255.0) as u8,
+                b: (fixed_to_f32(arg(2)) * 255.0).clamp(0.0, 255.0) as u8,
+                a: (fixed_to_f32(arg(3)) * 255.0).clamp(0.0, 255.0) as u8,
+            }),
+            "glDepthMask" => renderer.depth_mask(arg(0) != 0),
+            "glGenTextures" => {
+                let count = arg(0) as usize;
+                let ids_pointer = arg(1);
+                for index in 0..count {
+                    let id = renderer.gen_texture();
+                    machine
+                        .memory
+                        .write_u32(ids_pointer + index as u32 * 4, id)
+                        .ok();
+                }
+            }
+            "glBindTexture" => renderer.bind_texture(arg(0), arg(1)),
+            "glDeleteTextures" => {
+                for index in 0..arg(0) {
+                    let id = machine.memory.read_u32(arg(1) + index * 4).unwrap_or(0);
+                    renderer.delete_texture(id);
+                }
+            }
+            "glTexImage2D" | "glTexSubImage2D" => {
+                self.gl_tex_image(machine, name, args);
+            }
+            "glCompressedTexImage2D" => {
+                // Palettized/compressed atlases: record the gap honestly.
+                self.gl_ignored.insert(format!(
+                    "glCompressedTexImage2D(format={:#x}, {}x{})",
+                    arg(2),
+                    arg(3),
+                    arg(4)
+                ));
+            }
+            "glVertexPointer" | "glColorPointer" | "glTexCoordPointer" | "glNormalPointer" => {
+                let index = match name {
+                    "glVertexPointer" => 0,
+                    "glColorPointer" => 1,
+                    "glTexCoordPointer" => 2,
+                    _ => 3,
+                };
+                self.gl_client_arrays[index] = ClientArraySpec {
+                    pointer: arg(3),
+                    size: arg(0) as usize,
+                    stride: arg(2) as usize,
+                    enabled: true,
+                    array_type: arg(1),
+                };
+            }
+            "glDrawArrays" | "glDrawElements" => {
+                self.gl_draw(machine, name, &arg);
+            }
+            "glFinish" => {}
+            "glGetError" => return 0,
+            "glIsEnabled" => {
+                return u32::from(renderer.is_enabled(arg(0)) || self.client_array_enabled(arg(0)));
+            }
+            "glGetIntegerv" | "glGetFixedv" | "glGetPointerv" => {}
+            _ => {
+                self.gl_ignored.insert(name.to_owned());
+            }
+        }
+        0
+    }
+
+    fn client_array_enabled(&self, capability: u32) -> bool {
+        let index = match capability {
+            GL_VERTEX_ARRAY => 0,
+            GL_COLOR_ARRAY => 1,
+            GL_TEXTURE_COORD_ARRAY => 2,
+            GL_NORMAL_ARRAY => 3,
+            _ => return false,
+        };
+        self.gl_client_arrays[index].enabled
+    }
+
+    /// Reads a client array from guest memory, converting fixed-point to
+    /// float when the engine uses GL_FIXED.
+    fn read_client_array(
+        machine: &Machine,
+        spec: &ClientArraySpec,
+        first: i32,
+        count: i32,
+    ) -> Vec<f32> {
+        let mut values = Vec::new();
+        if spec.pointer == 0 || count <= 0 {
+            return values;
+        }
+        let stride = if spec.stride == 0 {
+            (spec.size * 4) as u32
+        } else {
+            spec.stride as u32
+        };
+        for index in 0..count as u32 {
+            let base = spec.pointer + (first.max(0) as u32 + index) * stride;
+            for component in 0..spec.size {
+                let address = base + component as u32 * 4;
+                let word = machine.memory.read_u32(address).unwrap_or(0);
+                values.push(match spec.array_type {
+                    GL_FIXED => fixed_to_f32(word),
+                    GL_FLOAT => f32::from_bits(word),
+                    GL_BYTE => word as i8 as f32,
+                    GL_SHORT => word as i16 as f32,
+                    GL_UNSIGNED_BYTE => word as u8 as f32,
+                    GL_UNSIGNED_SHORT => (word & 0xFFFF) as f32,
+                    _ => word as i32 as f32,
+                });
+            }
+        }
+        values
+    }
+
+    fn gl_draw(&mut self, machine: &mut Machine, name: &str, arg: &dyn Fn(usize) -> u32) {
+        let mode = arg(0);
+        let first = arg(1) as i32;
+        let count = arg(2) as i32;
+        if count <= 0 {
+            return;
+        }
+        // Copy the specs out to avoid borrowing self while the renderer is
+        // mutably borrowed.
+        let [vertex_spec, color_spec, texcoord_spec, _normal_spec] = self.gl_client_arrays;
+        let vertices = Self::read_client_array(machine, &vertex_spec, first, count);
+        if vertices.is_empty() {
+            return;
+        }
+        let Some(renderer) = self.gles.as_mut() else {
+            return;
+        };
+        renderer.set_vertex_pointer(vertex_spec.size, 0, vertices);
+        if color_spec.enabled {
+            let colors = Self::read_client_array(machine, &color_spec, first, count);
+            if !colors.is_empty() {
+                renderer.set_color_pointer(color_spec.size, 0, colors);
+            }
+        }
+        if texcoord_spec.enabled {
+            let texcoords = Self::read_client_array(machine, &texcoord_spec, first, count);
+            if !texcoords.is_empty() {
+                renderer.set_texcoord_pointer(texcoord_spec.size, 0, texcoords);
+            }
+        }
+        if name == "glDrawArrays" {
+            renderer.draw_arrays(mode, first, count);
+            return;
+        }
+        // glDrawElements(mode, count, type, indices)
+        let index_type = arg(3);
+        let indices_pointer = arg(1);
+        let index_size: u32 = if index_type == GL_UNSIGNED_SHORT || index_type == GL_SHORT {
+            2
+        } else {
+            1
+        };
+        let indices: Vec<u32> = (0..count as u32)
+            .map(|index| {
+                let address = indices_pointer + index * index_size;
+                if index_size == 2 {
+                    machine.memory.read_u16(address).unwrap_or(0) as u32
+                } else {
+                    u32::from(machine.memory.read_u8(address).unwrap_or(0))
+                }
+            })
+            .collect();
+        renderer.draw_elements_indexed(mode, count, index_type, &indices);
+    }
+
+    fn gl_tex_image(&mut self, machine: &mut Machine, name: &str, args: &[u32]) {
+        let Some(renderer) = self.gles.as_mut() else {
+            return;
+        };
+        // target, level, internalformat, width, height, border, format, type, pixels
+        let width = args.get(3).copied().unwrap_or(0);
+        let height = args.get(4).copied().unwrap_or(0);
+        let format = args.get(6).copied().unwrap_or(0);
+        let pixel_type = args.get(7).copied().unwrap_or(0);
+        let pixels = args.get(8).copied().unwrap_or(0);
+        if pixels == 0 || width == 0 || height == 0 {
+            return;
+        }
+        let bytes_per_pixel = match (format, pixel_type) {
+            (GL_RGBA, GL_UNSIGNED_BYTE) => 4,
+            (GL_RGB, GL_UNSIGNED_BYTE) => 3,
+            (GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) => 2,
+            (GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1) => 2,
+            (GL_RGB, GL_UNSIGNED_SHORT_5_6_5) => 2,
+            _ => {
+                self.gl_ignored
+                    .insert(format!("{name} format={format:#x} type={pixel_type:#x}"));
+                return;
+            }
+        };
+        let data = machine
+            .memory
+            .read_bytes(pixels, (width * height) as usize * bytes_per_pixel)
+            .unwrap_or_default();
+        let mut pixels_rgba = Vec::with_capacity((width * height) as usize);
+        for pixel in data.chunks(bytes_per_pixel) {
+            let rgba = match (format, pixel_type) {
+                (GL_RGBA, GL_UNSIGNED_BYTE) => Rgba8 {
+                    r: pixel[0],
+                    g: pixel[1],
+                    b: pixel[2],
+                    a: pixel[3],
+                },
+                (GL_RGB, GL_UNSIGNED_BYTE) => Rgba8 {
+                    r: pixel[0],
+                    g: pixel[1],
+                    b: pixel[2],
+                    a: 255,
+                },
+                (GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) => {
+                    let value = u16::from_le_bytes([pixel[0], pixel[1]]);
+                    Rgba8 {
+                        r: (((value >> 12) & 0xF) * 17) as u8,
+                        g: (((value >> 8) & 0xF) * 17) as u8,
+                        b: (((value >> 4) & 0xF) * 17) as u8,
+                        a: ((value & 0xF) * 17) as u8,
+                    }
+                }
+                (GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1) => {
+                    let value = u16::from_le_bytes([pixel[0], pixel[1]]);
+                    Rgba8 {
+                        r: (((value >> 11) & 0x1F) * 8) as u8,
+                        g: (((value >> 6) & 0x1F) * 8) as u8,
+                        b: (((value >> 1) & 0x1F) * 8) as u8,
+                        a: if value & 1 == 1 { 255 } else { 0 },
+                    }
+                }
+                (GL_RGB, GL_UNSIGNED_SHORT_5_6_5) => {
+                    let value = u16::from_le_bytes([pixel[0], pixel[1]]);
+                    Rgba8 {
+                        r: (((value >> 11) & 0x1F) * 8) as u8,
+                        g: (((value >> 5) & 0x3F) * 4) as u8,
+                        b: ((value & 0x1F) * 8) as u8,
+                        a: 255,
+                    }
+                }
+                _ => Rgba8 {
+                    r: 255,
+                    g: 0,
+                    b: 255,
+                    a: 255,
+                },
+            };
+            pixels_rgba.push(rgba);
+        }
+        if name == "glTexImage2D" {
+            renderer.tex_image_2d(width, height, &pixels_rgba);
+        } else {
+            renderer.upload_texture(width, height, &pixels_rgba);
+        }
     }
 
     fn double_word(&self, machine: &Machine, register: usize) -> u64 {
