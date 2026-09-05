@@ -2410,6 +2410,16 @@ impl<'a> Vm<'a> {
             ));
             return Ok(Value::Void);
         }
+        if class_name == "Ljava/util/TimeZone;" {
+            return match method_name {
+                "getDefault" | "getTimeZone" => Ok(Value::Object(
+                    self.alloc_instance("Ljava/util/TimeZone;"),
+                )),
+                "getID" => Ok(Value::String("Asia/Seoul".to_owned())),
+                "useDaylightTime" => Ok(Value::Int(0)),
+                _ => Ok(Value::Void),
+            };
+        }
         if class_name == "Ljava/util/Locale;" {
             return match method_name {
                 "getDefault" => Ok(Value::Object(self.alloc_instance("Ljava/util/Locale;"))),
@@ -3302,12 +3312,11 @@ impl<'a> Vm<'a> {
                         Ok(Value::Object(params))
                     }
                 }
-                "getWidth" | "getHeight" => Ok(Value::Int(0)),
-                "setFocusableInTouchMode"
-                | "setFocusable"
-                | "setOnFocusChangeListener"
-                | "setEnabled"
-                | "setClickable" => Ok(Value::Void),
+                "getWidth" => Ok(Value::Int(self.framework.surface_size.0.max(1))),
+                "getHeight" => Ok(Value::Int(self.framework.surface_size.1.max(1))),
+                "setRenderer" | "setFocusableInTouchMode" | "setFocusable"
+                | "setOnFocusChangeListener" | "setOnTouchListener" | "setEnabled"
+                | "setClickable" | "setGLSurfaceView" => Ok(Value::Void),
                 _ => Ok(Value::Void),
             };
         }
@@ -3386,6 +3395,16 @@ impl<'a> Vm<'a> {
                     Ok(Value::Void)
                 }
                 "startAnimation" | "setAnimation" => Ok(Value::Void),
+                _ => Ok(Value::Void),
+            };
+        }
+        if class_name == "Ljava/util/TimeZone;" {
+            return match method_name {
+                "getDefault" | "getTimeZone" => Ok(Value::Object(
+                    self.alloc_instance("Ljava/util/TimeZone;"),
+                )),
+                "getID" => Ok(Value::String("Asia/Seoul".to_owned())),
+                "useDaylightTime" => Ok(Value::Int(0)),
                 _ => Ok(Value::Void),
             };
         }

@@ -124,11 +124,16 @@ ACC_NATIVE dispatch ran after the framework-owner fallback (so native methods
 on Lcom/... classes were misrouted to Ljava/lang/Object), and class-name
 descriptors needed unmangling before the `Java_...` symbol lookup.
 
-`nativeInit` is the remaining fault: it computes a pointer from engine state
-that the real wrapper populates during `StartGame` (its C++ callback
-registration and load-data path). The trail is visible in the boot message.
-Also note `nativePreInit` writes back `[0, 0, 0]` geometry — the engine sizes
-itself from static state that arrives via the full wrapper flow.
+`initialize()` (the wrapper's real boot method) is now driven as Dalvik code
+from `boot()`, replacing the manual native-call harness. It runs the wrapper's
+own sequence — `setDisplay` (real view dimensions from the WindowManager shim),
+`nativePreInit`, and `nativeInit` with the Java-side arrays. `nativeInit` is
+the remaining fault: it crashes calling `vsprintf` through a C++ object whose
+member function pointer is null — an object-construction-order dependency on
+the wrapper's `StartGame`-era init that runs only under the full Dalvik flow
+(`nativeRender`'s logging timer path). The trail is in the boot message. The
+GL dispatcher and JNI handles are in place for `nativeRender` once that
+constructor order is satisfied.
 
 ### First-frame status
 

@@ -373,13 +373,24 @@ impl Runtime {
                 // GLSurfaceView loop into native code; per-frame native
                 // dispatch is the next integration step, so record the boot
                 // without a Dalvik render session.
-                // Drive the engine bring-up exactly as the wrapper would:
-                // nativePreInit(int[] geometry, w, h) then nativeInit(
-                // long[] time, int[] upTime, int[] pixel, float[] gyro).
-                let native_boot = native_bridge
-                    .lock()
-                    .map(|mut bridge| bridge.boot_engine(&plan.package))
-                    .unwrap_or_else(|_| "native bridge lock failed".to_owned());
+                // Drive the engine bring-up through real Dalvik code: the
+                // wrapper's WrapperJinterface.initialize() runs setDisplay,
+                // nativePreInit, and nativeInit with the Java-side arrays.
+                let native_boot = (|| -> Result<String, String> {
+                    let class = "Lcom/com2us/wrapper/WrapperJinterface;";
+                    let Some(method) = vm
+                        .dex
+                        .methods
+                        .iter()
+                        .position(|m| m.class_name == class && m.name == "initialize")
+                    else {
+                        return Ok("no wrapper initialize() in this APK".to_owned());
+                    };
+                    vm.run_method(method, Vec::new())
+                        .map(|_| "initialize() completed".to_owned())
+                        .map_err(|error| error.to_string())
+                })()
+                .unwrap_or_else(|error| format!("initialize stopped: {error}"));
                 let (native_log, loaded_native) = native_bridge
                     .lock()
                     .map(|bridge| {
