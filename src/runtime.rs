@@ -389,15 +389,21 @@ impl Runtime {
                         )
                     })
                     .unwrap_or_default();
+                let framework_log = vm.framework.logs.join("; ");
+                let mut graphics = if native_log.is_empty() {
+                    format!("onCreate complete; {native_boot}")
+                } else {
+                    format!("onCreate complete; {native_log}; {native_boot}")
+                };
+                if !framework_log.is_empty() {
+                    graphics.push_str("; vm: ");
+                    graphics.push_str(&framework_log);
+                }
                 return Ok(BootState {
                     result: ExecutionResult::ReturnVoid,
                     loaded_native_libraries: loaded_native,
                     activities,
-                    graphics: if native_log.is_empty() {
-                        format!("onCreate complete; {native_boot}")
-                    } else {
-                        format!("onCreate complete; {native_log}; {native_boot}")
-                    },
+                    graphics,
                     vm_result: "onCreate completed".to_owned(),
                 });
             } else {

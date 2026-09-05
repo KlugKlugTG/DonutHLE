@@ -343,12 +343,14 @@ impl Machine {
             String::new()
         };
         format!(
-            "native CPU fault at pc {pc:#010x} (thumb={}): {message}{host_hint}; r0={:08x} r1={:08x} r2={:08x} r3={:08x}; recent pc: {trail}",
+            "native CPU fault at pc {pc:#010x} (thumb={}): {message}{host_hint}; r0={:08x} r1={:08x} r2={:08x} r3={:08x} r6={:08x} r7={:08x}; recent pc: {trail}",
             self.cpu.flags.thumb,
             self.cpu.r[0],
             self.cpu.r[1],
             self.cpu.r[2],
             self.cpu.r[3],
+            self.cpu.r[6],
+            self.cpu.r[7],
         )
     }
 
@@ -1301,10 +1303,11 @@ impl Machine {
             return Ok(());
         }
         if insn < 0x6000 {
-            // Load/store with register offset.
+            // Load/store with register offset: base = bits[5:3] (Rn),
+            // offset register = bits[8:6] (Rm), data = bits[2:0] (Rt).
             let opcode = u32::from((insn >> 9) & 7);
             let address = self.cpu.r[((insn >> 3) & 7) as usize]
-                .wrapping_add(self.cpu.r[(insn & 7) as usize]);
+                .wrapping_add(self.cpu.r[((insn >> 6) & 7) as usize]);
             return self.thumb_memory_access(opcode, address, (insn & 7) as usize, next_pc);
         }
         if insn < 0x8000 {

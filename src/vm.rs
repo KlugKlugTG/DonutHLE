@@ -617,19 +617,22 @@ impl<'a> Vm<'a> {
         let code = match self.dex.method_code_by_index(method_index) {
             Some(code) => code.clone(),
             None => {
-                if let Some(owner) = self
-                    .dex
-                    .framework_method_owner(&method.class_name, &method.name)
-                {
-                    if owner.starts_with("Lcom/badlogic/gdx/") {
-                        return self.dispatch_gdx(&owner, &method.name, &args);
-                    }
-                    return self.dispatch_framework(&owner, &method.name, &args);
-                }
+                // ACC_NATIVE must route to the native bridge before the
+                // framework-owner walk: a native method on a Lcom/... class
+                // would otherwise be claimed by the Ljava/ super fallback.
                 let flags = self.dex.method_access_flags(method_index).unwrap_or(0);
                 if flags & 0x0100 != 0 {
+                    // Class-init on demand: NativeInterface.<clinit> loads its
+                    // own library through loadLibrary before the call lands.
+                    self.ensure_class_initialized(&method.class_name)?;
                     if let Some(dispatch) = self.native_dispatch.as_mut() {
-                        let class_name = method.class_name.clone();
+                        // Descriptor (Lcom/...;) -> dotted (com....) for the
+                        // Java_x_y_z symbol mangle.
+                        let class_name = method
+                            .class_name
+                            .trim_start_matches('L')
+                            .trim_end_matches(';')
+                            .replace('/', ".");
                         let name = method.name.clone();
                         // Strip the receiver/class argument: JNI static
                         // entry points take (JNIEnv*, jclass, params...).
@@ -642,6 +645,15 @@ impl<'a> Vm<'a> {
                         method.class_name, method.name
                     ));
                     return Ok(Value::Void);
+                }
+                if let Some(owner) = self
+                    .dex
+                    .framework_method_owner(&method.class_name, &method.name)
+                {
+                    if owner.starts_with("Lcom/badlogic/gdx/") {
+                        return self.dispatch_gdx(&owner, &method.name, &args);
+                    }
+                    return self.dispatch_framework(&owner, &method.name, &args);
                 }
                 if flags & 0x0400 != 0 {
                     return Ok(Value::Void);
@@ -2339,6 +2351,29 @@ impl<'a> Vm<'a> {
             return Ok(Value::Void);
         }
         if class_name == "Ljava/lang/Thread;" {
+            // Single-threaded machine: Thread(Runnable).start() runs the
+            // runnable synchronously on the current frame.
+            if method_name == "<init>" {
+                if let Some(Value::Object(runnable)) = args.get(1) {
+                    let receiver = object_arg(args, 0)?;
+                    self.set_object_field(receiver, "runnable", Value::Object(*runnable));
+                }
+                return Ok(Value::Void);
+            }
+            if method_name == "start" {
+                let receiver = object_arg(args, 0)?;
+                if let Some(runnable) = self.object_field_object(receiver, "runnable") {
+                    self.framework
+                        .logs
+                        .push("Thread.start ran a runnable".to_owned());
+                    self.run_instance_method(runnable, "run", Vec::new())?;
+                } else {
+                    self.framework
+                        .logs
+                        .push("Thread.start called without a runnable".to_owned());
+                }
+                return Ok(Value::Void);
+            }
             return match method_name {
                 "currentThread" => Ok(Value::Object(self.alloc_instance("Ljava/lang/Thread;"))),
                 "setPriority" | "yield" => Ok(Value::Void),

@@ -111,6 +111,25 @@ into `src/native_bridge.rs`, which owns the machine, stages library bytes from
 the APK, installs the `jni.rs` environment, and marshals Dalvik values into
 `(env, jclass, args...)` with JNI handles for Java arrays/strings.
 
+### Cracked license chain executes
+
+The full zirconia flow now runs end to end: `InitializeSecurityModule` ->
+`checkLicense(ZZ)` -> `Thread(Runnable).start()` (single-threaded machine runs
+the runnable synchronously) -> `CheckerRunnable.run()` ->
+`NativeInterface.checkLicenseFile/checkLicenseFile2` (real ARM SHA1 code from
+libnativeinterface.so) -> `licenseCheckedAsValid()` -> `StartGame` ->
+`nativePreInit`. Three more decoder/integration bugs fell out: the format-5
+offset register read `Rt` (bits 2:0) instead of `Rm` (bits 8:6), the
+ACC_NATIVE dispatch ran after the framework-owner fallback (so native methods
+on Lcom/... classes were misrouted to Ljava/lang/Object), and class-name
+descriptors needed unmangling before the `Java_...` symbol lookup.
+
+`nativeInit` is the remaining fault: it computes a pointer from engine state
+that the real wrapper populates during `StartGame` (its C++ callback
+registration and load-data path). The trail is visible in the boot message.
+Also note `nativePreInit` writes back `[0, 0, 0]` geometry — the engine sizes
+itself from static state that arrives via the full wrapper flow.
+
 ### First-frame status
 
 `nativePreInit(int[] geometry, w, h)` executes completely through the JNI
