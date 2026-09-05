@@ -719,12 +719,10 @@ impl HostBridge for BasicHost {
                 1
             }
             "sprintf" | "vsprintf" => {
+                // Real bionic vsprintf is variadic: r2 holds the FIRST vararg
+                // value, not a va_list pointer.
                 let (destination, format_address) = (machine.cpu.r[0], machine.cpu.r[1]);
-                let cursor = if name == "sprintf" {
-                    ArgCursor::after_fixed_args(machine, 2)
-                } else {
-                    ArgCursor::from_va_list(machine, machine.cpu.r[2])
-                };
+                let cursor = ArgCursor::after_fixed_args(machine, 2);
                 let text = self.format(machine, format_address, cursor);
                 let _ = machine.memory.write_cstr(destination, &text);
                 text.len() as u32
@@ -1112,7 +1110,19 @@ impl BasicHost {
                     .jni_arrays
                     .get(&handle)
                     .map(|array| array.storage + 4)
-                    .unwrap_or(0);
+                    .unwrap_or_else(|| {
+                        // A handle we don't know (Dalvik-mirrored or NULL):
+                        // allocate scratch storage so the engine's writes land
+                        // somewhere valid instead of faulting.
+                        self.log(format!(
+                            "JNI {function}({handle:#x}): unknown handle, allocating scratch"
+                        ));
+                        self.jni_next = (self.jni_next + 15) & !15;
+                        let scratch = self.jni_next;
+                        self.jni_next += 64;
+                        self.jni_array_storage.insert(scratch - 4, handle);
+                        scratch
+                    });
                 self.log(format!("JNI {function}({handle:#x}) -> {data:#x}"));
                 data
             }

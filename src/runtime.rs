@@ -325,12 +325,17 @@ impl Runtime {
             }
             {
                 let dispatch_bridge = std::sync::Arc::clone(&native_bridge);
-                vm.native_dispatch = Some(Box::new(move |class_name, name, params| {
-                    dispatch_bridge
-                        .lock()
-                        .expect("native bridge lock")
-                        .call_native(class_name, name, params)
-                }));
+                vm.native_dispatch = Some(Box::new(
+                    move |class_name: &str,
+                          name: &str,
+                          params: &[crate::vm::Value],
+                          heap: &[crate::vm::HeapObject]| {
+                        dispatch_bridge
+                            .lock()
+                            .expect("native bridge lock")
+                            .call_native(class_name, name, params, heap)
+                    },
+                ));
             }
             let method_index = plan
                 .dex
@@ -376,7 +381,7 @@ impl Runtime {
                 // Drive the engine bring-up through real Dalvik code: the
                 // wrapper's WrapperJinterface.initialize() runs setDisplay,
                 // nativePreInit, and nativeInit with the Java-side arrays.
-                let native_boot = (|| -> Result<String, String> {
+                let native_boot: String = (|| -> Result<String, String> {
                     let class = "Lcom/com2us/wrapper/WrapperJinterface;";
                     let Some(method) = vm
                         .dex
@@ -391,6 +396,10 @@ impl Runtime {
                         .map_err(|error| error.to_string())
                 })()
                 .unwrap_or_else(|error| format!("initialize stopped: {error}"));
+                // Copy mirrored JNI array results back into the Dalvik heap.
+                if let Ok(bridge) = native_bridge.lock() {
+                    vm.copy_heap_from(&bridge.dalvik_heap);
+                }
                 let (native_log, loaded_native) = native_bridge
                     .lock()
                     .map(|bridge| {

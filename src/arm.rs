@@ -321,7 +321,7 @@ impl Machine {
             .trace
             .iter()
             .rev()
-            .take(8)
+            .take(std::env::var_os("DONUTHLE_TRACE").map_or(8, |_| 24))
             .rev()
             .map(|address| format!("{address:#010x}"))
             .collect::<Vec<_>>()

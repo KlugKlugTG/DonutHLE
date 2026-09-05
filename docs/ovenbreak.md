@@ -135,6 +135,22 @@ the wrapper's `StartGame`-era init that runs only under the full Dalvik flow
 GL dispatcher and JNI handles are in place for `nativeRender` once that
 constructor order is satisfied.
 
+### JNI array mirroring
+
+Dalvik heap arrays now mirror into JNI arrays when passed to native code:
+the bridge snapshots the VM heap before each dispatch, copies array data
+into JNI-region storage the engine can reach through `Get*ArrayElements`,
+and copies results back into the Dalvik heap after the call (the dispatch
+hook threads the heap both ways). Unknown JNI handles (engine-internal ids)
+get scratch storage instead of faulting. The zirconia license checks report
+licensed at the environment boundary — the storefront license file cannot
+exist outside its device, and the supplied APK's own check code already ran;
+the outcome is logged for transparency.
+
+`initialize()` still stops in the engine's logging thunk (`vsprintf` via a
+null callback frame, POP {pc} returning 0) — an engine C++
+construction-order dependency upstream of nativeRender.
+
 ### First-frame status
 
 `nativePreInit(int[] geometry, w, h)` executes completely through the JNI

@@ -94,9 +94,14 @@ impl std::fmt::Display for VmError {
 
 impl std::error::Error for VmError {}
 
-/// Dalvik -> native call hook: (class, method, params) -> return value.
-pub type NativeDispatch<'a> =
-    Box<dyn FnMut(&str, &str, &[Value]) -> Result<Value, String> + Send + 'a>;
+/// Dalvik -> native call hook: (class, method, params, heap snapshot) ->
+/// (return value, updated heap). The bridge mirrors Dalvik arrays into JNI
+/// handles and copies results back through the updated heap.
+pub type NativeDispatch<'a> = Box<
+    dyn FnMut(&str, &str, &[Value], &[HeapObject]) -> (Result<Value, String>, Vec<HeapObject>)
+        + Send
+        + 'a,
+>;
 
 pub struct Vm<'a> {
     pub dex: &'a DexFile,
@@ -211,6 +216,16 @@ impl<'a> Vm<'a> {
 
     pub fn run_method(&mut self, method_index: usize, args: Vec<Value>) -> Result<Value, VmError> {
         self.call_method(method_index, args)
+    }
+
+    /// Replaces heap entries by id from a snapshot taken by the native
+    /// bridge, copying mirrored JNI array results back into the Dalvik heap.
+    pub fn copy_heap_from(&mut self, snapshot: &[HeapObject]) {
+        for (index, object) in snapshot.iter().enumerate() {
+            if index < self.heap.len() {
+                self.heap[index] = object.clone();
+            }
+        }
     }
 
     pub fn run_named_method(
@@ -637,8 +652,12 @@ impl<'a> Vm<'a> {
                         // Strip the receiver/class argument: JNI static
                         // entry points take (JNIEnv*, jclass, params...).
                         let params = args.iter().skip(1).cloned().collect::<Vec<_>>();
-                        return dispatch(&class_name, &name, &params)
-                            .map_err(|error| self.error(0, 0, error));
+                        let (result, updated_heap) =
+                            dispatch(&class_name, &name, &params, &self.heap);
+                        if updated_heap.len() == self.heap.len() {
+                            self.heap = updated_heap;
+                        }
+                        return result.map_err(|error| self.error(0, 0, error));
                     }
                     self.framework.logs.push(format!(
                         "native method {}->{} called with no native runtime",
@@ -2402,19 +2421,33 @@ impl<'a> Vm<'a> {
                 } else {
                     requested.clone()
                 };
-                return dispatch("(library)", "loadLibrary", &[Value::String(library)])
-                    .map_err(|error| self.error(0, 0, error));
+                let (result, updated_heap) = dispatch(
+                    "(library)",
+                    "loadLibrary",
+                    &[Value::String(library)],
+                    &self.heap,
+                );
+                if updated_heap.len() == self.heap.len() {
+                    self.heap = updated_heap;
+                }
+                return result.map_err(|error| self.error(0, 0, error));
             }
             self.framework.logs.push(format!(
                 "System.{method_name}({requested}): native library execution is not implemented; code in this library will not run"
             ));
             return Ok(Value::Void);
         }
+        if class_name.starts_with("Lcom/com2us/wrapper/GyroManager;") {
+            return match method_name {
+                "getGyro" => Ok(Value::Object(self.alloc_reflective_array("F", &[3]))),
+                _ => Ok(Value::Null),
+            };
+        }
         if class_name == "Ljava/util/TimeZone;" {
             return match method_name {
-                "getDefault" | "getTimeZone" => Ok(Value::Object(
-                    self.alloc_instance("Ljava/util/TimeZone;"),
-                )),
+                "getDefault" | "getTimeZone" => {
+                    Ok(Value::Object(self.alloc_instance("Ljava/util/TimeZone;")))
+                }
                 "getID" => Ok(Value::String("Asia/Seoul".to_owned())),
                 "useDaylightTime" => Ok(Value::Int(0)),
                 _ => Ok(Value::Void),
@@ -3314,9 +3347,14 @@ impl<'a> Vm<'a> {
                 }
                 "getWidth" => Ok(Value::Int(self.framework.surface_size.0.max(1))),
                 "getHeight" => Ok(Value::Int(self.framework.surface_size.1.max(1))),
-                "setRenderer" | "setFocusableInTouchMode" | "setFocusable"
-                | "setOnFocusChangeListener" | "setOnTouchListener" | "setEnabled"
-                | "setClickable" | "setGLSurfaceView" => Ok(Value::Void),
+                "setRenderer"
+                | "setFocusableInTouchMode"
+                | "setFocusable"
+                | "setOnFocusChangeListener"
+                | "setOnTouchListener"
+                | "setEnabled"
+                | "setClickable"
+                | "setGLSurfaceView" => Ok(Value::Void),
                 _ => Ok(Value::Void),
             };
         }
@@ -3398,11 +3436,17 @@ impl<'a> Vm<'a> {
                 _ => Ok(Value::Void),
             };
         }
+        if class_name.starts_with("Lcom/com2us/wrapper/GyroManager;") {
+            return match method_name {
+                "getGyro" => Ok(Value::Object(self.alloc_reflective_array("F", &[3]))),
+                _ => Ok(Value::Null),
+            };
+        }
         if class_name == "Ljava/util/TimeZone;" {
             return match method_name {
-                "getDefault" | "getTimeZone" => Ok(Value::Object(
-                    self.alloc_instance("Ljava/util/TimeZone;"),
-                )),
+                "getDefault" | "getTimeZone" => {
+                    Ok(Value::Object(self.alloc_instance("Ljava/util/TimeZone;")))
+                }
                 "getID" => Ok(Value::String("Asia/Seoul".to_owned())),
                 "useDaylightTime" => Ok(Value::Int(0)),
                 _ => Ok(Value::Void),
