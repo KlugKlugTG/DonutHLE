@@ -342,8 +342,15 @@ impl Machine {
         } else {
             String::new()
         };
+        // Stack dump: the top 12 words at r13, so return-address corruption
+        // (POP {pc} jumping to 0) is visible in the message itself.
+        let stack_dump = (0..12)
+            .filter_map(|index| self.memory.read_u32(self.cpu.r[13] + index as u32 * 4).ok())
+            .map(|value| format!("{value:08x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
-            "native CPU fault at pc {pc:#010x} (thumb={}): {message}{host_hint}; r0={:08x} r1={:08x} r2={:08x} r3={:08x} r6={:08x} r7={:08x}; recent pc: {trail}",
+            "native CPU fault at pc {pc:#010x} (thumb={}): {message}{host_hint}; r0={:08x} r1={:08x} r2={:08x} r3={:08x} r6={:08x} r7={:08x}; stack@sp: {stack_dump}; recent pc: {trail}",
             self.cpu.flags.thumb,
             self.cpu.r[0],
             self.cpu.r[1],
