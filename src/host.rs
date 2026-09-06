@@ -399,11 +399,15 @@ impl BasicHost {
                 width = width * 10 + (bytes[index] - b'0') as usize;
                 index += 1;
             }
+            let mut precision: Option<usize> = None;
             if index < bytes.len() && bytes[index] == b'.' {
                 index += 1;
+                let mut digits = 0usize;
                 while index < bytes.len() && bytes[index].is_ascii_digit() {
+                    digits = digits * 10 + (bytes[index] - b'0') as usize;
                     index += 1;
                 }
+                precision = Some(digits);
             }
             if index + 1 < bytes.len() && (bytes[index] == b'l' || bytes[index] == b'h') {
                 index += 1;
@@ -435,13 +439,9 @@ impl BasicHost {
                 b'c' => char::from_u32(cursor.next_u32(machine) & 0xFF)
                     .unwrap_or('?')
                     .to_string(),
-                b'f' | b'g' | b'e' => {
-                    // Soft-float ABI passes doubles in two registers each.
-                    let low = cursor.next_u32(machine);
-                    let high = cursor.next_u32(machine);
-                    let bits = (low as u64) | ((high as u64) << 32);
-                    format!("{}", f64::from_bits(bits))
-                }
+                b'f' | b'F' => format!("{:.*}", precision.unwrap_or(6), cursor.next_f64(machine)),
+                b'g' | b'G' => format!("{}", cursor.next_f64(machine)),
+                b'e' | b'E' => format!("{:e}", cursor.next_f64(machine)),
                 other => {
                     output.push('%');
                     output.push(other as char);
@@ -514,10 +514,14 @@ impl ArgCursor {
         }
     }
 
-    /// Cursor starting at a bionic `va_list` (first word = stack pointer).
-    fn from_va_list(machine: &Machine, va_list_address: u32) -> Self {
-        let stack = machine.memory.read_u32(va_list_address).unwrap_or(0);
-        Self { register: 4, stack }
+    /// Cursor reading varargs straight from guest memory starting at
+    /// `va_list` — on ARM EABI a `va_list` is a single pointer into the
+    /// caller's frame (see bionic vfprintf.c: `__va_list ap`).
+    fn from_va_list_pointer(va_list: u32) -> Self {
+        Self {
+            register: 4,
+            stack: va_list,
+        }
     }
 
     fn next_u32(&mut self, machine: &Machine) -> u32 {
@@ -529,6 +533,16 @@ impl ArgCursor {
         let value = machine.memory.read_u32(self.stack).unwrap_or(0);
         self.stack += 4;
         value
+    }
+
+    /// Reads a double vararg: AAPCS aligns 8-byte arguments to 8 bytes.
+    fn next_f64(&mut self, machine: &Machine) -> f64 {
+        if self.register > 3 {
+            self.stack = (self.stack + 7) & !7;
+        }
+        let low = self.next_u32(machine);
+        let high = self.next_u32(machine);
+        f64::from_bits((low as u64) | ((high as u64) << 32))
     }
 
     fn next_i32(&mut self, machine: &Machine) -> i32 {
@@ -718,23 +732,39 @@ impl HostBridge for BasicHost {
                 self.log(format!("stdio: {text}"));
                 1
             }
-            "sprintf" | "vsprintf" => {
-                // Real bionic vsprintf is variadic: r2 holds the FIRST vararg
-                // value, not a va_list pointer.
+            "sprintf" => {
+                // Variadic: r2, r3, then the caller's stack.
                 let (destination, format_address) = (machine.cpu.r[0], machine.cpu.r[1]);
                 let cursor = ArgCursor::after_fixed_args(machine, 2);
                 let text = self.format(machine, format_address, cursor);
                 let _ = machine.memory.write_cstr(destination, &text);
                 text.len() as u32
             }
-            "snprintf" | "vsnprintf" => {
+            "vsprintf" => {
+                // vsprintf(char*, const char*, va_list): r2 IS the va_list,
+                // a pointer into the caller's frame (bionic vfprintf ABI).
+                let (destination, format_address) = (machine.cpu.r[0], machine.cpu.r[1]);
+                let cursor = ArgCursor::from_va_list_pointer(machine.cpu.r[2]);
+                let text = self.format(machine, format_address, cursor);
+                let _ = machine.memory.write_cstr(destination, &text);
+                text.len() as u32
+            }
+            "snprintf" => {
                 let (destination, limit, format_address) =
                     (machine.cpu.r[0], machine.cpu.r[1], machine.cpu.r[2]);
-                let cursor = if name == "snprintf" {
-                    ArgCursor::after_fixed_args(machine, 3)
-                } else {
-                    ArgCursor::from_va_list(machine, machine.cpu.r[3])
-                };
+                let cursor = ArgCursor::after_fixed_args(machine, 3);
+                let text = self.format(machine, format_address, cursor);
+                let truncated: String = text
+                    .chars()
+                    .take(limit.saturating_sub(1) as usize)
+                    .collect();
+                let _ = machine.memory.write_cstr(destination, &truncated);
+                text.len() as u32
+            }
+            "vsnprintf" => {
+                let (destination, limit, format_address) =
+                    (machine.cpu.r[0], machine.cpu.r[1], machine.cpu.r[2]);
+                let cursor = ArgCursor::from_va_list_pointer(machine.cpu.r[3]);
                 let text = self.format(machine, format_address, cursor);
                 let truncated: String = text
                     .chars()
@@ -2017,5 +2047,99 @@ mod tests {
         let value = fixture.host.call_host(&mut fixture.machine, 9_999);
         assert_eq!(value, 0);
         assert!(!fixture.host.log.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod va_list_tests {
+    use super::tests::{Fixture, DATA};
+
+    #[test]
+    fn vsprintf_reads_varargs_from_guest_va_list() {
+        let mut fixture = Fixture::new();
+        // Guest frame: the engine thunk builds its va_list with
+        // ADD r2, sp, #N pointing into the caller's stack varargs.
+        let varargs = DATA + 0x400;
+        fixture.machine.memory.write_u32(varargs, 42).unwrap(); // %d
+        fixture
+            .machine
+            .memory
+            .write_u32(varargs + 4, DATA + 0x500)
+            .unwrap(); // %s pointer
+        let bits = 2.5f64.to_bits();
+        fixture
+            .machine
+            .memory
+            .write_u32(varargs + 8, bits as u32)
+            .unwrap();
+        fixture
+            .machine
+            .memory
+            .write_u32(varargs + 12, (bits >> 32) as u32)
+            .unwrap(); // %f (already 8-aligned)
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0x500, "km")
+            .unwrap();
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0x460, "dist=%dm at %s (%.1f)")
+            .unwrap();
+        let destination = DATA + 0x580;
+
+        fixture.machine.cpu.r[0] = destination;
+        fixture.machine.cpu.r[1] = DATA + 0x460;
+        fixture.machine.cpu.r[2] = varargs; // the va_list itself
+        let written = fixture.call("vsprintf", &[destination, DATA + 0x460, varargs]);
+
+        assert_eq!(
+            fixture
+                .machine
+                .memory
+                .read_cstr(destination, 64)
+                .unwrap_or_default(),
+            "dist=42m at km (2.5)"
+        );
+        assert_eq!(written, 20);
+    }
+
+    #[test]
+    fn vsprintf_double_alignment_is_honored() {
+        let mut fixture = Fixture::new();
+        // One int (4 bytes) then a double: AAPCS pads to 8-byte alignment.
+        let varargs = DATA + 0x402; // deliberately 2 mod 4 -> aligns to +0x408
+        fixture.machine.memory.write_u32(varargs, 7).unwrap();
+        let aligned = (varargs + 7) & !7;
+        let bits = 1.5f64.to_bits();
+        fixture
+            .machine
+            .memory
+            .write_u32(aligned, bits as u32)
+            .unwrap();
+        fixture
+            .machine
+            .memory
+            .write_u32(aligned + 4, (bits >> 32) as u32)
+            .unwrap();
+        fixture
+            .machine
+            .memory
+            .write_cstr(DATA + 0x440, "%d:%.2f")
+            .unwrap();
+        let destination = DATA + 0x600;
+        fixture.machine.cpu.r[0] = destination;
+        fixture.machine.cpu.r[1] = DATA + 0x440;
+        fixture.machine.cpu.r[2] = varargs;
+        fixture.call("vsprintf", &[]);
+        assert_eq!(
+            fixture
+                .machine
+                .memory
+                .read_cstr(destination, 32)
+                .unwrap_or_default(),
+            "7:1.50"
+        );
     }
 }

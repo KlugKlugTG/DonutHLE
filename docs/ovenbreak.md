@@ -170,3 +170,22 @@ The trace (`r5 = module .bss + jclass`, garbage offset) is recorded in the
 boot message; identifying which wrapper step sets that global is the next
 debugging task. GL imports (47 functions) are bound to the software
 rasterizer through `BasicHost::call_gl`, ready for `nativeRender`.
+
+## Reference sources
+
+Local reference material (read-only; Apache-2.0 AOSP/BSD sources consulted to
+re-derive shim behavior — never compiled in or shipped):
+
+- `../source_code/AOSP_framework_Java_donut-release2/GLSurfaceView.java` — the
+  donut (API 4) renderer lifecycle ground truth: `guardedRun()`'s callback
+  order `onSurfaceCreated -> onSurfaceChanged -> onDrawFrame` drives the
+  runtime's lifecycle driver.
+- `../source_code/AOSP_framework_Java_eclair-release/GLSurfaceView.java` —
+  eclair variant kept for comparison.
+- `../source_code/vfprintf.c` — bionic's BSD-derived vfprintf: confirms
+  `vsprintf(char*, const char*, __va_list)` takes a va_list (single pointer
+  into the caller's frame on ARM EABI), which the host shim now models with
+  8-byte double alignment.
+- `../source_code/opengles_spec_1_0.pdf` — Khronos GLES 1.0 specification for
+  the fixed-function milestone (client arrays, palette textures,
+  fixed-point entry points).

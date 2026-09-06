@@ -348,7 +348,27 @@ impl NativeBridge {
                 DalvikValue::Object(handle) => {
                     // Dalvik heap arrays mirror into JNI arrays so the
                     // engine's Get*ArrayElements sees real data.
-                    self.mirror_dalvik_array(*handle).unwrap_or(*handle)
+                    match self.mirror_dalvik_array(*handle) {
+                        Some(jni_handle) => jni_handle,
+                        None => {
+                            if std::env::var_os("DONUTHLE_TRACE").is_some() {
+                                let what = match self.dalvik_heap.get(*handle as usize) {
+                                    Some(crate::vm::HeapObject::Array { component, values }) => {
+                                        format!("array {component}[{}]", values.len())
+                                    }
+                                    Some(crate::vm::HeapObject::Instance {
+                                        class_name, ..
+                                    }) => {
+                                        format!("instance {class_name}")
+                                    }
+                                    Some(other) => format!("{other:?}"),
+                                    None => "out of heap".to_owned(),
+                                };
+                                eprintln!("mirror miss on object {handle}: {what}");
+                            }
+                            *handle
+                        }
+                    }
                 }
                 DalvikValue::String(text) => {
                     let text = text.clone();
@@ -358,11 +378,12 @@ impl NativeBridge {
             });
         }
         // AAPCS: arguments beyond r0-r3 are passed on the caller's stack.
-        // Reserve room and write the extras so the callee's [sp] reads are
-        // valid; call_function snapshots/restores r13 afterwards.
+        // Move sp down by the arg block, write them at the new sp, and leave
+        // sp there for the call — the callee's own pushes then start BELOW
+        // the block instead of colliding with it.
         let extra = arm_args.len().saturating_sub(4);
         if extra > 0 {
-            let stack = self.machine.cpu.r[13] - (extra as u32) * 4;
+            let stack = self.machine.cpu.r[13].wrapping_sub((extra as u32) * 4);
             for (index, value) in arm_args[4..].iter().enumerate() {
                 if let Err(error) = self
                     .machine

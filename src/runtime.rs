@@ -378,24 +378,54 @@ impl Runtime {
                 // GLSurfaceView loop into native code; per-frame native
                 // dispatch is the next integration step, so record the boot
                 // without a Dalvik render session.
-                // Drive the engine bring-up through real Dalvik code: the
-                // wrapper's WrapperJinterface.initialize() runs setDisplay,
-                // nativePreInit, and nativeInit with the Java-side arrays.
+                // Drive the renderer lifecycle exactly as the donut
+                // GLSurfaceView GL thread does (guardedRun's first
+                // iteration): onSurfaceCreated -> onSurfaceChanged(w, h) ->
+                // onDrawFrame, executed as real Dalvik code on the renderer
+                // stored by setRenderer. The wrapper's initialize() runs
+                // inside onSurfaceCreated.
                 let native_boot: String = (|| -> Result<String, String> {
-                    let class = "Lcom/com2us/wrapper/WrapperJinterface;";
-                    let Some(method) = vm
-                        .dex
-                        .methods
-                        .iter()
-                        .position(|m| m.class_name == class && m.name == "initialize")
+                    let Some(view) = vm.find_instance_by_class("Landroid/opengl/GLSurfaceView;")
                     else {
-                        return Ok("no wrapper initialize() in this APK".to_owned());
+                        return Ok("no GLSurfaceView was created".to_owned());
                     };
-                    vm.run_method(method, Vec::new())
-                        .map(|_| "initialize() completed".to_owned())
-                        .map_err(|error| error.to_string())
+                    let Some(renderer) = vm.instance_field_object(view, "renderer") else {
+                        return Ok("GLSurfaceView has no renderer set".to_owned());
+                    };
+                    let gl = vm.alloc_instance("Ljavax/microedition/khronos/opengles/GL10;");
+                    let config = vm.alloc_instance("Ljavax/microedition/khronos/egl/EGLConfig;");
+                    let width = vm.framework_surface_width().max(1);
+                    let height = vm.framework_surface_height().max(1);
+                    // onSurfaceCreated(gl, config) — wrapper: initialize()
+                    vm.run_instance_method(
+                        renderer,
+                        "onSurfaceCreated",
+                        vec![VmValue::Object(gl), VmValue::Object(config)],
+                    )
+                    .map_err(|error| format!("onSurfaceCreated stopped: {error}"))?;
+                    vm.copy_heap_from(
+                        &native_bridge
+                            .lock()
+                            .map(|bridge| bridge.dalvik_heap.clone())
+                            .unwrap_or_default(),
+                    );
+                    // onSurfaceChanged(gl, w, h) — wrapper: no-op, sizes state
+                    vm.run_instance_method(
+                        renderer,
+                        "onSurfaceChanged",
+                        vec![
+                            VmValue::Object(gl),
+                            VmValue::Int(width),
+                            VmValue::Int(height),
+                        ],
+                    )
+                    .map_err(|error| format!("onSurfaceChanged stopped: {error}"))?;
+                    // onDrawFrame(gl) — wrapper: run() -> nativeRender
+                    vm.run_instance_method(renderer, "onDrawFrame", vec![VmValue::Object(gl)])
+                        .map_err(|error| format!("onDrawFrame stopped: {error}"))?;
+                    Ok("renderer lifecycle completed".to_owned())
                 })()
-                .unwrap_or_else(|error| format!("initialize stopped: {error}"));
+                .unwrap_or_else(|error| format!("renderer lifecycle stopped: {error}"));
                 // Copy mirrored JNI array results back into the Dalvik heap.
                 if let Ok(bridge) = native_bridge.lock() {
                     vm.copy_heap_from(&bridge.dalvik_heap);

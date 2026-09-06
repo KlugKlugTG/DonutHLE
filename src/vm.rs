@@ -218,6 +218,16 @@ impl<'a> Vm<'a> {
         self.call_method(method_index, args)
     }
 
+    /// Logical surface dimensions for renderer callbacks.
+    pub fn framework_surface_width(&self) -> i32 {
+        self.framework.surface_size.0
+    }
+
+    /// Logical surface height for renderer callbacks.
+    pub fn framework_surface_height(&self) -> i32 {
+        self.framework.surface_size.1
+    }
+
     /// Replaces heap entries by id from a snapshot taken by the native
     /// bridge, copying mirrored JNI array results back into the Dalvik heap.
     pub fn copy_heap_from(&mut self, snapshot: &[HeapObject]) {
@@ -1189,8 +1199,30 @@ impl<'a> Vm<'a> {
                 }
                 0x1f => {
                     let register = ((instruction >> 8) & 0xff) as usize;
-                    let _type_index = code_word(code, pc + 1, pc, opcode)? as usize;
-                    let _value = get_register(&registers, register, pc, opcode)?;
+                    let type_index = code_word(code, pc + 1, pc, opcode)? as usize;
+                    // check-cast on a synthesized framework view relabels the
+                    // instance: findViewById returns generic Views, and the
+                    // app immediately narrows them (GLSurfaceView, EditText...).
+                    if let Some(expected) = self.dex.types.get(type_index).cloned() {
+                        if let Value::Object(id) = get_register(&registers, register, pc, opcode)? {
+                            if let Some(HeapObject::Instance { class_name, .. }) =
+                                self.heap_object(id)
+                            {
+                                // Framework classes are absent from the DEX
+                                // hierarchy, so the synthesized View is
+                                // relabeled to whatever the app narrows it to.
+                                if class_name.starts_with("Landroid/")
+                                    && expected.starts_with("Landroid/")
+                                {
+                                    if let Some(HeapObject::Instance { class_name, .. }) =
+                                        self.heap.get_mut(id as usize)
+                                    {
+                                        *class_name = expected;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     pc += 2;
                 }
                 0x20 => {
@@ -3328,8 +3360,20 @@ impl<'a> Vm<'a> {
                 _ => Ok(Value::Null),
             };
         }
-        if class_name == "Landroid/view/View;" {
+        if class_name == "Landroid/view/View;" || class_name == "Landroid/opengl/GLSurfaceView;" {
             return match method_name {
+                "setRenderer" => {
+                    // Donut GLSurfaceView.setRenderer stores the renderer and
+                    // starts the GL thread; store it on the view so the
+                    // lifecycle driver can find it.
+                    let receiver = object_arg(args, 0)?;
+                    let renderer = object_arg(args, 1)?;
+                    self.set_object_field(receiver, "renderer", Value::Object(renderer));
+                    self.framework
+                        .logs
+                        .push("GLSurfaceView: renderer set".to_owned());
+                    Ok(Value::Void)
+                }
                 "getLayoutParams" => {
                     // Cache LayoutParams per view so later iget/sput see the
                     // same instance the guest mutated.
@@ -3347,8 +3391,10 @@ impl<'a> Vm<'a> {
                 }
                 "getWidth" => Ok(Value::Int(self.framework.surface_size.0.max(1))),
                 "getHeight" => Ok(Value::Int(self.framework.surface_size.1.max(1))),
-                "setRenderer"
-                | "setFocusableInTouchMode"
+                "getHolder" => Ok(Value::Object(
+                    self.alloc_instance("Landroid/view/SurfaceHolder;"),
+                )),
+                "setFocusableInTouchMode"
                 | "setFocusable"
                 | "setOnFocusChangeListener"
                 | "setOnTouchListener"
@@ -5251,6 +5297,11 @@ impl<'a> Vm<'a> {
         if let Some(HeapObject::Instance { fields, .. }) = self.heap.get_mut(object as usize) {
             fields.insert(name.to_owned(), value);
         }
+    }
+
+    /// Public field read for the runtime's lifecycle driver.
+    pub fn instance_field_object(&self, object: ObjectId, name: &str) -> Option<ObjectId> {
+        self.object_field_object(object, name)
     }
 
     fn object_field_object(&self, object: ObjectId, name: &str) -> Option<ObjectId> {
