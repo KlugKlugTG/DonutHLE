@@ -1,6 +1,6 @@
 # DonutHLE — Full Development History and Feature Inventory
 
-This document records **everything that was built in this repository**, derived from the complete git history (219 commits, 2026-08-14 → 2026-09-07) and the current source tree. It complements the [README](../README.md), which describes the current state, and [docs/ARCHITECTURE.md](ARCHITECTURE.md).
+This document records **everything that was built in this repository**, derived from the complete git history (221 commits, 2026-08-14 → 2026-09-07) and the current source tree. It complements the [README](../README.md), which describes the current state, and [docs/ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What DonutHLE is
 
@@ -25,7 +25,7 @@ Primary compatibility targets: **Tiny Santa / Slice Ice** (Dalvik + Canvas/libGD
 - Centralized compatibility-feature registry: APK DEX references → gap report; every unsupported API is logged, never silently claimed.
 
 ### Dalvik VM (`dalvik.rs`, `vm.rs`)
-- Guarded Dalvik 035 interpreter: register bounds checks, call-depth (256) and step (1M) limits, optional register tracing, visible VM errors with pc/opcode.
+- Guarded Dalvik 035 interpreter: register bounds checks, call-depth (256) limit and a per-invocation step budget (50M steps, resets at each top-level VM entry: boot lifecycle calls, game activation, frames, touch dispatch), optional register tracing, visible VM errors with pc/opcode. Rendering frames get the same budget per frame; an exceeded frame budget unwinds the frame and is logged.
 - Value model: int/long/float/double/object/string/null, with correct wide (J/D) register pairing, wide move/arithmetic/conversion opcodes, shift-count decoding, divide-by-zero handling, boxed primitives, high16 constants.
 - Full string/int/bool/`Math` (incl. trigonometry and round) library behavior, `StringBuilder`, boxed collections, `java.lang.Class.forName` with argument validation.
 - Arrays: creation, reads/writes, length, multi-dimensional arrays, bounds errors; later mirrored bidirectionally into JNI arrays for native calls.
@@ -75,9 +75,7 @@ Primary compatibility targets: **Tiny Santa / Slice Ice** (Dalvik + Canvas/libGD
 
 ## Full commit history
 
-(oldest → newest, all 219 commits)
-
-(oldest → newest, all 219 commits)
+(oldest → newest, all 221 commits)
 
 - `fef50e4` 2026-08-14 Initial DonutHLE Android 1.6 HLE prototype
 - `efcfae0` 2026-08-14 Add Android Studio native build shell
@@ -298,3 +296,5 @@ Primary compatibility targets: **Tiny Santa / Slice Ice** (Dalvik + Canvas/libGD
 - `38c7f36` 2026-09-06 Mirror Dalvik arrays into JNI arrays for native calls
 - `633ed86` 2026-09-07 Fix vsprintf va_list ABI; drive the donut renderer lifecycle
 - `f523659` 2026-09-07 Add stack dump to native fault diagnostics
+- `dd71ca1` 2026-09-07 Add full development log: complete feature inventory and all 219 commits
+- `282fe89` 2026-09-07 Fix instruction limit: per-invocation Dalvik step budget
