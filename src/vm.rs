@@ -39,6 +39,12 @@ pub enum HeapObject {
     Boxed(Value),
 }
 
+/// Runaway-code guard budget: the maximum Dalvik instructions executed
+/// within one top-level invocation (boot step, rendered frame, touch
+/// event). Real game update loops run millions of instructions per frame,
+/// so the guard is applied per invocation instead of per VM lifetime.
+pub const DEFAULT_MAX_STEPS: usize = 50_000_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmConfig {
     pub max_steps: usize,
@@ -49,7 +55,7 @@ pub struct VmConfig {
 impl Default for VmConfig {
     fn default() -> Self {
         Self {
-            max_steps: 1_000_000,
+            max_steps: DEFAULT_MAX_STEPS,
             max_call_depth: 256,
             trace_registers: false,
         }
@@ -115,6 +121,7 @@ pub struct Vm<'a> {
     initialized_classes: std::collections::HashSet<String>,
     call_depth: usize,
     executed_steps: usize,
+    invocation_steps: usize,
     frame_mode: bool,
     frame_aborted: bool,
     frame_steps: usize,
@@ -136,6 +143,7 @@ impl<'a> Vm<'a> {
             initialized_classes: std::collections::HashSet::new(),
             call_depth: 0,
             executed_steps: 0,
+            invocation_steps: 0,
             frame_mode: false,
             frame_aborted: false,
             frame_steps: 0,
@@ -215,6 +223,9 @@ impl<'a> Vm<'a> {
     }
 
     pub fn run_method(&mut self, method_index: usize, args: Vec<Value>) -> Result<Value, VmError> {
+        if self.call_depth == 0 {
+            self.invocation_steps = 0;
+        }
         self.call_method(method_index, args)
     }
 
@@ -254,6 +265,9 @@ impl<'a> Vm<'a> {
         prototype: Option<&str>,
         args: Vec<Value>,
     ) -> Result<Value, VmError> {
+        if self.call_depth == 0 {
+            self.invocation_steps = 0;
+        }
         let method_index = self
             .dex
             .methods
@@ -279,6 +293,9 @@ impl<'a> Vm<'a> {
         method_name: &str,
         mut args: Vec<Value>,
     ) -> Result<Value, VmError> {
+        if self.call_depth == 0 {
+            self.invocation_steps = 0;
+        }
         let class_name = match self.heap_object(object) {
             Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
             _ => return Err(self.error(0, 0, "listener is not an object instance")),
@@ -332,6 +349,9 @@ impl<'a> Vm<'a> {
     }
 
     pub fn render_frame(&mut self, object: ObjectId, method_name: &str) -> Result<Value, VmError> {
+        if self.call_depth == 0 {
+            self.invocation_steps = 0;
+        }
         let class_name = match self.heap_object(object) {
             Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
             _ => return Err(self.error(0, 0, "listener is not an object instance")),
@@ -387,6 +407,9 @@ impl<'a> Vm<'a> {
         x: f32,
         y: f32,
     ) -> Result<Value, VmError> {
+        if self.call_depth == 0 {
+            self.invocation_steps = 0;
+        }
         let listener = self
             .view_touch_listeners
             .get(&view)
@@ -759,13 +782,21 @@ impl<'a> Vm<'a> {
         let mut pending_result = Value::Void;
         while pc < code.instructions.len() {
             self.executed_steps += 1;
+            self.invocation_steps += 1;
             if self.frame_mode {
                 self.frame_steps += 1;
                 if self.frame_steps > self.config.max_steps {
+                    if !self.frame_aborted {
+                        self.framework.logs.push(format!(
+                            "frame aborted: instruction budget of {} steps exceeded; rendering continues with the state drawn so far",
+                            self.config.max_steps
+                        ));
+                    }
+                    self.frame_aborted = true;
                     return Ok(Value::Void);
                 }
             }
-            if !self.frame_mode && self.executed_steps > self.config.max_steps {
+            if !self.frame_mode && self.invocation_steps > self.config.max_steps {
                 return Err(self.error(pc, 0, "instruction limit exceeded"));
             }
             let instruction = code.instructions[pc];

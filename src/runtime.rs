@@ -31,7 +31,7 @@ impl Default for RuntimeConfig {
             screen: VirtualScreen::default(),
             api_level: crate::ANDROID_X_MAX_API_LEVEL,
             release: crate::RELEASE,
-            max_steps: 100_000,
+            max_steps: crate::vm::DEFAULT_MAX_STEPS,
         }
     }
 }
