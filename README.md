@@ -110,6 +110,8 @@ adb shell am start -n org.donuthle.android/.MainActivity
 ```
 
 GitHub Actions cross-compiles the Rust static library for `arm64-v8a`, `armeabi-v7a`, and `x86_64`, then packages debug and release APKs with SHA-256 checksums. See [`android/README.md`](android/README.md) and [`docs/actions-build.md`](docs/actions-build.md).
+A complete record of the project's development history — every feature and all 219 commits — is kept in [`docs/DEVELOPMENT_LOG.md`](docs/DEVELOPMENT_LOG.md).
+
 
 ## Architecture
 
