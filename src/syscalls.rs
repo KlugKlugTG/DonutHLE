@@ -148,12 +148,12 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             machine.cpu.tls = args[0];
             0
         }
-        0x0F00_005 => {
+        0x00F0_0005 => {
             // ARM private: set_tls (bionic < 2.9)
             machine.cpu.tls = args[0];
             0
         }
-        0x0F00_002 => 0, // ARM private: cacheflush (no I-cache model)
+        0x00F0_0002 => 0, // ARM private: cacheflush (no I-cache model)
 
         // ---- time ----
         13 => {
@@ -207,7 +207,7 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             if requested == 0 {
                 return machine.syscalls.brk;
             }
-            if requested < SYS_BRK_BASE || requested > SYS_BRK_BASE + SYS_BRK_SIZE {
+            if !(SYS_BRK_BASE..=SYS_BRK_BASE + SYS_BRK_SIZE).contains(&requested) {
                 return machine.syscalls.brk;
             }
             if requested > machine.syscalls.brk {
@@ -401,7 +401,7 @@ mod tests {
     }
 
     /// Runs `code` at a scratch address with r7/args preset, returns r0.
-
+    #[allow(clippy::assertions_on_constants)]
     fn pad5(v: [u32; 4]) -> [u32; 5] {
         let mut out = [0u32; 5];
         out[..4].copy_from_slice(&v);

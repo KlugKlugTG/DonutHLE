@@ -120,9 +120,9 @@ impl VfpUnit {
             }
         };
         if unsigned {
-            rounded.max(0.0).min(4_294_967_295.0) as u32
+            rounded.clamp(0.0, 4_294_967_295.0) as u32
         } else {
-            rounded.max(i32::MIN as f64).min(i32::MAX as f64) as i32 as u32
+            rounded.clamp(i32::MIN as f64, i32::MAX as f64) as i32 as u32
         }
     }
 
@@ -193,7 +193,7 @@ impl VfpUnit {
             return Ok(VfpEffect::None);
         }
 
-        let count_singles = vm_field as u32;
+        let count_singles = vm_field;
         let first_single: u32 = if double {
             ((d_bit << 4) | vd_field) * 2
         } else {
@@ -220,7 +220,7 @@ impl VfpUnit {
             ));
         }
 
-        let offset = (((insn >> 4) & 0xF0) | (insn & 0xF)) as u32;
+        let offset = ((insn >> 4) & 0xF0) | (insn & 0xF);
         let delta = if u { offset } else { 0u32.wrapping_sub(offset) };
 
         if w {
@@ -276,7 +276,7 @@ impl VfpUnit {
         double: bool,
         load: bool,
     ) -> Result<(), String> {
-        if double && count_singles % 2 != 0 {
+        if double && !count_singles.is_multiple_of(2) {
             return Err("VLDM/VSTM double register list must contain an even count".to_owned());
         }
         let mut address = start;
@@ -319,7 +319,7 @@ impl VfpUnit {
             if insn & 0xFEE0_0AFF == 0x0EE0_0A10 {
                 // VMRS/VMSR: cond 1110 1110 1111 L Rt 1010 0001 0000.
                 let load = insn & 0x0010_0000 != 0;
-                let rt = vd_field as u32;
+                let rt = vd_field;
                 if load {
                     if rt == 15 {
                         let flags = self.fpscr & FPSCR_NZCV_MASK;
@@ -345,7 +345,7 @@ impl VfpUnit {
                 let load = insn & 0x0010_0000 != 0;
                 if load {
                     return Ok(VfpEffect::CoreWrite {
-                        register: vn_field as u32,
+                        register: vn_field,
                         value: self.s[index],
                     });
                 }
@@ -358,7 +358,7 @@ impl VfpUnit {
         // VMOV immediate: cond 1110 1110 1D11 Vd 101x 0000 imm4.
         if op == 0xB && insn & 0xF0 == 0 {
             let imm8 = (vn_field << 4) | vm_field;
-            let value = Self::immediate(if double { 52 } else { 23 }, imm8 as u32);
+            let value = Self::immediate(if double { 52 } else { 23 }, imm8);
             if double {
                 self.set_d_f64(((d_bit << 4) | vd_field) as usize, f64::from_bits(value));
             } else {

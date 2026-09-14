@@ -537,8 +537,8 @@ mod tests {
     #[test]
     fn prot_decode() {
         assert_eq!(Permissions::from_prot(0), Permissions::NONE);
-        assert_eq!(Permissions::from_prot(1).read, true);
-        assert_eq!(Permissions::from_prot(3).write, true);
-        assert_eq!(Permissions::from_prot(5).execute, true);
+        assert!(Permissions::from_prot(1).read);
+        assert!(Permissions::from_prot(3).write);
+        assert!(Permissions::from_prot(5).execute);
     }
 }
