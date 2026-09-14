@@ -551,6 +551,10 @@ impl ArgCursor {
 }
 
 impl HostBridge for BasicHost {
+    fn syscall(&mut self, machine: &mut Machine, number: u32) -> u32 {
+        crate::syscalls::dispatch(self, machine, number)
+    }
+
     fn call_host(&mut self, machine: &mut Machine, slot: usize) -> u32 {
         self.ensure_regions(machine);
         let name = machine

@@ -56,7 +56,7 @@ struct SavedState {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Flags {
+pub(crate) struct Flags {
     n: bool,
     z: bool,
     c: bool,
@@ -83,7 +83,11 @@ impl Default for CpuConfig {
 #[derive(Debug)]
 pub struct Cpu {
     pub r: [u32; 16],
-    flags: Flags,
+    pub(crate) flags: Flags,
+    /// VFP floating-point unit state (s0-s31 + FPSCR).
+    pub vfp: crate::vfp::VfpUnit,
+    /// TLS pointer installed through bionic's `__ARM_NR_set_tls`.
+    pub tls: u32,
     steps: u64,
 }
 
@@ -105,6 +109,8 @@ impl Cpu {
                 q: false,
                 thumb: false,
             },
+            vfp: crate::vfp::VfpUnit::new(),
+            tls: 0,
             steps: 0,
         }
     }
@@ -172,6 +178,11 @@ pub trait HostBridge {
 
     /// Records a diagnostic (missing import, log output, ...).
     fn diagnostic(&mut self, message: String);
+
+    /// Executes an ARM EABI syscall (number in r7, arguments in r0-r6) and
+    /// returns the r0 result. The default implementation covers the common
+    /// Linux syscall surface; hosts may override for richer behavior.
+    fn syscall(&mut self, machine: &mut Machine, number: u32) -> u32;
 }
 
 /// The emulated machine: CPU state, guest memory, and the linker state.
@@ -181,6 +192,8 @@ pub struct Machine {
     pub memory: Memory,
     pub linker: Linker,
     pub config: CpuConfig,
+    /// Linux syscall bookkeeping (program break, mmap bump pointer).
+    pub syscalls: crate::syscalls::SyscallState,
     stop: Option<StopReason>,
     saved: Vec<SavedState>,
     steps_at_call: Vec<u64>,
@@ -195,6 +208,7 @@ impl Machine {
             memory: Memory::new(),
             linker: Linker::new(),
             config,
+            syscalls: crate::syscalls::SyscallState::default(),
             stop: None,
             saved: Vec::new(),
             steps_at_call: Vec::new(),
@@ -237,7 +251,7 @@ impl Machine {
         result.map(|()| return_value)
     }
 
-    fn run(&mut self, host: &mut dyn HostBridge) -> Result<(), String> {
+    pub(crate) fn run(&mut self, host: &mut dyn HostBridge) -> Result<(), String> {
         let budget = self
             .steps_at_call
             .last()
@@ -298,13 +312,13 @@ impl Machine {
             return Ok(());
         }
         let result = if self.cpu.flags.thumb {
-            match self.memory.read_u16(pc) {
-                Ok(instruction) => self.execute_thumb(instruction, pc),
+            match self.memory.fetch_u16(pc) {
+                Ok(instruction) => self.execute_thumb(instruction, pc, host),
                 Err(error) => Err(error.to_string()),
             }
         } else {
-            match self.memory.read_u32(pc) {
-                Ok(instruction) => self.execute_arm(instruction, pc),
+            match self.memory.fetch_u32(pc) {
+                Ok(instruction) => self.execute_arm(instruction, pc, host),
                 Err(error) => Err(error.to_string()),
             }
         };
@@ -509,7 +523,12 @@ impl Machine {
         }
     }
 
-    fn execute_arm(&mut self, insn: u32, pc: u32) -> Result<(), String> {
+    fn execute_arm(
+        &mut self,
+        insn: u32,
+        pc: u32,
+        host: &mut dyn HostBridge,
+    ) -> Result<(), String> {
         let condition = (insn >> 28) as u8;
         if condition == 0xF {
             if insn & 0xFE00_0000 == 0xFA00_0000 {
@@ -545,19 +564,118 @@ impl Machine {
                 self.cpu.r[15] = (pc + 8).wrapping_add(offset as u32);
                 Ok(())
             }
-            6 => Err("coprocessor load/store (LDC/STC) is not supported".to_owned()),
+            6 => self.execute_coprocessor_load_store(insn, pc),
             _ => {
-                if insn & 0x0100_0000 != 0 {
-                    Err("SWI syscalls are not emulated".to_owned())
-                } else if insn & 0x10 != 0 {
-                    Err("coprocessor register transfer (MCR/MRC) is not supported".to_owned())
-                } else {
-                    Err(format!(
-                        "coprocessor instruction {insn:#010x} is not supported"
-                    ))
+                if insn & 0x0F00_0000 == 0x0F00_0000 {
+                    // ARM EABI: SWI/SVC with the syscall number in r7.
+                    let number = self.register_value(7);
+                    let result = host.syscall(self, number);
+                    self.cpu.r[0] = result;
+                    self.cpu.r[15] = pc + 4;
+                    return Ok(());
                 }
+                if insn & 0x0F00_0000 == 0x0E00_0000 {
+                    return self.execute_coprocessor_data_processing(insn, pc);
+                }
+                Err(format!(
+                    "coprocessor instruction {insn:#010x} is not supported"
+                ))
             }
         }
+    }
+
+    /// Coprocessor load/store (bits[27:25] = 110): VLDR/VSTR/VLDM/VSTM and
+    /// the two-core-register VMOV forms.
+    fn execute_coprocessor_load_store(&mut self, insn: u32, pc: u32) -> Result<(), String> {
+        let register_n = (insn >> 16) & 0xF;
+        let cp = (insn >> 8) & 0xF;
+        if cp != 10 && cp != 11 {
+            return Err(format!(
+                "coprocessor load/store for cp{cp} is not supported ({insn:#010x})"
+            ));
+        }
+        let base = self.register_value(register_n);
+        let rt_value = self.register_value(register_n);
+        let rt2_value = self.register_value((insn >> 12) & 0xF);
+        let effect = self
+            .cpu
+            .vfp
+            .execute_load_store(insn, &mut self.memory, base, rt_value, rt2_value)?;
+        match effect {
+            crate::vfp::VfpEffect::CoreWrite { register, value } if register != 15 => {
+                if register != 15 {
+                    self.cpu.r[register as usize] = value;
+                }
+            }
+            crate::vfp::VfpEffect::CoreWritePair {
+                register1,
+                value1,
+                register2,
+                value2,
+            } => {
+                if register1 < 15 {
+                    self.cpu.r[register1 as usize] = value1;
+                }
+                if register2 < 15 {
+                    self.cpu.r[register2 as usize] = value2;
+                }
+            }
+            _ => {}
+        }
+        self.cpu.r[15] = pc + 4;
+        Ok(())
+    }
+
+    /// Coprocessor data processing / register transfer (bits[27:24] = 1110):
+    /// the VFP arithmetic space plus VMRS/VMSR.
+    fn execute_coprocessor_data_processing(&mut self, insn: u32, pc: u32) -> Result<(), String> {
+        let cp = (insn >> 8) & 0xF;
+        let bit4 = insn & 0x10 != 0;
+        if bit4 && cp == 15 {
+            // MCR/MRC p15: only the TLS register (c13, c0, 3) is modeled.
+            let opc1 = (insn >> 21) & 7;
+            let crm = insn & 0xF;
+            let opc2 = (insn >> 5) & 7;
+            let load = insn & 0x0010_0000 != 0;
+            let rt = (insn >> 12) & 0xF;
+            if opc1 == 0 && crm == 13 && opc2 == 3 {
+                if load {
+                    self.cpu.r[rt as usize] = self.cpu.tls;
+                } else {
+                    self.cpu.tls = self.cpu.r[rt as usize];
+                }
+                self.cpu.r[15] = pc + 4;
+                return Ok(());
+            }
+            return Err(format!(
+                "coprocessor p15 access ({insn:#010x}) is not supported"
+            ));
+        }
+        if cp != 10 && cp != 11 {
+            return Err(format!(
+                "coprocessor data processing for cp{cp} is not supported ({insn:#010x})"
+            ));
+        }
+        let rt_value = self.register_value((insn >> 16) & 0xF);
+        let effect = self.cpu.vfp.execute(insn, rt_value)?;
+        match effect {
+            crate::vfp::VfpEffect::CoreWrite { register, value } => {
+                if register == 15 {
+                    // VMRS APSR_nzcv is handled through UpdateFlags instead.
+                } else {
+                    self.cpu.r[register as usize] = value;
+                }
+            }
+            crate::vfp::VfpEffect::UpdateFlags { n, z, c, v } => {
+                self.cpu.flags.n = n;
+                self.cpu.flags.z = z;
+                self.cpu.flags.c = c;
+                self.cpu.flags.v = v;
+            }
+            _ => {}
+        }
+        self.cpu.r[15] = pc + 4;
+        Ok(())
     }
 
     /// ARM data processing and the top==0 miscellaneous space.
@@ -1124,7 +1242,12 @@ impl Machine {
 
     // ---- Thumb ----
 
-    fn execute_thumb(&mut self, insn: u16, pc: u32) -> Result<(), String> {
+    fn execute_thumb(
+        &mut self,
+        insn: u16,
+        pc: u32,
+        host: &mut dyn HostBridge,
+    ) -> Result<(), String> {
         let next_pc = pc + 2;
         if insn < 0x1800 {
             // Shift by immediate.
@@ -1438,7 +1561,12 @@ impl Machine {
                 // Conditional branch.
                 let condition = ((insn >> 8) & 0xF) as u8;
                 if condition == 0xF {
-                    return Err("Thumb SVC syscalls are not emulated".to_owned());
+                    // Thumb SVC: EABI syscall number still arrives in r7.
+                    let number = self.register_value(7);
+                    let result = host.syscall(self, number);
+                    self.cpu.r[0] = result;
+                    self.cpu.r[15] = pc + 4;
+                    return Ok(());
                 }
                 if condition == 0xE {
                     return Err(format!("Thumb UDF {insn:#06x} is not supported"));

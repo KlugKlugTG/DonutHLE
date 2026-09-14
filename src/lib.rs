@@ -22,6 +22,8 @@ pub mod native;
 pub mod native_bridge;
 pub mod resources;
 pub mod runtime;
+pub mod syscalls;
+pub mod vfp;
 pub mod vm;
 
 /// Single host graphics entry point. Legacy GLES 1.x and GLES 2.0 calls share the
