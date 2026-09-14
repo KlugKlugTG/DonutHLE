@@ -87,9 +87,7 @@ impl VfpUnit {
             ((1024i64 + delta as i64) as u64, efgh << 48)
         };
         let sign_shift = if mantissa_bits == 23 { 31 } else { 63 };
-        (sign << sign_shift)
-            | (exponent << mantissa_bits)
-            | fraction
+        (sign << sign_shift) | (exponent << mantissa_bits) | fraction
     }
 
     fn set_compare_flags(&mut self, value: f64) {
@@ -167,7 +165,11 @@ impl VfpUnit {
             };
             if l {
                 // VMOV Rt, Rt2, Dm: VFP register into the core pair.
-                let low = if double { self.s[2 * register] } else { self.s[register] };
+                let low = if double {
+                    self.s[2 * register]
+                } else {
+                    self.s[register]
+                };
                 let high = if double {
                     self.s[2 * register + 1]
                 } else {
@@ -203,14 +205,19 @@ impl VfpUnit {
             let bytes = count_singles * 4;
             self.transfer_block(memory, base, first_single, count_singles, double, l)?;
             return Ok(if w {
-                VfpEffect::CoreWrite { register: vn_field, value: base.wrapping_add(bytes) }
+                VfpEffect::CoreWrite {
+                    register: vn_field,
+                    value: base.wrapping_add(bytes),
+                }
             } else {
                 VfpEffect::None
             });
         }
 
         if p && u {
-            return Err(format!("VFP load/store FA addressing is invalid ({insn:#010x})"));
+            return Err(format!(
+                "VFP load/store FA addressing is invalid ({insn:#010x})"
+            ));
         }
 
         let offset = (((insn >> 4) & 0xF0) | (insn & 0xF)) as u32;
@@ -221,7 +228,10 @@ impl VfpUnit {
             let bytes = count_singles * 4;
             let start = base.wrapping_sub(bytes);
             self.transfer_block(memory, start, first_single, count_singles, double, l)?;
-            return Ok(VfpEffect::CoreWrite { register: vn_field, value: start });
+            return Ok(VfpEffect::CoreWrite {
+                register: vn_field,
+                value: start,
+            });
         }
 
         // VLDR/VSTR: single register at base +/- offset.
@@ -233,8 +243,12 @@ impl VfpUnit {
                 self.s[low] = memory.read_u32(address).map_err(|e| e.to_string())?;
                 self.s[high] = memory.read_u32(address + 4).map_err(|e| e.to_string())?;
             } else {
-                memory.write_u32(address, self.s[low]).map_err(|e| e.to_string())?;
-                memory.write_u32(address + 4, self.s[high]).map_err(|e| e.to_string())?;
+                memory
+                    .write_u32(address, self.s[low])
+                    .map_err(|e| e.to_string())?;
+                memory
+                    .write_u32(address + 4, self.s[high])
+                    .map_err(|e| e.to_string())?;
             }
         } else if l {
             self.s[first_single as usize] = memory.read_u32(address).map_err(|e| e.to_string())?;
@@ -244,7 +258,10 @@ impl VfpUnit {
                 .map_err(|e| e.to_string())?;
         }
         Ok(if w {
-            VfpEffect::CoreWrite { register: vn_field, value: address }
+            VfpEffect::CoreWrite {
+                register: vn_field,
+                value: address,
+            }
         } else {
             VfpEffect::None
         })
@@ -268,7 +285,9 @@ impl VfpUnit {
             if load {
                 self.s[register] = memory.read_u32(address).map_err(|e| e.to_string())?;
             } else {
-                memory.write_u32(address, self.s[register]).map_err(|e| e.to_string())?;
+                memory
+                    .write_u32(address, self.s[register])
+                    .map_err(|e| e.to_string())?;
             }
             address = address.wrapping_add(4);
         }
@@ -278,11 +297,7 @@ impl VfpUnit {
     /// Decodes and executes a VFP instruction in the coprocessor
     /// data-processing space (`bits[27:24] == 0b1110`, cp 10/11), plus the
     /// MCR/MRC register-transfer forms (VMOV core<->single, VMRS/VMSR).
-    pub fn execute(
-        &mut self,
-        insn: u32,
-        rt_value: u32,
-    ) -> Result<VfpEffect, String> {
+    pub fn execute(&mut self, insn: u32, rt_value: u32) -> Result<VfpEffect, String> {
         let cp = (insn >> 8) & 0xF;
         if cp != 10 && cp != 11 {
             return Err(format!(
@@ -315,7 +330,10 @@ impl VfpUnit {
                             v: flags & 0x1000_0000 != 0,
                         });
                     }
-                    return Ok(VfpEffect::CoreWrite { register: rt, value: self.fpscr });
+                    return Ok(VfpEffect::CoreWrite {
+                        register: rt,
+                        value: self.fpscr,
+                    });
                 }
                 self.fpscr = rt_value;
                 return Ok(VfpEffect::None);
@@ -334,9 +352,7 @@ impl VfpUnit {
                 self.s[index] = rt_value;
                 return Ok(VfpEffect::None);
             }
-            return Err(format!(
-                "unsupported VFP register transfer ({insn:#010x})"
-            ));
+            return Err(format!("unsupported VFP register transfer ({insn:#010x})"));
         }
 
         // VMOV immediate: cond 1110 1110 1D11 Vd 101x 0000 imm4.
@@ -346,23 +362,32 @@ impl VfpUnit {
             if double {
                 self.set_d_f64(((d_bit << 4) | vd_field) as usize, f64::from_bits(value));
             } else {
-                self.set_s_f32(((vd_field << 1) | d_bit) as usize, f32::from_bits(value as u32));
+                self.set_s_f32(
+                    ((vd_field << 1) | d_bit) as usize,
+                    f32::from_bits(value as u32),
+                );
             }
             return Ok(VfpEffect::None);
         }
 
         if op == 0xB && insn & 0x40 != 0 {
             // Two-register misc: opcode lives in Vn, bit 7 is the sub-op.
-            return self.execute_two_register(insn, double, vn_field, n_bit, vd_field, d_bit, vm_field, m_bit);
+            return self.execute_two_register(
+                insn, double, vn_field, n_bit, vd_field, d_bit, vm_field, m_bit,
+            );
         }
 
         if op <= 0x8 {
             // Three-register arithmetic; bit 6 selects the negated variant.
             let negate = insn & 0x40 != 0;
-            return self.execute_arithmetic(insn, double, op, negate, vd_field, d_bit, vn_field, n_bit, vm_field, m_bit);
+            return self.execute_arithmetic(
+                insn, double, op, negate, vd_field, d_bit, vn_field, n_bit, vm_field, m_bit,
+            );
         }
 
-        Err(format!("unsupported VFP data-processing encoding {insn:#010x}"))
+        Err(format!(
+            "unsupported VFP data-processing encoding {insn:#010x}"
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]

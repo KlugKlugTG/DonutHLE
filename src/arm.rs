@@ -523,12 +523,7 @@ impl Machine {
         }
     }
 
-    fn execute_arm(
-        &mut self,
-        insn: u32,
-        pc: u32,
-        host: &mut dyn HostBridge,
-    ) -> Result<(), String> {
+    fn execute_arm(&mut self, insn: u32, pc: u32, host: &mut dyn HostBridge) -> Result<(), String> {
         let condition = (insn >> 28) as u8;
         if condition == 0xF {
             if insn & 0xFE00_0000 == 0xFA00_0000 {
@@ -597,10 +592,10 @@ impl Machine {
         let base = self.register_value(register_n);
         let rt_value = self.register_value(register_n);
         let rt2_value = self.register_value((insn >> 12) & 0xF);
-        let effect = self
-            .cpu
-            .vfp
-            .execute_load_store(insn, &mut self.memory, base, rt_value, rt2_value)?;
+        let effect =
+            self.cpu
+                .vfp
+                .execute_load_store(insn, &mut self.memory, base, rt_value, rt2_value)?;
         match effect {
             crate::vfp::VfpEffect::CoreWrite { register, value } if register != 15 => {
                 if register != 15 {

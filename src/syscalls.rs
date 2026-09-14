@@ -123,26 +123,37 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             }
             total
         }
-        3 => errno(EBADF),       // read: no backing files yet
-        6 => 0,                  // close
-        5 => { host.diagnostic(format!("open(\"{:#x}\") refused: file I/O disabled", args[0])); errno(EACCES) }
-        322 => { host.diagnostic("openat refused: file I/O disabled".to_owned()); errno(EACCES) }
+        3 => errno(EBADF), // read: no backing files yet
+        6 => 0,            // close
+        5 => {
+            host.diagnostic(format!(
+                "open(\"{:#x}\") refused: file I/O disabled",
+                args[0]
+            ));
+            errno(EACCES)
+        }
+        322 => {
+            host.diagnostic("openat refused: file I/O disabled".to_owned());
+            errno(EACCES)
+        }
 
         // ---- process identity ----
-        20 | 224 => 42,          // getpid / gettid
-        64 => 1,                 // getppid
+        20 | 224 => 42,                // getpid / gettid
+        64 => 1,                       // getppid
         24 | 199 | 47 | 200 => 10_000, // getuid*/getgid*
         49 | 201 | 50 | 202 => 10_000, // geteuid*/getegid*
-        256 => 42,               // set_tid_address: return this tid
-        283 => {                 // set_thread_area
+        256 => 42,                     // set_tid_address: return this tid
+        283 => {
+            // set_thread_area
             machine.cpu.tls = args[0];
             0
         }
-        0x0F00_005 => {          // ARM private: set_tls (bionic < 2.9)
+        0x0F00_005 => {
+            // ARM private: set_tls (bionic < 2.9)
             machine.cpu.tls = args[0];
             0
         }
-        0x0F00_002 => 0,         // ARM private: cacheflush (no I-cache model)
+        0x0F00_002 => 0, // ARM private: cacheflush (no I-cache model)
 
         // ---- time ----
         13 => {
@@ -202,7 +213,10 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             if requested > machine.syscalls.brk {
                 let to = align_up(requested);
                 if to > machine.syscalls.brk_mapped {
-                    let _ = machine.memory.map_anon(machine.syscalls.brk_mapped, to - machine.syscalls.brk_mapped);
+                    let _ = machine.memory.map_anon(
+                        machine.syscalls.brk_mapped,
+                        to - machine.syscalls.brk_mapped,
+                    );
                     machine.syscalls.brk_mapped = to;
                 }
             }
@@ -284,7 +298,9 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             let address = machine.syscalls.mmap_next;
             machine.syscalls.mmap_next += new_length;
             let _ = machine.memory.map(address, new_length, Permissions::RWX);
-            let _ = machine.memory.copy_within(address, old_address, old_length.min(new_length));
+            let _ = machine
+                .memory
+                .copy_within(address, old_address, old_length.min(new_length));
             let _ = machine.memory.unmap(old_address, old_length);
             address
         }
@@ -296,7 +312,12 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             let buffer = args[0];
             write_field(&mut machine.memory, buffer, "Linux", UTS_FIELD);
             write_field(&mut machine.memory, buffer + 65, "donuthle", UTS_FIELD);
-            write_field(&mut machine.memory, buffer + 130, "2.6.29-donuthle", UTS_FIELD);
+            write_field(
+                &mut machine.memory,
+                buffer + 130,
+                "2.6.29-donuthle",
+                UTS_FIELD,
+            );
             write_field(&mut machine.memory, buffer + 195, "#1 SMP", UTS_FIELD);
             write_field(&mut machine.memory, buffer + 260, "armv7l", UTS_FIELD);
             write_field(&mut machine.memory, buffer + 325, "", UTS_FIELD);
@@ -330,7 +351,7 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             }
             0
         }
-        327 => 0, // fstatat64
+        327 => 0,       // fstatat64
         141 | 217 => 0, // getdents / getdents64: empty directory
         140 => {
             // llseek: position 0
@@ -339,14 +360,14 @@ pub fn dispatch(host: &mut dyn HostBridge, machine: &mut Machine, number: u32) -
             }
             0
         }
-        180 | 181 => 0, // pread64 / pwrite64
-        55 | 221 => 0,  // fcntl / fcntl64
+        180 | 181 => 0,      // pread64 / pwrite64
+        55 | 221 => 0,       // fcntl / fcntl64
         54 => errno(ENOTTY), // ioctl
-        168 => 0,       // poll: nothing is ever ready
+        168 => 0,            // poll: nothing is ever ready
         85 => errno(ENOENT), // readlink
         33 => errno(ENOENT), // access
-        136 => 0,       // personality
-        153 => 0,       // prctl
+        136 => 0,            // personality
+        153 => 0,            // prctl
 
         other => {
             host.diagnostic(format!("syscall {other} is not implemented (fail-closed)"));
@@ -425,7 +446,10 @@ mod tests {
         let _ = machine.run(&mut host);
         assert_eq!(machine.cpu.r[0], SYS_BRK_BASE + 0x3000);
         // The grown area must be writable.
-        machine.memory.write_u32(SYS_BRK_BASE + 0x2000, 0x1234).unwrap();
+        machine
+            .memory
+            .write_u32(SYS_BRK_BASE + 0x2000, 0x1234)
+            .unwrap();
     }
 
     #[test]

@@ -263,7 +263,6 @@ impl Memory {
         Ok(region)
     }
 
-
     fn region_for_access(
         &self,
         address: u32,
@@ -378,12 +377,7 @@ impl Memory {
     }
 
     pub fn read_bytes(&self, address: u32, length: usize) -> Result<Vec<u8>> {
-        let region = self.region_for_access(
-            address,
-            length as u32,
-            |p| p.read,
-            "read",
-        )?;
+        let region = self.region_for_access(address, length as u32, |p| p.read, "read")?;
         let offset = (address - region.base) as usize;
         Ok(region.data[offset..offset + length].to_vec())
     }
@@ -487,7 +481,15 @@ mod tests {
         memory.map(0x1000, 0x100, Permissions::RW).unwrap();
         memory.map(0x2000, 0x100, Permissions::RO).unwrap();
         memory
-            .map(0x3000, 0x100, Permissions { read: false, write: false, execute: true })
+            .map(
+                0x3000,
+                0x100,
+                Permissions {
+                    read: false,
+                    write: false,
+                    execute: true,
+                },
+            )
             .unwrap();
         // Read-only: reads fine, writes denied.
         assert_eq!(memory.read_u32(0x2000).unwrap(), 0);
