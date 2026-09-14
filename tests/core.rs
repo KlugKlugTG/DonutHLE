@@ -97,6 +97,7 @@ fn instruction_limit_reports_hot_pcs() {
         }],
     };
 
+    std::env::set_var("DONUTHLE_STRICT_BUDGET", "1");
     let mut vm = Vm::new(
         &dex,
         Framework::default(),

@@ -352,6 +352,10 @@ pub struct NetworkRequestState {
 
 #[derive(Debug, Default)]
 pub struct Framework {
+    // The logical surface starts at a plausible phone size (GLSurfaceView
+    // default) because games read Display metrics before the first frame;
+    // a zero-sized surface would size game content to nothing.
+    pub surface_size: (i32, i32),
     pub activities: ActivityManager,
     pub messages: MessageQueue,
     pub resources: ResourceRegistry,
@@ -381,7 +385,6 @@ pub struct Framework {
     pub gles2_programs: HashMap<u32, Vec<u32>>,
     pub assets: Option<AssetStore>,
     pub resource_images: HashMap<u32, String>,
-    pub surface_size: (i32, i32),
     /// Manifest package name, served by Context.getPackageName.
     pub package_name: Option<String>,
     next_handle: u32,
@@ -390,6 +393,9 @@ pub struct Framework {
 impl Framework {
     pub fn new() -> Self {
         Self {
+            // Games read Display metrics before the first rendered frame;
+            // start at the GLSurfaceView default instead of a zero screen.
+            surface_size: (320, 480),
             next_handle: 1,
             gles2_next_handle: 1,
             gles: HostGles::default(),

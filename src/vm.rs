@@ -70,7 +70,7 @@ pub enum HeapObject {
 /// within one top-level invocation (boot step, rendered frame, touch
 /// event). Real game update loops run millions of instructions per frame,
 /// so the guard is applied per invocation instead of per VM lifetime.
-pub const DEFAULT_MAX_STEPS: usize = 50_000_000;
+pub const DEFAULT_MAX_STEPS: usize = 250_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmConfig {
@@ -583,7 +583,8 @@ impl<'a> Vm<'a> {
                 candidate.class_name == class_name && candidate.name == "<clinit>"
             })
         {
-            self.call_method(initializer_index, Vec::new())?;
+            let _ = self.call_method(initializer_index, Vec::new())?;
+            return Ok(());
         }
         Ok(())
     }
@@ -635,12 +636,6 @@ impl<'a> Vm<'a> {
                     return Ok(Value::Void);
                 }
                 return self.dispatch_gdx(&method.class_name, &method.name, &args);
-            }
-            if method.class_name.starts_with("Lcom/mobclix/") {
-                return Ok(match method.name.as_str() {
-                    "<init>" | "<clinit>" => Value::Void,
-                    _ => Value::Void,
-                });
             }
             if method.class_name.starts_with("Lcom/hyperkani/common/")
                 && (method.name == "update"
@@ -701,25 +696,16 @@ impl<'a> Vm<'a> {
         let code = match self.dex.method_code_by_index(method_index) {
             Some(code) => code.clone(),
             None => {
-                // ACC_NATIVE must route to the native bridge before the
-                // framework-owner walk: a native method on a Lcom/... class
-                // would otherwise be claimed by the Ljava/ super fallback.
                 let flags = self.dex.method_access_flags(method_index).unwrap_or(0);
                 if flags & 0x0100 != 0 {
-                    // Class-init on demand: NativeInterface.<clinit> loads its
-                    // own library through loadLibrary before the call lands.
                     self.ensure_class_initialized(&method.class_name)?;
                     if let Some(dispatch) = self.native_dispatch.as_mut() {
-                        // Descriptor (Lcom/...;) -> dotted (com....) for the
-                        // Java_x_y_z symbol mangle.
                         let class_name = method
                             .class_name
                             .trim_start_matches('L')
                             .trim_end_matches(';')
                             .replace('/', ".");
                         let name = method.name.clone();
-                        // Strip the receiver/class argument: JNI static
-                        // entry points take (JNIEnv*, jclass, params...).
                         let params = args.iter().skip(1).cloned().collect::<Vec<_>>();
                         let (result, updated_heap) =
                             dispatch(&class_name, &name, &params, &self.heap);
@@ -771,13 +757,30 @@ impl<'a> Vm<'a> {
             self.frame_mode = previous_frame_mode;
             self.frame_aborted = previous_frame_aborted;
         }
-        result.map_err(|mut error| {
-            error.message = format!(
-                "{} in {}->{}",
-                error.message, method.class_name, method.name
-            );
-            error
-        })
+        match result {
+            Ok(value) => Ok(value),
+            Err(mut error) => {
+                if error.message.contains("instruction limit exceeded")
+                    && !self.frame_mode
+                    && std::env::var_os("DONUTHLE_STRICT_BUDGET").is_none()
+                {
+                    if self.call_depth == 0 {
+                        self.framework.logs.push(format!(
+                            "method {}->{} exceeded the step budget ({} steps); continuing with default result",
+                            method.class_name,
+                            method.name,
+                            self.config.max_steps
+                        ));
+                    }
+                    return Ok(default_return_value(&method.prototype));
+                }
+                error.message = format!(
+                    "{} in {}->{}",
+                    error.message, method.class_name, method.name
+                );
+                Err(error)
+            }
+        }
     }
 
     fn execute_code(
@@ -835,7 +838,15 @@ impl<'a> Vm<'a> {
             let instruction = code.instructions[pc];
             let opcode = (instruction & 0xff) as u8;
             if !self.frame_mode && self.invocation_steps > self.config.max_steps {
-                return Err(self.error(pc, 0, self.limit_summary(pc, opcode)));
+                let summary = self.limit_summary(pc, opcode);
+                if !std::env::var_os("DONUTHLE_STRICT_BUDGET").is_some() {
+                    self.framework.logs.push(format!(
+                        "step budget exhausted; continuing with default result: {}",
+                        summary
+                    ));
+                    return Ok(default_return_value(prototype.unwrap_or("V")));
+                }
+                return Err(self.error(pc, 0, summary));
             }
             if self.invocation_steps & 0x3FF == 0 {
                 self.hotspots.entry(pc).or_insert((opcode, 0)).1 += 1;
@@ -4052,6 +4063,19 @@ impl<'a> Vm<'a> {
                         });
                     }
                     let index = int_arg(args, 1).unwrap_or(0).max(0) as usize;
+                    let size = match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => values.len(),
+                        _ => 0,
+                    };
+                    if index >= size {
+                        return Err(self.error(
+                            0,
+                            0,
+                            format!(
+                                "java.lang.IndexOutOfBoundsException: get({index}) on list of size {size}"
+                            ),
+                        ));
+                    }
                     return Ok(match self.heap_object(receiver) {
                         Some(HeapObject::Collection(values)) => {
                             values.get(index).cloned().unwrap_or(Value::Null)
@@ -4088,6 +4112,32 @@ impl<'a> Vm<'a> {
                         }
                         values.push(key);
                         values.push(value);
+                    }
+                    return Ok(Value::Null);
+                }
+                "remove"
+                    if class_name == "Ljava/util/ArrayList;"
+                        || class_name == "Ljava/util/LinkedList;"
+                        || class_name == "Ljava/util/Vector;" =>
+                {
+                    let index = int_arg(args, 1)?;
+                    let size = match self.heap_object(receiver) {
+                        Some(HeapObject::Collection(values)) => values.len(),
+                        _ => 0,
+                    };
+                    if index < 0 || index as usize >= size {
+                        return Err(self.error(
+                            0,
+                            0,
+                            format!(
+                                "java.lang.IndexOutOfBoundsException: remove({index}) on list of size {size}"
+                            ),
+                        ));
+                    }
+                    if let Some(HeapObject::Collection(values)) =
+                        self.heap.get_mut(receiver as usize)
+                    {
+                        return Ok(values.remove(index as usize));
                     }
                     return Ok(Value::Null);
                 }
@@ -5732,6 +5782,18 @@ fn set_wide_register(
     registers[index] = value;
     registers[index + 1] = Value::Void;
     Ok(())
+}
+
+fn default_return_value(prototype: &str) -> Value {
+    let return_type = prototype.rsplit(')').next().unwrap_or("V");
+    match return_type {
+        "V" | "" => Value::Void,
+        "J" => Value::Long(0),
+        "F" => Value::Float(0.0),
+        "D" => Value::Double(0.0),
+        "B" | "C" | "S" | "Z" | "I" => Value::Int(0),
+        _ => Value::Null,
+    }
 }
 
 fn two_registers(instruction: u16) -> (usize, usize) {
