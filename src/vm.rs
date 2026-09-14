@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::dalvik::{CodeItem, DexFile};
 use crate::framework::{Framework, FrameworkCall, FrameworkResult};
@@ -76,6 +78,29 @@ pub const DEFAULT_MAX_STEPS: usize = 250_000_000;
 /// over-long frame freezes the whole emulator; heavy frames are cut off
 /// gracefully instead (rendering continues with the state drawn so far).
 pub const DEFAULT_FRAME_MAX_STEPS: usize = 4_000_000;
+
+/// Unix-micros deadline for the wall-clock watchdog (0 = disabled). Shared
+/// with the native interpreter so a spinning loop can never pin the CPU.
+pub static WATCHDOG_DEADLINE_US: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn arm_watchdog(seconds: u64) {
+    let deadline = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0)
+        .saturating_add(seconds * 1_000_000);
+    WATCHDOG_DEADLINE_US.store(deadline, Ordering::Relaxed);
+}
+
+pub(crate) fn watchdog_tripped_pub() -> bool {
+    let deadline = WATCHDOG_DEADLINE_US.load(Ordering::Relaxed);
+    deadline != 0
+        && SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0)
+            > deadline
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmConfig {
@@ -261,6 +286,7 @@ impl<'a> Vm<'a> {
     }
 
     pub fn run_method(&mut self, method_index: usize, args: Vec<Value>) -> Result<Value, VmError> {
+        arm_watchdog(20);
         if self.call_depth == 0 {
             self.invocation_steps = 0;
             self.hotspots.clear();
@@ -305,6 +331,7 @@ impl<'a> Vm<'a> {
         args: Vec<Value>,
     ) -> Result<Value, VmError> {
         if self.call_depth == 0 {
+            arm_watchdog(20);
             self.invocation_steps = 0;
             self.hotspots.clear();
         }
@@ -390,6 +417,7 @@ impl<'a> Vm<'a> {
     }
 
     pub fn render_frame(&mut self, object: ObjectId, method_name: &str) -> Result<Value, VmError> {
+        arm_watchdog(3);
         if self.call_depth == 0 {
             self.invocation_steps = 0;
             self.hotspots.clear();
@@ -831,6 +859,19 @@ impl<'a> Vm<'a> {
             self.invocation_steps += 1;
             if self.frame_mode {
                 self.frame_steps += 1;
+                if watchdog_tripped_pub() {
+                    if !self.frame_mode && std::env::var_os("DONUTHLE_STRICT_BUDGET").is_some() {
+                        return Err(self.error(pc, 0, "wall-clock watchdog exceeded"));
+                    }
+                    if self.frame_mode {
+                        self.frame_aborted = true;
+                    }
+                    self.framework.logs.push(format!(
+                        "wall-clock watchdog at pc {pc} (frame={}); recovering",
+                        self.frame_mode
+                    ));
+                    return Ok(default_return_value(prototype.unwrap_or("")));
+                }
                 if self.frame_steps > self.config.frame_max_steps {
                     if !self.frame_aborted {
                         self.framework.logs.push(format!(

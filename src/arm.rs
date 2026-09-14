@@ -259,6 +259,14 @@ impl Machine {
             .unwrap_or(0)
             .saturating_add(self.config.max_steps);
         while self.stop.is_none() {
+            if self.cpu.steps & 0xF_FFFF == 0 && super::vm::watchdog_tripped_pub() {
+                let message = format!(
+                    "wall-clock watchdog exceeded in native code at pc {:#010x}",
+                    self.cpu.r[15]
+                );
+                self.stop = Some(StopReason::Error(message.clone()));
+                return Err(message);
+            }
             if self.cpu.steps >= budget {
                 let message = format!(
                     "native code exceeded {} steps at pc {:#010x}",
