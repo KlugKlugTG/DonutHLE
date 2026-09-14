@@ -72,9 +72,15 @@ pub enum HeapObject {
 /// so the guard is applied per invocation instead of per VM lifetime.
 pub const DEFAULT_MAX_STEPS: usize = 250_000_000;
 
+/// Per-rendered-frame budget. Frames run on the window/UI thread, so an
+/// over-long frame freezes the whole emulator; heavy frames are cut off
+/// gracefully instead (rendering continues with the state drawn so far).
+pub const DEFAULT_FRAME_MAX_STEPS: usize = 4_000_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmConfig {
     pub max_steps: usize,
+    pub frame_max_steps: usize,
     pub max_call_depth: usize,
     pub trace_registers: bool,
 }
@@ -83,6 +89,7 @@ impl Default for VmConfig {
     fn default() -> Self {
         Self {
             max_steps: DEFAULT_MAX_STEPS,
+            frame_max_steps: DEFAULT_FRAME_MAX_STEPS,
             max_call_depth: 256,
             trace_registers: false,
         }
@@ -824,7 +831,7 @@ impl<'a> Vm<'a> {
             self.invocation_steps += 1;
             if self.frame_mode {
                 self.frame_steps += 1;
-                if self.frame_steps > self.config.max_steps {
+                if self.frame_steps > self.config.frame_max_steps {
                     if !self.frame_aborted {
                         self.framework.logs.push(format!(
                             "frame aborted: instruction budget of {} steps exceeded; rendering continues with the state drawn so far",

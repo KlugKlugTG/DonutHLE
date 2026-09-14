@@ -306,6 +306,7 @@ impl Runtime {
                 framework,
                 VmConfig {
                     max_steps: self.config.max_steps,
+                    frame_max_steps: crate::vm::DEFAULT_FRAME_MAX_STEPS,
                     max_call_depth: 256,
                     trace_registers: std::env::var_os("DONUTHLE_TRACE").is_some(),
                 },
