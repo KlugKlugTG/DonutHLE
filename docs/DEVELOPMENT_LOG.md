@@ -298,3 +298,13 @@ Primary compatibility targets: **Tiny Santa / Slice Ice** (Dalvik + Canvas/libGD
 - `f523659` 2026-09-07 Add stack dump to native fault diagnostics
 - `dd71ca1` 2026-09-07 Add full development log: complete feature inventory and all 219 commits
 - `282fe89` 2026-09-07 Fix instruction limit: per-invocation Dalvik step budget
+
+## 2026-09-14 — Invocation hot-spot diagnostics
+
+- The Dalvik VM now samples the program counter every 1024 executed
+  instructions and, when a non-frame invocation exhausts its step budget,
+  includes the top hot pcs (with opcodes and share of samples) in the
+  `instruction limit exceeded` error. This turns runaway-loop reports such as
+  the Tiny Santa `Lcom/a/a/f/l;->j` crash into a precise location listing.
+- New integration test `instruction_limit_reports_hot_pcs` runs an infinite
+  `goto` loop and asserts the reported hot pc is `pc=0 (0x28, 100%)`.

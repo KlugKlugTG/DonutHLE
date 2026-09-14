@@ -125,6 +125,9 @@ pub struct Vm<'a> {
     frame_mode: bool,
     frame_aborted: bool,
     frame_steps: usize,
+    /// Sampled hot program counters for the current invocation (pc ->
+    /// (opcode, samples)); used to diagnose runaway-code aborts.
+    hotspots: std::collections::HashMap<usize, (u8, u64)>,
     trace: Vec<String>,
     canvas_stack: Vec<CanvasState>,
     canvas_state: CanvasState,
@@ -147,6 +150,7 @@ impl<'a> Vm<'a> {
             frame_mode: false,
             frame_aborted: false,
             frame_steps: 0,
+            hotspots: std::collections::HashMap::new(),
             trace: Vec::new(),
             canvas_stack: Vec::new(),
             canvas_state: CanvasState::default(),
@@ -225,6 +229,7 @@ impl<'a> Vm<'a> {
     pub fn run_method(&mut self, method_index: usize, args: Vec<Value>) -> Result<Value, VmError> {
         if self.call_depth == 0 {
             self.invocation_steps = 0;
+            self.hotspots.clear();
         }
         self.call_method(method_index, args)
     }
@@ -267,6 +272,7 @@ impl<'a> Vm<'a> {
     ) -> Result<Value, VmError> {
         if self.call_depth == 0 {
             self.invocation_steps = 0;
+            self.hotspots.clear();
         }
         let method_index = self
             .dex
@@ -295,6 +301,7 @@ impl<'a> Vm<'a> {
     ) -> Result<Value, VmError> {
         if self.call_depth == 0 {
             self.invocation_steps = 0;
+            self.hotspots.clear();
         }
         let class_name = match self.heap_object(object) {
             Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
@@ -351,6 +358,7 @@ impl<'a> Vm<'a> {
     pub fn render_frame(&mut self, object: ObjectId, method_name: &str) -> Result<Value, VmError> {
         if self.call_depth == 0 {
             self.invocation_steps = 0;
+            self.hotspots.clear();
         }
         let class_name = match self.heap_object(object) {
             Some(HeapObject::Instance { class_name, .. }) => class_name.clone(),
@@ -409,6 +417,7 @@ impl<'a> Vm<'a> {
     ) -> Result<Value, VmError> {
         if self.call_depth == 0 {
             self.invocation_steps = 0;
+            self.hotspots.clear();
         }
         let listener = self
             .view_touch_listeners
@@ -796,11 +805,14 @@ impl<'a> Vm<'a> {
                     return Ok(Value::Void);
                 }
             }
-            if !self.frame_mode && self.invocation_steps > self.config.max_steps {
-                return Err(self.error(pc, 0, "instruction limit exceeded"));
-            }
             let instruction = code.instructions[pc];
             let opcode = (instruction & 0xff) as u8;
+            if !self.frame_mode && self.invocation_steps > self.config.max_steps {
+                return Err(self.error(pc, 0, self.limit_summary(pc, opcode)));
+            }
+            if self.invocation_steps & 0x3FF == 0 {
+                self.hotspots.entry(pc).or_insert((opcode, 0)).1 += 1;
+            }
             if self.config.trace_registers {
                 self.trace.push(format!(
                     "pc={pc:04} opcode=0x{opcode:02x} {}",
@@ -5457,6 +5469,36 @@ impl<'a> Vm<'a> {
         let id = self.heap.len() as ObjectId;
         self.heap.push(object);
         id
+    }
+
+    /// Builds the runaway-code error message with the sampled hot program
+    /// counters, so a stalled game loop can be located without extra runs.
+    fn limit_summary(&self, pc: usize, opcode: u8) -> String {
+        let mut hot: Vec<(usize, (u8, u64))> =
+            self.hotspots.iter().map(|(k, v)| (*k, *v)).collect();
+        hot.sort_by_key(|(_, (_, count))| std::cmp::Reverse(*count));
+        let total: u64 = hot.iter().map(|(_, (_, count))| count).sum();
+        let top: Vec<String> = hot
+            .iter()
+            .take(6)
+            .map(|(hot_pc, (hot_opcode, count))| {
+                format!(
+                    "pc={} (0x{:02x}, {:.0}%)",
+                    hot_pc,
+                    hot_opcode,
+                    100.0 * *count as f64 / total.max(1) as f64
+                )
+            })
+            .collect();
+        if top.is_empty() {
+            return "instruction limit exceeded".to_owned();
+        }
+        format!(
+            "instruction limit exceeded at pc {} opcode 0x{:02x}; hot pcs: {}",
+            pc,
+            opcode,
+            top.join(", ")
+        )
     }
 
     fn error(&self, pc: usize, opcode: u8, message: impl Into<String>) -> VmError {

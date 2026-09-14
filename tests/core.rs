@@ -51,3 +51,69 @@ fn native_report_keeps_parse_failures_visible() {
     assert!(native::status_summary(std::slice::from_ref(&report)).is_some());
     assert_eq!(native::status_summary(&[]), None);
 }
+
+#[test]
+fn instruction_limit_reports_hot_pcs() {
+    use donuthle::dalvik::{ClassDef, CodeItem, DexFile, EncodedMethod, MethodId, Prototype};
+    use donuthle::framework::Framework;
+    use donuthle::vm::{Vm, VmConfig};
+
+    // One method that loops forever: `goto +0` (opcode 0x28, offset 0).
+    let dex = DexFile {
+        header: donuthle::dalvik::DexHeader {
+            version: "035".to_owned(),
+            file_size: 0,
+            header_size: 112,
+            endian_tag: 0x1234_5678,
+        },
+        strings: vec!["LF;".to_owned(), "a".to_owned(), "()V".to_owned()],
+        types: vec!["LF;".to_owned()],
+        prototypes: vec![Prototype {
+            shorty: "V".to_owned(),
+            parameters: vec![],
+            return_type: "V".to_owned(),
+        }],
+        fields: vec![],
+        methods: vec![MethodId {
+            class_name: "LF;".to_owned(),
+            name: "a".to_owned(),
+            prototype: "()V".to_owned(),
+        }],
+        classes: vec![ClassDef {
+            name: "LF;".to_owned(),
+            access_flags: 0x1,
+            super_class: None,
+            direct_methods: vec![],
+            virtual_methods: vec![EncodedMethod {
+                method_index: 0,
+                access_flags: 0x1,
+                code: Some(CodeItem {
+                    registers_size: 1,
+                    ins_size: 0,
+                    outs_size: 0,
+                    instructions: vec![0x0028],
+                }),
+            }],
+        }],
+    };
+
+    let mut vm = Vm::new(
+        &dex,
+        Framework::default(),
+        VmConfig {
+            max_steps: 5_000,
+            ..VmConfig::default()
+        },
+    );
+    let error = vm.run_method(0, vec![]).unwrap_err();
+    assert!(
+        error.message.contains("hot pcs"),
+        "unexpected message: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("pc=0 (0x28, 100%)"),
+        "unexpected message: {}",
+        error.message
+    );
+}
