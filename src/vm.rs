@@ -8,6 +8,33 @@ use crate::Rgba8;
 pub type ObjectId = u32;
 static NANO_TIME_START: OnceLock<std::time::Instant> = OnceLock::new();
 
+/// Wall-clock milliseconds since the Unix epoch, as `System.currentTimeMillis()`
+/// returns on a real device.
+pub fn wall_clock_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Monotonic milliseconds since the process started, as
+/// `SystemClock.uptimeMillis()`/`elapsedRealtime()` return on a real device.
+pub fn uptime_millis() -> i64 {
+    NANO_TIME_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as i64
+}
+
+/// Monotonic nanoseconds since the process started, matching
+/// `SystemClock.elapsedRealtimeNanos()`.
+pub fn uptime_nanos() -> i64 {
+    NANO_TIME_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as i64
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Void,
@@ -2373,6 +2400,31 @@ impl<'a> Vm<'a> {
         if class_name == "Landroid/opengl/GLES20;" {
             return self.dispatch_gles20(method_name, args);
         }
+        if class_name == "Landroid/os/SystemClock;" {
+            return match method_name {
+                "uptimeMillis" | "elapsedRealtime" | "currentThreadTimeMillis" => {
+                    Ok(Value::Long(uptime_millis()))
+                }
+                "elapsedRealtimeNanos" | "currentThreadTimeNanos" => {
+                    Ok(Value::Long(uptime_nanos()))
+                }
+                "sleep" => {
+                    // Same semantics as Thread.sleep: honor the frame-mode
+                    // minimum so a frame cannot stall the whole invocation.
+                    let milliseconds = int_arg(args, 0)?;
+                    if milliseconds > 0 {
+                        let delay = if self.frame_mode {
+                            milliseconds.max(1)
+                        } else {
+                            milliseconds
+                        };
+                        std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+                    }
+                    Ok(Value::Void)
+                }
+                _ => Ok(Value::Void),
+            };
+        }
 
         if class_name == "Landroid/util/Log;" {
             let message = args
@@ -3305,7 +3357,9 @@ impl<'a> Vm<'a> {
                     }
                     return Ok(Value::Void);
                 }
-                "currentTimeMillis" => return Ok(Value::Long(0)),
+                // Must advance like a real device clock: game loops busy-wait on it
+                // and would spin forever on a constant value.
+                "currentTimeMillis" => return Ok(Value::Long(wall_clock_millis())),
                 "identityHashCode" => return Ok(Value::Int(0)),
                 _ => {}
             }
@@ -5988,5 +6042,25 @@ fn value_sort_key(value: &Value) -> String {
         Value::Object(value) => value.to_string(),
         Value::Void => String::new(),
         Value::Null => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    #[test]
+    fn wall_clock_is_a_sane_epoch_millis() {
+        let now = super::wall_clock_millis();
+        // Any timestamp after 2026-01-01 and before 2100.
+        assert!(now > 1_767_225_600_000, "wall clock regressed: {now}");
+        assert!(now < 4_102_444_800_000, "wall clock out of range: {now}");
+    }
+
+    #[test]
+    fn clocks_advance_monotonically() {
+        let before = (super::uptime_millis(), super::wall_clock_millis());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let after = (super::uptime_millis(), super::wall_clock_millis());
+        assert!(after.0 >= before.0);
+        assert!(after.1 >= before.1);
     }
 }
